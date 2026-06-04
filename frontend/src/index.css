@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens — the single source of raw values (referenced by tailwind.config.js). */
+:root {
+  --color-brand: #f5a524; /* solar amber */
+  --color-surface: #f8fafc; /* slate-50 */
+  --color-ink: #0f172a; /* slate-900 */
+  --color-muted: #64748b; /* slate-500 */
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --radius: 0.5rem;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.1);
+}
+
+body {
+  font-family:
+    "IBM Plex Sans", ui-sans-serif, sans-serif;
+  color: var(--color-ink);
+  background: var(--color-surface);
+}

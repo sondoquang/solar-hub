@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "django-rest-framework": {
+      "source": "thebushidocollective/han",
+      "sourceType": "github",
+      "skillPath": "plugins/frameworks/django/skills/django-rest-framework/SKILL.md",
+      "computedHash": "ad0044e5047bcd30d48daad14486ba3128c51418aa451de90ce01b3f31a140a8"
+    },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-design/SKILL.md",
+      "computedHash": "516bd2154eb843a8240e43d5b285229129853114ad7075a5e141e1c08e408c84"
+    },
+    "python-testing": {
+      "source": "microsoft/agent-framework",
+      "sourceType": "github",
+      "skillPath": "python/.github/skills/python-testing/SKILL.md",
+      "computedHash": "73d4e459e865146368fc7b8da94865c6b4872cd683c2a7eb8bb2e113e49a0e9a"
+    }
+  }
+}

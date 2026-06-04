@@ -1,0 +1,66 @@
+# Dev-style compose: separate services. The single production image
+# (nginx + supervisor + gunicorn) is a deferred follow-up.
+#
+# The app runs in containers but connects OUT to the host-OS PostgreSQL
+# (database "solar_hub") via host.docker.internal — see backend/.env.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  celery_worker:
+    build: ./backend
+    env_file: ./backend/.env
+    command: celery -A config worker -l info
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  celery_beat:
+    build: ./backend
+    env_file: ./backend/.env
+    command: celery -A config beat -l info
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build: ./frontend
+    env_file: ./frontend/.env
+    command: npm run dev -- --host
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
