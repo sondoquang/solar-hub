@@ -3,7 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { api } from "./client.js";
 
 // Endpoints (Hub backend only):
-//   GET    /hostings/             -> getHostings / useHostings (server-side paginated: ?page, ?page_size)
+//   GET    /hostings/             -> getHostings / useHostings (server-side paginated: ?page, ?page_size, ?search)
 //   POST   /hostings/             -> createHosting / useCreateHosting
 //   PATCH  /hostings/{id}/        -> updateHosting / useUpdateHosting
 //   DELETE /hostings/{id}/        -> deleteHosting / useDeleteHosting

@@ -6,7 +6,7 @@
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.filters import OrderingFilter
+from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
@@ -17,9 +17,11 @@ from .serializers import HostingSerializer, SiteSerializer
 
 class SiteViewSet(viewsets.ModelViewSet):
     serializer_class = SiteSerializer
-    # Server-side sort (e.g. ?ordering=name / ?ordering=-name) so the frontend
-    # table sorter works across all pages, not just the current one.
-    filter_backends = [OrderingFilter]
+    # Server-side sort (e.g. ?ordering=name / ?ordering=-name) and search
+    # (?search=...) so the frontend table works across all pages, not just the
+    # current one. SearchFilter does a case-insensitive contains over name/URL.
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ["name", "base_url"]
     ordering_fields = ["name", "created_at", "status", "last_checked_at"]
     ordering = ["-created_at"]
 
@@ -108,6 +110,10 @@ class HostingViewSet(viewsets.ModelViewSet):
     """CRUD for hostings (site groups) + an on-demand grouped health-check."""
 
     serializer_class = HostingSerializer
+    # Server-side search (?search=...) over name / provider / account so the
+    # table's search box works across all pages, not just the current one.
+    filter_backends = [SearchFilter]
+    search_fields = ["name", "provider", "account_username"]
 
     def get_queryset(self):
         return (

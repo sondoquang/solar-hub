@@ -58,6 +58,23 @@ def test_list_orders_by_name(client):
 
 
 @pytest.mark.django_db
+def test_list_search_matches_name_and_url(client):
+    SiteFactory(name="Alpha Shop", base_url="https://alpha.example.com")
+    SiteFactory(name="Bravo Store", base_url="https://bravo.example.com")
+    # Match on name (case-insensitive contains).
+    resp = client.get("/api/sites/", {"search": "alpha"})
+    names = [row["name"] for row in resp.data["results"]]
+    assert names == ["Alpha Shop"]
+    # Match on base_url too.
+    resp = client.get("/api/sites/", {"search": "bravo.example"})
+    names = [row["name"] for row in resp.data["results"]]
+    assert names == ["Bravo Store"]
+    # No match → empty page, not an error.
+    resp = client.get("/api/sites/", {"search": "nonexistent"})
+    assert resp.data["count"] == 0
+
+
+@pytest.mark.django_db
 def test_stats_returns_global_counts(client):
     SiteFactory(status=Site.Status.UP)
     SiteFactory(status=Site.Status.UP)
