@@ -31,7 +31,7 @@ Ranh giới then chốt: **frontend ↔ Hub** (REST `/api/...`). Frontend **khô
 |---|---|
 | `src/api/` | axios instance + hàm gọi endpoint + React Query hooks. Ranh giới dữ liệu duy nhất với backend. |
 | `src/pages/` | Màn theo route (Dashboard, Orders, Products, Sites, Login). Lắp ráp, mỏng. |
-| `src/components/` | UI tái dùng, presentational (Table, Badge, StatusDot, EmptyState, Skeleton...). |
+| `src/components/` | UI tái dùng, presentational (`DataTable`, StatusDot, EmptyState, ErrorState, các Form...). Bảng dữ liệu đi qua `DataTable` (bọc antd `<Table>`): chọn cột + phân trang server-side + ellipsis + refresh — xem PROJECT_RULE §7a. |
 | `src/hooks/` | Custom hook UI (filter, debounce). Không fetch data ở đây. |
 | `src/lib/` | Helper thuần: format tiền VND, ngày, transform dữ liệu. |
 | `src/routes.jsx` | Khai báo router + guard auth. |
@@ -41,14 +41,15 @@ Ranh giới then chốt: **frontend ↔ Hub** (REST `/api/...`). Frontend **khô
 - **Dashboard (`/`)** — tổng quan: số đơn mới/đã forward, trạng thái sync gần nhất, đèn up/down từng site.
 - **Orders (`/orders`)** — *quan trọng nhất*: bảng đơn gom từ mọi site, lọc theo site/trạng thái/thời gian, cờ "đã forward marketing", phân trang. Refetch định kỳ để gần real-time.
 - **Products (`/products`)** — danh sách + form CRUD master catalog (SKU, giá, tồn, ảnh), nút **Sync all** (gọi API kích hoạt task đồng bộ ở backend), hiển thị trạng thái mapping theo site.
-- **Sites (`/sites`)** — danh sách website, trạng thái up/down, form đăng ký site (nhập base_url + key — key chỉ gửi đi, không hiển thị lại).
+- **Sites (`/sites`)** — danh sách website, trạng thái up/down, **cột Hosting** + **lọc theo hosting** (gồm "Chưa gán hosting"), form đăng ký site (nhập base_url + key — key chỉ gửi đi, không hiển thị lại; chọn hosting tùy chọn).
+- **Hostings (`/hostings`)** — quản lý hosting (nhóm site): CRUD hosting, xem sức khỏe gom theo hosting (số site + đếm up/down/unknown), chỉnh `check_concurrency`, nút **Check ngay** chạy healthcheck cả nhóm (throttle ở backend).
 - **Login (`/login`)** — đăng nhập lấy token.
 
 ## 5. Luồng dữ liệu
 
 ### 5.1. Đọc (queries)
 
-Component gọi React Query hook trong `src/api/` → axios gọi DRF → dữ liệu được cache theo **query key** (`["orders", filters]`, `["products"]`, `["sites"]`). UI render theo 3 trạng thái loading/error/empty. Đơn hàng bật `refetchInterval`/`refetchOnWindowFocus` để cập nhật gần real-time.
+Component gọi React Query hook trong `src/api/` → axios gọi DRF → dữ liệu được cache theo **query key** (`["orders", filters]`, `["products"]`, `["sites"]`, `["hostings"]`). UI render theo 3 trạng thái loading/error/empty. Đơn hàng bật `refetchInterval`/`refetchOnWindowFocus` để cập nhật gần real-time.
 
 ### 5.2. Ghi (mutations)
 
@@ -91,15 +92,19 @@ FE **không** tự đẩy sản phẩm xuống site. Bấm "Sync all" chỉ gọ
 
 ## 9b. Trạng thái hiện thực (Phase 1 — Sites)
 
-Trang **Sites (`/sites`)** đã hiện thực: `src/api/sites.js` (hooks `useSites/useCreateSite/useUpdateSite/useDeleteSite/useTestConnection/useTestConnections/useImportSites`, query key `["sites"]`, invalidate sau mutation). Components: `StatusDot` (chấm màu + nhãn up/down/tạm dừng), `SiteRegisterForm` (react-hook-form + zod, dùng chung cho **tạo và sửa** — edit thì secret optional), `SitesTable` (bảng + checkbox chọn + select-all theo trang + sort theo tên + per-row Test/Sửa/Xóa kèm icon), `SiteImport` (upload `.xlsx`), `SiteStats` (4 thẻ tổng hợp: tổng / hoạt động / tạm dừng / không hoạt động — count tính ở page), `TablePagination` (pager client-side: chọn page-size + chuyển trang). Tính năng:
-- **Import Excel** hàng loạt (file parse ở backend) → toast tóm tắt created/errors.
+Trang **Sites (`/sites`)** đã hiện thực: `src/api/sites.js` (hooks `useSites/useSiteStats/useCreateSite/useUpdateSite/useDeleteSite/useTestConnection/useTestConnections/useImportSites`; query key danh sách `["sites","list", params]` mang `page/page_size/ordering/hosting`, stats `["sites","stats"]`; mutation invalidate prefix `["sites"]` nên cả list lẫn stats refresh). Components: `StatusDot` (chấm màu + nhãn up/down/tạm dừng), `SiteRegisterForm` (react-hook-form + zod, dùng chung cho **tạo và sửa** — edit thì secret optional), `DataTable` (bảng dùng chung, xem §3 + PROJECT_RULE §7a), `SiteImport` (modal chọn hosting đích + upload `.xlsx`), `SiteStats` (4 thẻ tổng hợp: tổng / hoạt động / tạm dừng / không hoạt động — lấy từ endpoint `/sites/stats/`, đúng kể cả khi list đã phân trang). Tính năng:
+- **Import Excel** hàng loạt qua **modal**: chọn hosting đích (tùy chọn) + chọn file rồi bấm import (file parse ở backend, mọi site được gán vào hosting đã chọn) → toast tóm tắt created/errors.
 - **Thêm/Sửa** site qua antd `Modal` (form nằm trong modal; PATCH với secret để trống = giữ nguyên).
 - Nút **Test** mỗi site có loading ("Đang kiểm tra…") + disable chống spam (dựa `mutation.isPending`/`variables`).
-- **Tick chọn nhiều site** + "Kiểm tra đã chọn" gọi bulk `test_connections`.
-- **Sort theo tên** và **phân trang client-side** (asc/desc/none, page-size 10/20/50) — state ở page, components chỉ render + báo intent qua callback.
-- Đủ loading/error/empty; toast cho mọi mutation; `consumer_secret` chỉ gửi đi, không hiển thị lại.
+- **Tick chọn nhiều site** (antd `rowSelection`, `preserveSelectedRowKeys` giữ chọn qua các trang) + "Kiểm tra đã chọn" gọi bulk `test_connections`.
+- **Phân trang/sort/lọc server-side**: page + page_size + ordering (sort tên qua DRF `OrderingFilter`) + hosting đều là query param → đổi gì cũng gọi lại API. Đổi page size hoặc sort thì reset về trang 1.
+- Đủ loading/error/empty (qua `DataTable.loading` + `locale.emptyText` + `ErrorState`); toast cho mọi mutation; `consumer_secret` chỉ gửi đi, không hiển thị lại.
 
-**Khung app (`AppLayout`)**: layout dạng **sidebar trái** (logo Solar Hub, nav có icon, mục **Website** mở rộng được với các mục con, thẻ hỗ trợ ở đáy) + **topbar** (chuông thông báo + hồ sơ người dùng). Các route đã có (`/`, `/orders`, `/products`, `/sites`, `/login`) dùng `NavLink`; mục chưa có route (Khách hàng, Báo cáo, Cài đặt hệ thống, các mục con Import Excel/Lịch sử/Cài đặt) là placeholder tĩnh, sẽ nối route khi dựng.
+**Hosting (`/hostings`)** đã hiện thực: `src/api/hostings.js` (hooks `useHostings/useCreateHosting/useUpdateHosting/useDeleteHosting/useCheckHosting`, query key danh sách `["hostings","list", params]`; mutation invalidate cả `["hostings"]` và `["sites"]` vì đổi hosting ảnh hưởng danh sách site). Component `HostingRegisterForm` (react-hook-form + zod, dùng chung tạo/sửa) + trang `Hostings` (dùng `DataTable`, phân trang server-side, đếm sức khỏe gom theo nhóm, `Popconfirm` khi xóa, nút "Check ngay"). Trang Sites thêm dropdown lọc theo hosting (server-side, có "Chưa gán hosting") + cột Hosting; `SiteRegisterForm` thêm `Select` chọn hosting (tùy chọn, nguồn từ `useHostings`).
+
+**Khung app (`AppLayout`)**: layout dạng **sidebar trái** (logo Solar Hub, nav có icon, mục **Website** mở rộng được với các mục con, thẻ hỗ trợ ở đáy) + **topbar** (chuông thông báo + hồ sơ người dùng). Các route đã có (`/`, `/orders`, `/products`, `/sites`, `/hostings`, `/login`) dùng `NavLink`; mục chưa có route (Khách hàng, Báo cáo, Cài đặt hệ thống, các mục con Import Excel/Lịch sử/Cài đặt) là placeholder tĩnh, sẽ nối route khi dựng.
+
+**Hồ sơ người dùng ở topbar (`UserMenu`)**: hiển thị avatar (chữ cái đầu), `full_name` + `role` (lấy từ `/auth/me/`). Click mở **antd `Dropdown`** với 3 mục: **Cập nhật** (modal sửa `full_name`+`email`, gọi `PATCH /auth/me/` qua `api/auth.js#updateProfile`, rồi `useAuth().updateUser` để cập nhật ngay), **Đổi mật khẩu** (modal mật khẩu cũ/mới/xác nhận, gọi `POST /auth/change-password/` qua `changePassword`), **Đăng xuất** (`useAuth().logout`). `AuthContext` expose thêm `updateUser(next)` để thay user đã cache sau khi cập nhật hồ sơ.
 
 ## 9c. UI stack — Ant Design chủ đạo + Tailwind tinh chỉnh
 
@@ -112,7 +117,7 @@ Cấu hình (xem `src/main.jsx`):
 - `<App>` của antd bọc app để dùng `message`/`modal`/`notification` tĩnh có context (`react-hot-toast` vẫn dùng cho toast mutation như cũ).
 - `import "antd/dist/reset.css"` làm reset nền; Tailwind **tắt `preflight`** (`tailwind.config.js`) để không xung đột.
 
-Quy ước dùng: ưu tiên component antd cho UI mới (Button, Table, Form, Modal, Select, DatePicker…); icon lấy từ `lucide-react` và truyền vào prop `icon`. Component cũ tự viết (`StatusDot`, `SitesTable`, `SiteRegisterForm`…) vẫn chạy, sẽ chuyển dần sang antd khi đụng tới. Mẫu đầu tiên: nút header trang Sites (`src/pages/Sites.jsx`) đã dùng `Button` + icon lucide.
+Quy ước dùng: ưu tiên component antd cho UI mới (Button, Table, Form, Modal, Select, DatePicker…); icon lấy từ `lucide-react` và truyền vào prop `icon`. Bảng dữ liệu đã chuyển sang antd `<Table>` qua component dùng chung `DataTable` (Sites + Hostings). Component cũ tự viết còn lại (`StatusDot`, `SiteRegisterForm`…) vẫn chạy, sẽ chuyển dần sang antd khi đụng tới.
 
 ## 10. Local vs Production
 

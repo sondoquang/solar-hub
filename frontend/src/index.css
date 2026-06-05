@@ -11,13 +11,34 @@
   --color-success: #16a34a;
   --color-warning: #d97706;
   --color-danger: #dc2626;
-  --radius: 0.5rem;
+  --radius: 0.25rem;
   --shadow-card: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.1);
 }
 
 body {
   font-family:
-    "IBM Plex Sans", ui-sans-serif, sans-serif;
+    "Be Vietnam Pro", ui-sans-serif, sans-serif;
   color: var(--color-ink);
   background: var(--color-surface);
+}
+
+/* Reset only NATIVE buttons (nav/layout chrome). Exclude antd's `.ant-btn` —
+   StyleProvider puts antd CSS in a low-priority @layer, so an unlayered global
+   `button {}` would strip antd Button's own background/border (e.g. the amber
+   on type="primary"). Scoping to :not(.ant-btn) keeps antd buttons intact. */
+button:not(.ant-btn) {
+  border: none;
+  background: transparent;
+}
+
+/* Force Montserrat on antd Input — placeholder does not inherit font-family automatically */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-affix-wrapper input {
+  font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
+}
+
+.ant-input::placeholder,
+.ant-input-affix-wrapper input::placeholder {
+  font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
 }

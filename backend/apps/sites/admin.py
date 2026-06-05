@@ -3,7 +3,15 @@ from django.contrib import admin, messages
 
 from . import services
 from .crypto import encrypt_secret
-from .models import Site
+from .models import Hosting, Site
+
+
+@admin.register(Hosting)
+class HostingAdmin(admin.ModelAdmin):
+    list_display = ("name", "provider", "account_username", "check_concurrency")
+    list_filter = ("provider",)
+    search_fields = ("name", "provider", "account_username")
+    readonly_fields = ("created_at", "updated_at")
 
 
 class SiteAdminForm(forms.ModelForm):
@@ -18,7 +26,7 @@ class SiteAdminForm(forms.ModelForm):
 
     class Meta:
         model = Site
-        fields = ["name", "base_url", "consumer_key", "consumer_secret"]
+        fields = ["name", "base_url", "consumer_key", "consumer_secret", "hosting"]
 
     def clean(self):
         cleaned = super().clean()
@@ -39,8 +47,8 @@ class SiteAdminForm(forms.ModelForm):
 @admin.register(Site)
 class SiteAdmin(admin.ModelAdmin):
     form = SiteAdminForm
-    list_display = ("name", "base_url", "status", "last_checked_at")
-    list_filter = ("status",)
+    list_display = ("name", "base_url", "hosting", "status", "last_checked_at")
+    list_filter = ("status", "hosting")
     readonly_fields = ("status", "last_checked_at", "created_at", "updated_at")
     actions = ["run_test_connection"]
 

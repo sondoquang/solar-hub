@@ -58,6 +58,14 @@ Quy tắc code cho **frontend** Solar Hub. Mục tiêu: nhất quán, dữ liệ
 ## 7. Styling & thiết kế
 
 - **Ant Design (antd) là UI chủ đạo**, **Tailwind tinh chỉnh.** UI mới ưu tiên component antd (Button, Table, Form, Modal, Select, DatePicker…); Tailwind dùng cho spacing/màu/layout lặt vặt. Icon lấy từ **lucide-react** (truyền vào prop `icon`). Chi tiết cấu hình ở `docs/frontend/ARCHITECTURE.md §9c`.
+- **ƯU TIÊN COMPONENT ANTD CÓ SẴN — BẮT BUỘC (đọc trước khi viết bất kỳ control nào).** Trước khi tự dựng một button/input/control mới bằng thẻ HTML thuần + Tailwind, **phải** kiểm tra antd đã có component tương ứng chưa và dùng nó. Không hand-roll lại thứ antd đã cung cấp.
+  - **Mọi nút bấm dùng `<Button>` antd**, không `<button>` HTML thuần. Map đúng biến thể: CTA chính → `type="primary"`; phụ/hủy → mặc định; nguy hiểm (xóa) → `danger`; viền brand → `type="primary" ghost`; dạng link → `type="link"`; nút icon-only → `type="text"`. Trạng thái bận dùng prop `loading` (không tự ghép spinner); disable dùng prop `disabled`.
+  - **Mọi ô nhập liệu dùng component antd:** `Input`, `Input.Password`, `Input.TextArea`, `InputNumber`, `Select`, `Checkbox`, `Radio`, `Switch`, `DatePicker`, `Upload`… Không `<input>/<select>/<textarea>` HTML thuần (trừ `<input type="file">` ẩn sau control antd nếu thực sự cần).
+  - Brand token đã map trong `src/lib/antdTheme.js` (`colorPrimary` = amber, Button `primaryColor` = ink) → `<Button type="primary">` ra **đúng** màu thương hiệu, **không** cần tự đặt `bg-brand text-ink`.
+  - **Nút hành động trong modal/popup (create/update/delete) phải mang màu hệ thống.** Nút xác nhận chính dùng `type="primary"` (amber) cho dễ thao tác; nút phụ để mặc định. `Modal` dùng form riêng (`footer={null}`) thì nút "Lưu" trong form là `type="primary"`. Xác nhận xóa dùng `Popconfirm` (OK mặc định đã là `type="primary"` = amber) — đừng để nút xác nhận chìm/không màu.
+  - **Cảnh báo reset CSS:** vì `StyleProvider layer` đẩy CSS antd vào `@layer` ưu tiên thấp, **tuyệt đối không** viết reset global `button {}` không-scope trong `index.css` (sẽ bóc nền/viền của antd Button → mất màu primary). Reset cho nút native phải scope `button:not(.ant-btn)`.
+  - **Ngoại lệ duy nhất:** chrome điều hướng/layout bespoke đi cặp với `NavLink` (sidebar nav rows, nút thu gọn menu, item "sắp ra mắt") được phép giữ `<button>` thuần để đồng bộ style với các `NavLink` anh em. Mọi thứ còn lại theo rule trên.
+  - Cần một control antd chưa có sẵn → bọc nó thành component dùng chung trong `src/components/` (như `DataTable` bọc `<Table>`), đừng rải HTML thuần khắp nơi.
 - Theme antd ở `src/lib/antdTheme.js` phải **ánh xạ đúng design token** trong `src/index.css` — đổi màu/radius thì sửa cả hai. Tailwind `preflight` đã tắt; reset nền là `antd/dist/reset.css`.
 - **Tailwind CSS.** Định nghĩa **design token** (màu, spacing, radius, shadow) trong `tailwind.config` / CSS variables — không rải giá trị magic.
 - Chọn **một hướng thẩm mỹ rõ ràng và nhất quán** cho dashboard: ưu tiên rõ ràng, mật độ dữ liệu hợp lý, dễ quét bằng mắt (đây là công cụ vận hành, không phải landing page).
@@ -65,6 +73,23 @@ Quy tắc code cho **frontend** Solar Hub. Mục tiêu: nhất quán, dữ liệ
 - **Accessibility:** màu đủ tương phản, focus state rõ, `aria-*` cho control, dùng đúng thẻ ngữ nghĩa. Bảng dữ liệu phải có header đúng.
 - **Responsive** ở mức hợp lý (dùng chính trên desktop, nhưng không vỡ trên tablet).
 - Trạng thái rõ ràng: hàng/đơn theo màu trạng thái (badge), site up/down bằng chấm xanh/đỏ nhất quán.
+- **Bảng dữ liệu dùng component dùng chung `DataTable`** (bọc antd `<Table>`) — xem **§7a**. Không hand-roll `<table>` mới. Hai rule `<th>` dưới đây chỉ áp dụng cho bảng hand-rolled cũ còn sót lại; bảng mới theo style mặc định của antd Table.
+  - (Legacy) Tiêu đề cột (`<th>`) dùng `font-bold`, không nhẹ hơn.
+  - (Legacy) Header (`<th>`) có padding trên/dưới 24px (`py-6`); padding ngang theo mật độ từng bảng.
+
+## 7a. Bảng dữ liệu (DataTable — BẮT BUỘC)
+
+Mọi bảng liệt kê dữ liệu phải dùng component dùng chung **`src/components/DataTable.jsx`** (bọc antd `<Table>`). Không tự dựng `<table>` mới. `DataTable` đảm bảo 4 tính năng bắt buộc cho **mọi** bảng:
+
+1. **Chọn cột hiển thị.** Toolbar có nút "Cột" mở popover bật/tắt từng cột. Cột không cho ẩn (vd cột "Hành động") đặt `hideable: false`.
+2. **Phân trang server-side.** Bảng phân trang qua backend (DRF), không tải hết rồi cắt ở FE. Mỗi lần đổi **trang** hoặc **page size** đều **gọi lại API** (page/page_size là một phần query key React Query). Bật `showSizeChanger`; truyền `total` = `data.count` của DRF, `current`/`pageSize` từ state; đổi page size hoặc sort thì reset về trang 1.
+3. **Min-width + ellipsis.** Mỗi cột khai báo `width` (đóng vai min-width); `DataTable` mặc định `ellipsis: true` nên khi màn hình hẹp/dữ liệu tràn sẽ rút gọn thành "…". `scroll.x` = tổng width các cột → màn hình quá hẹp thì cuộn ngang thay vì bóp méo. Cột render JSX không nên cắt (vd "Hành động", badge trạng thái) đặt `ellipsis: false`.
+4. **Tải lại (refresh).** Toolbar có nút "Tải lại" gọi `refetch` của React Query; truyền `onRefresh={refetch}` và `refreshing={isFetching}`.
+
+Quy ước thêm:
+- Sort cột dùng `sorter: true` ở FE + ordering server-side (DRF `OrderingFilter`, `?ordering=field`/`-field`); map `sorter.order` (`ascend`/`descend`) → param trong `onChange`. Sort phải đẩy lên server (đừng sort 1 trang ở FE).
+- Số liệu tổng hợp (vd thẻ thống kê) phải lấy từ endpoint riêng (vd `/sites/stats/`) vì khi đã phân trang server-side, FE chỉ giữ 1 trang — không tự cộng từ `results`.
+- Loading/empty: truyền `loading` và `locale.emptyText` (dùng `EmptyState`); lỗi vẫn dùng `ErrorState` + `onRetry` (xem §9).
 
 ## 8. Form & validate
 
@@ -80,7 +105,7 @@ Quy tắc code cho **frontend** Solar Hub. Mục tiêu: nhất quán, dữ liệ
 
 ## 10. Hiệu năng
 
-- **Pagination** cho danh sách đơn (đừng tải hết). Khớp với pagination của DRF.
+- **Pagination server-side** cho mọi danh sách (đừng tải hết). Khớp với pagination của DRF (`page`/`page_size`), qua `DataTable` — xem §7a.
 - `React.lazy` cho route; `useMemo`/`useCallback` chỉ khi có lý do đo được, không tối ưu sớm.
 - Tránh re-render thừa do tạo object/array mới trong render (đưa ra ngoài hoặc memo).
 

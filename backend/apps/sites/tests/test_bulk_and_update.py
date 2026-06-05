@@ -1,15 +1,9 @@
 import pytest
-from rest_framework.test import APIClient
 
 from apps.integrations.woocommerce import WooClient
 from apps.sites.crypto import decrypt_secret
 
 from .factories import SiteFactory
-
-
-@pytest.fixture
-def client():
-    return APIClient()
 
 
 @pytest.mark.django_db

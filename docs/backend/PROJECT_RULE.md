@@ -12,6 +12,7 @@ Quy tắc code cho **backend** Solar Hub. Mục tiêu: nhất quán, an toàn, d
 - Format & lint bằng **ruff** (thay cho black + isort + flake8). Chạy `ruff format` + `ruff check` trước khi commit.
 - **Type hints** cho mọi hàm public (service, client, task). Model fields không cần annotate thêm.
 - Quản lý dependency qua `requirements.txt` (pin version). Không cài lung tung ngoài file.
+- **Môi trường ảo:** dùng **conda env tên `solar-hub`** — `conda activate solar-hub` trước mọi lệnh backend (chạy server, migrate, celery, test). Chi tiết test ở §10.
 
 ## 2. Cấu trúc & phân lớp
 
@@ -65,7 +66,12 @@ Quy tắc code cho **backend** Solar Hub. Mục tiêu: nhất quán, an toàn, d
 - Ghi đơn: `Order.objects.update_or_create(site=.., woo_order_id=.., defaults={...})`.
 - Mapping sản phẩm: `update_or_create(master=.., site=.., defaults={"woo_product_id": ..})`.
 - **Chuẩn hóa SKU** (trim, upper, bỏ khoảng trắng thừa) trước khi lưu/khớp.
-- Không xóa cứng dữ liệu nghiệp vụ tùy tiện — ưu tiên đổi `status`. Xóa sản phẩm trên site qua mảng `delete` của batch, nhưng giữ lịch sử mapping nếu cần truy vết.
+- **Xóa mềm (soft delete) toàn hệ thống.** Mọi model nghiệp vụ (`Site`, `Order`, `MasterProduct`, v.v.) KHÔNG được hard delete qua API. Quy tắc:
+  - Model phải có hai field: `is_deleted = BooleanField(default=False, db_index=True)` và `deleted_at = DateTimeField(null=True, blank=True)`.
+  - Service layer cung cấp hàm `delete_<entity>(instance)` set `is_deleted=True`, `deleted_at=timezone.now()` rồi `save(update_fields=[...])`.
+  - ViewSet override `perform_destroy` để gọi service, KHÔNG gọi `instance.delete()`.
+  - Queryset mặc định của ViewSet **luôn** filter `is_deleted=False`. Khi kiểm tra unique (ví dụ `base_url`), cũng chỉ check trong bản ghi chưa xóa.
+  - Dữ liệu đã soft delete vẫn còn trong DB để truy vết; nếu muốn phục hồi thì set `is_deleted=False, deleted_at=None`.
 
 ## 9. Lỗi & logging
 
@@ -75,6 +81,16 @@ Quy tắc code cho **backend** Solar Hub. Mục tiêu: nhất quán, an toàn, d
 
 ## 10. Testing
 
+- **Môi trường:** backend chạy trong **conda env tên `solar-hub`**. Trước khi chạy test (hoặc bất kỳ lệnh Python/Django nào), **activate env này trước**:
+
+  ```bash
+  conda activate solar-hub
+  cd backend
+  pytest                       # chạy toàn bộ test
+  pytest apps/sites            # chạy test một app
+  ```
+
+  Không tạo `.venv` mới hay dùng Python hệ thống — luôn dùng env `solar-hub` để đúng version dependency đã pin.
 - Dùng **pytest** + `pytest-django`. Đặt test cạnh app: `apps/<app>/tests/`.
 - **Mock toàn bộ call WooCommerce** (respx/responses hoặc monkeypatch `WooClient`). Test không chạm mạng thật.
 - Bắt buộc test các luồng: parse đơn từ payload Woo, build payload sản phẩm cho batch, và **tính idempotent** (gọi 2 lần → 1 bản ghi).

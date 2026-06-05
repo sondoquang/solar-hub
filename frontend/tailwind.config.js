@@ -20,8 +20,8 @@ export default {
         danger: "var(--color-danger)",
       },
       fontFamily: {
-        display: ["Space Grotesk", "ui-sans-serif", "sans-serif"],
-        sans: ["IBM Plex Sans", "ui-sans-serif", "sans-serif"],
+        display: ["Be Vietnam Pro", "ui-sans-serif", "sans-serif"],
+        sans: ["Be Vietnam Pro", "ui-sans-serif", "sans-serif"],
       },
       borderRadius: {
         DEFAULT: "var(--radius)",
