@@ -1,4 +1,4 @@
-import { Button, Modal, Popconfirm, Select } from "antd";
+import { Button, Input, Modal, Popconfirm, Select } from "antd";
 import {
   ClipboardCheck,
   ExternalLink,
@@ -8,7 +8,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 
 import { hostingLabel, useHostings } from "../api/hostings.js";
@@ -39,15 +39,28 @@ export default function Sites() {
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [ordering, setOrdering] = useState(null); // null | "name" | "-name"
   const [hostingFilter, setHostingFilter] = useState("all"); // "all" | "none" | hosting id
+  const [searchInput, setSearchInput] = useState(""); // raw text in the input
+  const [search, setSearch] = useState(""); // debounced term sent to the backend
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
-  // Server-side params: any change re-queries the backend (page / size / sort / filter).
+  // Debounce typing so we re-query the backend ~once the user pauses, not on
+  // every keystroke. A new search always resets to page 1.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  // Server-side params: any change re-queries the backend (page / size / sort / filter / search).
   const { data, isLoading, isFetching, isError, refetch } = useSites({
     page,
     page_size: pageSize,
     ordering: ordering ?? undefined,
     hosting: hostingFilter === "all" ? undefined : hostingFilter,
+    search: search || undefined,
   });
   const { data: stats } = useSiteStats();
   // Large page so the filter dropdown lists every hosting, not just page 1.
@@ -239,7 +252,7 @@ export default function Sites() {
     },
   ];
 
-  const filterActive = hostingFilter !== "all";
+  const filterActive = hostingFilter !== "all" || search !== "";
 
   return (
     <section>
@@ -313,6 +326,15 @@ export default function Sites() {
             loading={isLoading || isFetching}
             onRefresh={refetch}
             refreshing={isFetching}
+            searchSlot={
+              <Input.Search
+                allowClear
+                placeholder="Tìm theo tên hoặc URL…"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className="w-60"
+              />
+            }
             rowSelection={{
               selectedRowKeys: selectedKeys,
               onChange: setSelectedKeys,
@@ -333,7 +355,7 @@ export default function Sites() {
                   title={filterActive ? "Không có website phù hợp" : "Chưa có website"}
                   hint={
                     filterActive
-                      ? "Thử đổi bộ lọc hosting."
+                      ? "Thử đổi từ khóa tìm kiếm hoặc bộ lọc hosting."
                       : "Bấm “Thêm website” hoặc import Excel."
                   }
                 />

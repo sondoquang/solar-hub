@@ -3,7 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { api } from "./client.js";
 
 // Endpoints (Hub backend only):
-//   GET    /sites/                      -> getSites / useSites (server-side paginated: ?page, ?page_size, ?ordering, ?hosting)
+//   GET    /sites/                      -> getSites / useSites (server-side paginated: ?page, ?page_size, ?ordering, ?hosting, ?search)
 //   GET    /sites/stats/                -> getSiteStats / useSiteStats (global up/down/unknown counts)
 //   POST   /sites/                      -> createSite / useCreateSite
 //   PATCH  /sites/{id}/                 -> updateSite / useUpdateSite

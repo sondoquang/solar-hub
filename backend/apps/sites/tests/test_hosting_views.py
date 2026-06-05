@@ -24,6 +24,21 @@ def test_create_and_list_hosting(client):
 
 
 @pytest.mark.django_db
+def test_hosting_search_matches_name_provider_account(client):
+    HostingFactory(name="Server A", provider="TenTen", account_username="alpha")
+    HostingFactory(name="Server B", provider="Mat Bao", account_username="bravo")
+    # Match on provider.
+    resp = client.get("/api/hostings/", {"search": "tenten"})
+    assert [h["name"] for h in resp.data["results"]] == ["Server A"]
+    # Match on account_username.
+    resp = client.get("/api/hostings/", {"search": "bravo"})
+    assert [h["name"] for h in resp.data["results"]] == ["Server B"]
+    # No match → empty page.
+    resp = client.get("/api/hostings/", {"search": "nonexistent"})
+    assert resp.data["count"] == 0
+
+
+@pytest.mark.django_db
 def test_delete_hosting_is_soft(client):
     hosting = HostingFactory()
     resp = client.delete(f"/api/hostings/{hosting.id}/")

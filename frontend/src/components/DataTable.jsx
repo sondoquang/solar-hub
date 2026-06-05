@@ -10,7 +10,10 @@ import { useMemo, useState } from "react";
 //   - a manual "Tải lại" (refresh) button.
 //
 // Pass antd <Table> props through (dataSource, rowKey, loading, pagination,
-// rowSelection, onChange, …). Each column should carry a `width` (its min width)
+// rowSelection, onChange, …). `searchSlot` renders custom content (e.g. an
+// <Input.Search>) in the right toolbar, before the Cột/Tải lại buttons — the
+// search itself is server-driven (the page wires its value into the query).
+// Each column should carry a `width` (its min width)
 // and a stable `key`/`dataIndex` (used as the visibility toggle id). A column
 // opts out of hiding with `hideable: false` and out of ellipsis with
 // `ellipsis: false` (use it for action columns).
@@ -22,6 +25,7 @@ export default function DataTable({
   columns,
   title,
   toolbarExtra,
+  searchSlot,
   onRefresh,
   refreshing = false,
   scroll,
@@ -102,6 +106,7 @@ export default function DataTable({
       <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2.5">
         <div className="flex min-w-0 items-center gap-2">{title}{toolbarExtra}</div>
         <div className="flex items-center gap-1">
+          {searchSlot}
           <Popover
             content={columnPicker}
             title="Hiển thị cột"

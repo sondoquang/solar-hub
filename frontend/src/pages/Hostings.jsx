@@ -1,6 +1,6 @@
-import { Button, Modal, Popconfirm } from "antd";
+import { Button, Input, Modal, Popconfirm } from "antd";
 import { Pencil, Play, Plus, Server, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 
 import {
@@ -43,12 +43,25 @@ export default function Hostings() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [checkingId, setCheckingId] = useState(null);
+  const [searchInput, setSearchInput] = useState(""); // raw text in the input
+  const [search, setSearch] = useState(""); // debounced term sent to the backend
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+
+  // Debounce typing so we re-query the backend ~once the user pauses, not on
+  // every keystroke. A new search always resets to page 1.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const { data, isLoading, isFetching, isError, refetch } = useHostings({
     page,
     page_size: pageSize,
+    search: search || undefined,
   });
   const createHosting = useCreateHosting();
   const updateHosting = useUpdateHosting();
@@ -236,6 +249,15 @@ export default function Hostings() {
             loading={isLoading || isFetching}
             onRefresh={refetch}
             refreshing={isFetching}
+            searchSlot={
+              <Input.Search
+                allowClear
+                placeholder="Tìm theo tên / NCC / tài khoản…"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className="w-60"
+              />
+            }
             onChange={handleTableChange}
             pagination={{
               current: page,
@@ -248,8 +270,12 @@ export default function Hostings() {
             locale={{
               emptyText: (
                 <EmptyState
-                  title="Chưa có hosting"
-                  hint="Bấm “Thêm hosting” để tạo nhóm đầu tiên."
+                  title={search ? "Không có hosting phù hợp" : "Chưa có hosting"}
+                  hint={
+                    search
+                      ? "Thử đổi từ khóa tìm kiếm."
+                      : "Bấm “Thêm hosting” để tạo nhóm đầu tiên."
+                  }
                 />
               ),
             }}
