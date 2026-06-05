@@ -83,6 +83,36 @@ FE **không** tự đẩy sản phẩm xuống site. Bấm "Sync all" chỉ gọ
 | JSX (JS) trước, TS sau | Đi nhanh theo nền tảng hiện có; có lối nâng cấp khi cần. |
 | Tailwind + design token | Nhất quán, nhanh; tránh CSS rời rạc. |
 | Bắt buộc loading/error/empty | Công cụ vận hành phải đáng tin, không màn trắng. |
+| `react-hook-form` + `zod` cho form đăng ký site | Form phức tạp (rule §8); validate client + nhận lỗi server. |
+| `react-hot-toast` cho phản hồi mutation | Rule §9 yêu cầu toast; lib nhẹ, dùng chung qua `<Toaster/>` ở `main.jsx`. |
+| **Ant Design (antd) làm UI chủ đạo** | Dựng giao diện vận hành nhanh (Table/Form/Modal/Select/DatePicker sẵn, có sort/filter/pagination). Tailwind hạ xuống vai trò tinh chỉnh. Đánh đổi: bundle nặng hơn (~+170 kB gzip). |
+| **lucide-react** cho icon | Nhẹ, tree-shakeable, hợp Tailwind; truyền thẳng vào prop `icon` của antd. |
+| Tắt Tailwind `preflight`, dùng `antd/dist/reset.css` | Tránh hai reset CSS đá nhau; antd là chủ đạo nên để reset của antd làm nền. |
+
+## 9b. Trạng thái hiện thực (Phase 1 — Sites)
+
+Trang **Sites (`/sites`)** đã hiện thực: `src/api/sites.js` (hooks `useSites/useCreateSite/useUpdateSite/useDeleteSite/useTestConnection/useTestConnections/useImportSites`, query key `["sites"]`, invalidate sau mutation). Components: `StatusDot` (chấm màu + nhãn up/down/tạm dừng), `SiteRegisterForm` (react-hook-form + zod, dùng chung cho **tạo và sửa** — edit thì secret optional), `SitesTable` (bảng + checkbox chọn + select-all theo trang + sort theo tên + per-row Test/Sửa/Xóa kèm icon), `SiteImport` (upload `.xlsx`), `SiteStats` (4 thẻ tổng hợp: tổng / hoạt động / tạm dừng / không hoạt động — count tính ở page), `TablePagination` (pager client-side: chọn page-size + chuyển trang). Tính năng:
+- **Import Excel** hàng loạt (file parse ở backend) → toast tóm tắt created/errors.
+- **Thêm/Sửa** site qua antd `Modal` (form nằm trong modal; PATCH với secret để trống = giữ nguyên).
+- Nút **Test** mỗi site có loading ("Đang kiểm tra…") + disable chống spam (dựa `mutation.isPending`/`variables`).
+- **Tick chọn nhiều site** + "Kiểm tra đã chọn" gọi bulk `test_connections`.
+- **Sort theo tên** và **phân trang client-side** (asc/desc/none, page-size 10/20/50) — state ở page, components chỉ render + báo intent qua callback.
+- Đủ loading/error/empty; toast cho mọi mutation; `consumer_secret` chỉ gửi đi, không hiển thị lại.
+
+**Khung app (`AppLayout`)**: layout dạng **sidebar trái** (logo Solar Hub, nav có icon, mục **Website** mở rộng được với các mục con, thẻ hỗ trợ ở đáy) + **topbar** (chuông thông báo + hồ sơ người dùng). Các route đã có (`/`, `/orders`, `/products`, `/sites`, `/login`) dùng `NavLink`; mục chưa có route (Khách hàng, Báo cáo, Cài đặt hệ thống, các mục con Import Excel/Lịch sử/Cài đặt) là placeholder tĩnh, sẽ nối route khi dựng.
+
+## 9c. UI stack — Ant Design chủ đạo + Tailwind tinh chỉnh
+
+Từ phase này, **Ant Design (antd v5) là design system chủ đạo** cho dashboard; **Tailwind** giữ lại để tinh chỉnh spacing/màu lặt vặt và layout nhanh; **lucide-react** là bộ icon.
+
+Cấu hình (xem `src/main.jsx`):
+
+- `<StyleProvider layer>` (`@ant-design/cssinjs`) đưa style antd vào một CSS `@layer` → utility của Tailwind (không layer) luôn thắng khi cần ghi đè antd.
+- `<ConfigProvider theme={...} locale={viVN}>` — theme antd nằm ở `src/lib/antdTheme.js`, **ánh xạ đúng design token** trong `src/index.css` (brand amber, success/warning/danger, radius). Đổi token thì sửa cả hai nơi.
+- `<App>` của antd bọc app để dùng `message`/`modal`/`notification` tĩnh có context (`react-hot-toast` vẫn dùng cho toast mutation như cũ).
+- `import "antd/dist/reset.css"` làm reset nền; Tailwind **tắt `preflight`** (`tailwind.config.js`) để không xung đột.
+
+Quy ước dùng: ưu tiên component antd cho UI mới (Button, Table, Form, Modal, Select, DatePicker…); icon lấy từ `lucide-react` và truyền vào prop `icon`. Component cũ tự viết (`StatusDot`, `SitesTable`, `SiteRegisterForm`…) vẫn chạy, sẽ chuyển dần sang antd khi đụng tới. Mẫu đầu tiên: nút header trang Sites (`src/pages/Sites.jsx`) đã dùng `Button` + icon lucide.
 
 ## 10. Local vs Production
 

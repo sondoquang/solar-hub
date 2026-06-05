@@ -3,6 +3,11 @@
 // values live in exactly one place (no magic values scattered in components).
 export default {
   content: ["./index.html", "./src/**/*.{js,jsx}"],
+  // antd is the primary UI/design system (see docs/frontend/ARCHITECTURE.md §9c).
+  // Disable Tailwind's preflight reset so it doesn't fight antd's own reset
+  // (antd/dist/reset.css, imported in main.jsx). Tailwind stays for utility
+  // tweaks only; antd resets the base.
+  corePlugins: { preflight: false },
   theme: {
     extend: {
       colors: {

@@ -57,6 +57,8 @@ Quy tắc code cho **frontend** Solar Hub. Mục tiêu: nhất quán, dữ liệ
 
 ## 7. Styling & thiết kế
 
+- **Ant Design (antd) là UI chủ đạo**, **Tailwind tinh chỉnh.** UI mới ưu tiên component antd (Button, Table, Form, Modal, Select, DatePicker…); Tailwind dùng cho spacing/màu/layout lặt vặt. Icon lấy từ **lucide-react** (truyền vào prop `icon`). Chi tiết cấu hình ở `docs/frontend/ARCHITECTURE.md §9c`.
+- Theme antd ở `src/lib/antdTheme.js` phải **ánh xạ đúng design token** trong `src/index.css` — đổi màu/radius thì sửa cả hai. Tailwind `preflight` đã tắt; reset nền là `antd/dist/reset.css`.
 - **Tailwind CSS.** Định nghĩa **design token** (màu, spacing, radius, shadow) trong `tailwind.config` / CSS variables — không rải giá trị magic.
 - Chọn **một hướng thẩm mỹ rõ ràng và nhất quán** cho dashboard: ưu tiên rõ ràng, mật độ dữ liệu hợp lý, dễ quét bằng mắt (đây là công cụ vận hành, không phải landing page).
 - Một cặp font có chủ đích (1 display + 1 body dễ đọc cho bảng số liệu). **Tránh aesthetic "AI slop"**: không mặc định Inter/Arial/system font, không gradient tím trên nền trắng, không layout rập khuôn.

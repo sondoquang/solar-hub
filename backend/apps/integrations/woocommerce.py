@@ -1,15 +1,15 @@
 """WooClient — the single wrapper for all WooCommerce REST API traffic.
 
 Every call to a WooCommerce site MUST go through this class (project rule).
-This is a scaffold skeleton: the request methods are not implemented yet and
-raise ``NotImplementedError`` until the sites/sync features are built.
 
 Design notes (see tech-stack §4.4 and docs/backend/ARCHITECTURE.md):
-- Per-call timeouts and ``raise_for_status()`` once implemented.
+- Per-call timeouts and ``raise_for_status()``.
 - Throttle + batch endpoints when syncing many sites.
-- ``consumer_secret`` is decrypted (Fernet) by the future ``sites`` layer and
-  passed in as plaintext here, so this skeleton has no model dependency.
+- ``consumer_secret`` is decrypted (Fernet) by the ``sites`` layer and passed in
+  as plaintext here, so this class has no model dependency.
 """
+
+import httpx
 
 
 class WooClient:
@@ -34,4 +34,7 @@ class WooClient:
         raise NotImplementedError
 
     def system_status(self) -> dict:
-        raise NotImplementedError
+        """GET /system_status — used to verify the site's API key works."""
+        r = httpx.get(f"{self.base}/system_status", auth=self._auth, timeout=15)
+        r.raise_for_status()
+        return r.json()

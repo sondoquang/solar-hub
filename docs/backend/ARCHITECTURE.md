@@ -109,6 +109,21 @@ Mọi giao tiếp WooCommerce tập trung tại đây để cô lập đặc th�
 | Mã hóa consumer_secret (Fernet) | Lộ DB không lộ key truy cập site. |
 | Django (vs Spring Boot) | Admin dựng sẵn UI quản trị + Celery/Beat gọn cho job định kỳ. |
 
+## 8b. Trạng thái hiện thực (Phase 1 — Site registry)
+
+App `sites` đã hiện thực đầy đủ vertical slice (model → service → API/Admin → FE):
+
+- **Model `Site`** (`apps/sites/models.py`): `name`, `base_url`, `consumer_key`, `consumer_secret_enc` (BinaryField — ciphertext Fernet), `status` (up/down/unknown, `db_index`), `last_checked_at`, timestamps. Mã hóa/giải mã ở `apps/sites/crypto.py`; nghiệp vụ ở `apps/sites/services.py`.
+- **API** (router DRF, prefix `/api/`):
+  - `GET/POST /api/sites/`, `GET/PATCH/DELETE /api/sites/{id}/` — CRUD. `consumer_secret` **write-only**, không bao giờ trả ra response.
+  - `POST /api/sites/{id}/test_connection/` — gọi `WooClient.system_status()`, cập nhật `Site.status`, trả `{ok, status, detail}`. **Chạy đồng bộ** (một call, timeout 15s) vì là thao tác tương tác cần kết quả ngay; healthcheck định kỳ vẫn để Celery (`check_all_sites`, Phase 4).
+  - `POST /api/sites/test_connections/` — body `{ids: [...]}`, test nhiều site **tuần tự** (one-at-a-time = throttle tự nhiên), trả `{results: [{id, ok, status, detail}]}`.
+  - `POST /api/sites/import_excel/` — upload `.xlsx` (multipart field `file`), parse bằng `openpyxl` ở service, bulk-create (mã hóa secret), bỏ qua dòng thiếu data / `base_url` trùng và báo lỗi từng dòng. Trả `{created, errors:[{row, error}]}`. Cột yêu cầu: `name, base_url, consumer_key, consumer_secret`.
+  - `PATCH /api/sites/{id}/` — sửa site; `consumer_secret` optional (chỉ re-encrypt khi gửi).
+  - Permission tạm `AllowAny` (chưa có login) — **siết auth ở phase sau**.
+- **Admin**: `SiteAdmin` cho nhập key (password widget, mã hóa khi save) + action "Test connection".
+- `WooClient.system_status()` đã hiện thực; `list_orders`/`batch_products` còn `NotImplementedError`.
+
 ## 9. Local vs Production
 
 - **Local:** Postgres + Redis chạy Docker; Django/Celery chạy host. WooCommerce **sandbox** chạy local (WordPress + WooCommerce qua Docker) để test full luồng mà không chạm web thật. `DEBUG=True`.
