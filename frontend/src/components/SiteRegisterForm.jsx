@@ -1,6 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
+import { Button, Input, Select } from "antd";
+import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
+
+import { hostingLabel } from "../api/hostings.js";
 
 const makeSchema = (mode) =>
   z.object({
@@ -9,16 +12,16 @@ const makeSchema = (mode) =>
     consumer_key: z.string().min(1, "Bắt buộc"),
     consumer_secret:
       mode === "edit" ? z.string().optional() : z.string().min(1, "Bắt buộc"),
+    hosting: z.number().nullable().optional(),
   });
 
-const field = "w-full rounded border px-3 py-2 text-sm";
 const errCls = "mt-1 text-xs text-danger";
+const Req = () => <span className="ml-0.5 text-danger">*</span>;
+const EMPTY = { name: "", base_url: "", consumer_key: "", consumer_secret: "", hosting: null };
 
-const EMPTY = { name: "", base_url: "", consumer_key: "", consumer_secret: "" };
-
-export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "create", defaultValues }) {
+export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "create", defaultValues, hostings = [] }) {
   const {
-    register,
+    control,
     handleSubmit,
     reset,
     formState: { errors, isSubmitting },
@@ -28,7 +31,6 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
   });
 
   const submit = async (values) => {
-    // On edit, an empty secret means "keep the current one" — don't send it.
     if (mode === "edit" && !values.consumer_secret) delete values.consumer_secret;
     await onSubmit(values, { onSuccess: () => reset({ ...EMPTY }) });
   };
@@ -36,51 +38,84 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
   const busy = pending || isSubmitting;
 
   return (
-    <form onSubmit={handleSubmit(submit)} className="grid gap-3">
+    <form onSubmit={handleSubmit(submit)} className="grid gap-2">
       <div>
-        <label className="text-sm font-medium">Tên site</label>
-        <input className={field} {...register("name")} aria-invalid={!!errors.name} />
+        <label className="mb-1 block text-sm font-medium">Tên site<Req /></label>
+        <Controller
+          name="name"
+          control={control}
+          render={({ field }) => (
+            <Input {...field} size="large" status={errors.name ? "error" : ""} />
+          )}
+        />
         {errors.name && <p className={errCls}>{errors.name.message}</p>}
       </div>
       <div>
-        <label className="text-sm font-medium">Base URL</label>
-        <input
-          className={field}
-          placeholder="https://shop.example.com"
-          {...register("base_url")}
-          aria-invalid={!!errors.base_url}
+        <label className="mb-1 block text-sm font-medium">Base URL<Req /></label>
+        <Controller
+          name="base_url"
+          control={control}
+          render={({ field }) => (
+            <Input
+              {...field}
+              size="large"
+              placeholder="https://shop.example.com"
+              status={errors.base_url ? "error" : ""}
+            />
+          )}
         />
         {errors.base_url && <p className={errCls}>{errors.base_url.message}</p>}
       </div>
       <div>
-        <label className="text-sm font-medium">Consumer key</label>
-        <input className={field} {...register("consumer_key")} aria-invalid={!!errors.consumer_key} />
+        <label className="mb-1 block text-sm font-medium">Consumer key<Req /></label>
+        <Controller
+          name="consumer_key"
+          control={control}
+          render={({ field }) => (
+            <Input {...field} size="large" status={errors.consumer_key ? "error" : ""} />
+          )}
+        />
         {errors.consumer_key && <p className={errCls}>{errors.consumer_key.message}</p>}
       </div>
       <div>
-        <label className="text-sm font-medium">
-          Consumer secret{mode === "edit" && " (để trống nếu không đổi)"}
+        <label className="mb-1 block text-sm font-medium">
+          Consumer secret{mode === "edit" ? " (để trống nếu không đổi)" : <Req />}
         </label>
-        <input
-          type="password"
-          className={field}
-          {...register("consumer_secret")}
-          aria-invalid={!!errors.consumer_secret}
+        <Controller
+          name="consumer_secret"
+          control={control}
+          render={({ field }) => (
+            <Input.Password {...field} size="large" status={errors.consumer_secret ? "error" : ""} />
+          )}
         />
         {errors.consumer_secret && <p className={errCls}>{errors.consumer_secret.message}</p>}
       </div>
-      <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-brand px-4 py-2 font-medium text-ink disabled:opacity-50"
-        >
+      <div>
+        <label className="mb-1 block text-sm font-medium">Hosting</label>
+        <Controller
+          name="hosting"
+          control={control}
+          render={({ field }) => (
+            <Select
+              {...field}
+              size="large"
+              className="w-full"
+              allowClear
+              placeholder="Chọn hosting (tùy chọn)"
+              options={hostings.map((h) => ({ value: h.id, label: hostingLabel(h) }))}
+              onChange={(v) => field.onChange(v ?? null)}
+            />
+          )}
+        />
+      </div>
+      <div className="flex gap-1 pt-1">
+        <Button type="primary" htmlType="submit" size="large" loading={busy}>
           {busy ? "Đang lưu…" : "Lưu site"}
-        </button>
+        </Button>
         {onCancel && (
-          <button type="button" onClick={onCancel} className="rounded border px-4 py-2 font-medium">
+          <Button size="large" onClick={onCancel}>
             Hủy
-          </button>
+          </Button>
         )}
       </div>
     </form>

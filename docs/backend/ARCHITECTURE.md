@@ -32,22 +32,28 @@ Hai chiều dữ liệu:
 
 | App | Trách nhiệm |
 |---|---|
-| `sites` | Đăng ký site, lưu `base_url` + `consumer_key` + `consumer_secret` (mã hóa). Test kết nối. |
+| `sites` | Đăng ký site, lưu `base_url` + `consumer_key` + `consumer_secret` (mã hóa). Test kết nối. Nhóm site theo `Hosting` (1 hosting = 1 server/tài khoản, nhiều domain). |
 | `catalog` | `MasterProduct` (catalog gốc) + `ProductMapping` (master ↔ woo_product_id từng site). |
 | `orders` | `Order` (đơn đã chuẩn hóa) + endpoint webhook + logic forward marketing. |
 | `sync` | Celery tasks: push sản phẩm xuống site (batch), poll đơn định kỳ. |
-| `monitoring` | Healthcheck từng site, cập nhật `Site.status`. |
+| `monitoring` | Healthcheck site **theo nhóm hosting** (fan-out 1 task/hosting, throttle song song trong mỗi hosting), cập nhật `Site.status`. |
 | `integrations` | `WooClient` — lớp trừu tượng hóa toàn bộ giao tiếp WooCommerce REST API. |
 | `core` | App hạ tầng (không phải domain): expose `GET /api/health/` trả `{status, db, redis}` để kiểm tra stack đã kết nối. Endpoint **không auth** (health check không được chạm DB). |
+| `accounts` | Auth JWT (SimpleJWT) + hồ sơ người dùng. Endpoints: `POST /api/auth/token/` (đăng nhập), `POST /api/auth/token/refresh/`, `GET/PATCH /api/auth/me/` (xem/cập nhật `full_name`+`email`, trả thêm `role` suy ra từ `is_superuser`/`is_staff`), `POST /api/auth/change-password/` (đổi mật khẩu, validate mật khẩu cũ + password validators). |
 
 ## 4. Mô hình dữ liệu
 
 ```
+Hosting (1) ──< Site (N)                (1 hosting = 1 server/tài khoản, nhiều domain)
 Site (1) ──< ProductMapping >── (1) MasterProduct
   │                                     (sku UNIQUE = khóa khớp xuyên site)
   ├──< Order
   └──< SyncLog
 ```
+
+> **`Hosting`** gom nhiều `Site` cùng một server/shared host. `Site.hosting` là FK nullable
+> (`on_delete=SET_NULL`) — site chưa gán hosting được xử lý như nhóm riêng (`hosting_id=None`).
+> Mục đích chính: **throttle healthcheck theo hosting** để không dội request lên host yếu.
 
 Ràng buộc toàn vẹn cốt lõi:
 
@@ -80,7 +86,7 @@ Category/attribute được đồng bộ và map **trước** sản phẩm (vì 
 
 ### 5.3. Giám sát
 
-`check_all_sites` chạy mỗi ~5 phút: gọi `system_status` (hoặc ping) từng site, cập nhật `Site.status` (up/down). Production có thể thay/bổ sung bằng UptimeRobot cho nhẹ.
+`check_all_sites` chạy mỗi ~5 phút và **fan-out 1 sub-task `check_hosting_task` cho mỗi hosting** (cộng một nhóm `hosting_id=None` cho site chưa gán) → các hosting khác nhau chạy **song song** qua Celery, nhưng trong cùng một hosting `services.check_hosting` chỉ check **tối đa `Hosting.check_concurrency` domain đồng thời** (mặc định 5, dùng `ThreadPoolExecutor`; phần dư xếp hàng đợi). Nhờ vậy một shared host yếu không bị nhiều domain ping cùng lúc. Mỗi site vẫn cập nhật `Site.status`/`last_checked_at` qua `services.test_connection` như cũ. Hosting yếu đặt `check_concurrency` thấp hơn. Production có thể thay/bổ sung bằng UptimeRobot cho nhẹ.
 
 ## 6. Lớp tích hợp (`WooClient`)
 
@@ -118,9 +124,14 @@ App `sites` đã hiện thực đầy đủ vertical slice (model → service �
   - `GET/POST /api/sites/`, `GET/PATCH/DELETE /api/sites/{id}/` — CRUD. `consumer_secret` **write-only**, không bao giờ trả ra response.
   - `POST /api/sites/{id}/test_connection/` — gọi `WooClient.system_status()`, cập nhật `Site.status`, trả `{ok, status, detail}`. **Chạy đồng bộ** (một call, timeout 15s) vì là thao tác tương tác cần kết quả ngay; healthcheck định kỳ vẫn để Celery (`check_all_sites`, Phase 4).
   - `POST /api/sites/test_connections/` — body `{ids: [...]}`, test nhiều site **tuần tự** (one-at-a-time = throttle tự nhiên), trả `{results: [{id, ok, status, detail}]}`.
-  - `POST /api/sites/import_excel/` — upload `.xlsx` (multipart field `file`), parse bằng `openpyxl` ở service, bulk-create (mã hóa secret), bỏ qua dòng thiếu data / `base_url` trùng và báo lỗi từng dòng. Trả `{created, errors:[{row, error}]}`. Cột yêu cầu: `name, base_url, consumer_key, consumer_secret`.
+  - `POST /api/sites/import_excel/` — upload `.xlsx` (multipart field `file`), parse bằng `openpyxl` ở service, bulk-create (mã hóa secret), bỏ qua dòng thiếu data / `base_url` trùng và báo lỗi từng dòng. Trả `{created, errors:[{row, error}]}`. Cột yêu cầu: `name, base_url, consumer_key, consumer_secret`. Có field multipart tùy chọn `hosting` (id) → gán mọi site import vào hosting đó (id không hợp lệ → 400).
   - `PATCH /api/sites/{id}/` — sửa site; `consumer_secret` optional (chỉ re-encrypt khi gửi).
-  - Permission tạm `AllowAny` (chưa có login) — **siết auth ở phase sau**.
+  - `GET /api/sites/?hosting=<id>` / `?hosting=none` — lọc site theo hosting (hoặc site chưa gán hosting). Serializer trả thêm `hosting` (id) + `hosting_name`.
+- **Hosting** (`apps/sites/models.Hosting`, router `/api/hostings/`):
+  - Model: `name`, `provider`, `account_username`, `note`, `check_concurrency` (mặc định 5 = số domain check đồng thời), soft-delete (`is_deleted`/`deleted_at`).
+  - `GET/POST /api/hostings/`, `GET/PATCH/DELETE /api/hostings/{id}/` — CRUD (xóa = soft-delete, **giữ FK của site**). List trả kèm `site_count` + `status_counts` ({up,down,unknown}) gom theo hosting.
+  - `POST /api/hostings/{id}/check/` — healthcheck đồng bộ toàn bộ site của hosting (throttle theo `check_concurrency`), trả `{results:[{id, ok, status, detail}]}`.
+  - Task định kỳ `apps/monitoring/tasks.check_all_sites` đã được hiện thực: fan-out `check_hosting_task` mỗi hosting (xem §5.3).
 - **Admin**: `SiteAdmin` cho nhập key (password widget, mã hóa khi save) + action "Test connection".
 - `WooClient.system_status()` đã hiện thực; `list_orders`/`batch_products` còn `NotImplementedError`.
 

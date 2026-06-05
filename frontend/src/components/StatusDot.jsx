@@ -1,19 +1,18 @@
-// Status pill — a colored dot + label, matching the site health palette used
-// across the dashboard (green = up, red = down, amber = chưa kiểm tra).
 const MAP = {
-  up: { dot: "bg-success", text: "text-success", label: "Hoạt động" },
-  down: { dot: "bg-danger", text: "text-danger", label: "Không hoạt động" },
-  unknown: { dot: "bg-warning", text: "text-warning", label: "Tạm dừng" },
+  up: { dot: "bg-success", bg: "bg-green-50", text: "text-success", label: "Hoạt động" },
+  down: { dot: "bg-danger", bg: "bg-red-50", text: "text-danger", label: "Không hoạt động" },
+  unknown: { dot: "bg-warning", bg: "bg-amber-50", text: "text-warning", label: "Tạm dừng" },
 };
 
 export default function StatusDot({ status = "unknown" }) {
-  const { dot, text, label } = MAP[status] || MAP.unknown;
+  const { dot, bg, text, label } = MAP[status] || MAP.unknown;
   return (
-    <span className="inline-flex items-center gap-2">
-      <span className={`inline-block h-2.5 w-2.5 rounded-full ${dot}`} aria-hidden="true" />
-      <span className={`text-sm font-medium ${text}`} aria-label={`Trạng thái: ${label}`}>
-        {label}
-      </span>
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 ${bg}`}
+      aria-label={`Trạng thái: ${label}`}
+    >
+      <span className={`inline-block h-2 w-2 rounded-full ${dot}`} aria-hidden="true" />
+      <span className={`text-xs font-medium ${text}`}>{label}</span>
     </span>
   );
 }

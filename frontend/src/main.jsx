@@ -4,7 +4,6 @@ import { App as AntApp, ConfigProvider } from "antd";
 import viVN from "antd/locale/vi_VN";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { Toaster } from "react-hot-toast";
 import { RouterProvider } from "react-router-dom";
 
 import "antd/dist/reset.css";
@@ -20,7 +19,6 @@ ReactDOM.createRoot(document.getElementById("root")).render(
         <AntApp>
           <QueryClientProvider client={queryClient}>
             <RouterProvider router={router} />
-            <Toaster position="top-right" />
           </QueryClientProvider>
         </AntApp>
       </ConfigProvider>

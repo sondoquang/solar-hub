@@ -11,9 +11,9 @@ const CARDS = [
 
 export default function SiteStats({ counts }) {
   return (
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
       {CARDS.map(({ key, label, Icon, tint }) => (
-        <div key={key} className="flex items-center gap-4 rounded-xl bg-white p-5 shadow-card">
+        <div key={key} className="flex items-center gap-2 rounded bg-white p-2.5 shadow-card">
           <span className={`flex h-12 w-12 items-center justify-center rounded-full ${tint}`}>
             <Icon size={22} />
           </span>

@@ -1,16 +1,10 @@
 import pytest
-from rest_framework.test import APIClient
 
 from apps.integrations.woocommerce import WooClient
 from apps.sites.crypto import decrypt_secret
 from apps.sites.models import Site
 
 from .factories import SiteFactory
-
-
-@pytest.fixture
-def client():
-    return APIClient()
 
 
 @pytest.mark.django_db
@@ -40,6 +34,38 @@ def test_list_excludes_secret(client):
     row = resp.data["results"][0]
     assert "consumer_secret" not in row
     assert "consumer_secret_enc" not in row
+
+
+@pytest.mark.django_db
+def test_list_supports_page_size_param(client):
+    SiteFactory.create_batch(3)
+    resp = client.get("/api/sites/", {"page_size": 2})
+    assert resp.status_code == 200
+    assert resp.data["count"] == 3
+    assert len(resp.data["results"]) == 2  # client-controlled page size
+
+
+@pytest.mark.django_db
+def test_list_orders_by_name(client):
+    SiteFactory(name="Bravo")
+    SiteFactory(name="Alpha")
+    resp = client.get("/api/sites/", {"ordering": "name"})
+    names = [row["name"] for row in resp.data["results"]]
+    assert names == ["Alpha", "Bravo"]
+    resp = client.get("/api/sites/", {"ordering": "-name"})
+    names = [row["name"] for row in resp.data["results"]]
+    assert names == ["Bravo", "Alpha"]
+
+
+@pytest.mark.django_db
+def test_stats_returns_global_counts(client):
+    SiteFactory(status=Site.Status.UP)
+    SiteFactory(status=Site.Status.UP)
+    SiteFactory(status=Site.Status.DOWN)
+    SiteFactory(status=Site.Status.UNKNOWN)
+    resp = client.get("/api/sites/stats/")
+    assert resp.status_code == 200
+    assert resp.data == {"total": 4, "up": 2, "down": 1, "unknown": 1}
 
 
 @pytest.mark.django_db

@@ -5,28 +5,41 @@ stay thin; all WooCommerce traffic goes through ``WooClient``.
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import openpyxl
+from django.db import connection
 from django.utils import timezone
 
 from apps.integrations.woocommerce import WooClient
 
 from .crypto import decrypt_secret, encrypt_secret
-from .models import Site
+from .models import Hosting, Site
 
 logger = logging.getLogger(__name__)
 
 IMPORT_COLUMNS = ["name", "base_url", "consumer_key", "consumer_secret"]
 
+DEFAULT_CHECK_CONCURRENCY = 5
 
-def create_site(*, name: str, base_url: str, consumer_key: str, consumer_secret: str) -> Site:
+
+def create_site(
+    *, name: str, base_url: str, consumer_key: str, consumer_secret: str, hosting=None
+) -> Site:
     return Site.objects.create(
         name=name,
         base_url=base_url,
         consumer_key=consumer_key,
         consumer_secret_enc=encrypt_secret(consumer_secret),
+        hosting=hosting,
     )
+
+
+def delete_site(site: Site) -> None:
+    site.is_deleted = True
+    site.deleted_at = timezone.now()
+    site.save(update_fields=["is_deleted", "deleted_at", "updated_at"])
 
 
 def update_site(site: Site, *, consumer_secret: str | None = None, **fields) -> Site:
@@ -73,8 +86,59 @@ def bulk_test_connections(sites) -> list[dict]:
     return [{"id": s.id, **test_connection(s)} for s in sites]
 
 
-def import_sites_from_xlsx(file) -> dict:
-    """Parse an uploaded .xlsx and bulk-create sites.
+# --- Hosting -----------------------------------------------------------------
+
+
+def create_hosting(*, name: str, **fields) -> Hosting:
+    return Hosting.objects.create(name=name, **fields)
+
+
+def update_hosting(hosting: Hosting, **fields) -> Hosting:
+    for attr, value in fields.items():
+        setattr(hosting, attr, value)
+    hosting.save()
+    return hosting
+
+
+def delete_hosting(hosting: Hosting) -> None:
+    """Soft-delete a hosting. Member sites keep their FK (the hosting is just
+    hidden), so re-grouping is reversible by un-deleting it."""
+    hosting.is_deleted = True
+    hosting.deleted_at = timezone.now()
+    hosting.save(update_fields=["is_deleted", "deleted_at", "updated_at"])
+
+
+def _check_site_threadsafe(site: Site) -> dict:
+    try:
+        return {"id": site.id, **test_connection(site)}
+    finally:
+        # Each worker thread opens its own (thread-local) DB connection; close it
+        # so the pool does not leak connections every health-check round.
+        connection.close()
+
+
+def check_hosting(hosting_id) -> list[dict]:
+    """Health-check every site of one hosting, at most ``check_concurrency``
+    domains at a time (the rest queue and run as slots free up). Different
+    hostings are checked in parallel by the Celery fan-out in
+    apps/monitoring/tasks.py. ``hosting_id=None`` checks sites with no hosting."""
+    sites = list(Site.objects.filter(hosting_id=hosting_id, is_deleted=False))
+    if not sites:
+        return []
+
+    concurrency = DEFAULT_CHECK_CONCURRENCY
+    if hosting_id is not None:
+        hosting = Hosting.objects.filter(id=hosting_id, is_deleted=False).first()
+        if hosting:
+            concurrency = max(1, hosting.check_concurrency)
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        return list(executor.map(_check_site_threadsafe, sites))
+
+
+def import_sites_from_xlsx(file, hosting=None) -> dict:
+    """Parse an uploaded .xlsx and bulk-create sites, optionally assigning every
+    created site to ``hosting``.
 
     Expected header row: name, base_url, consumer_key, consumer_secret.
     Returns ``{"created": int, "errors": [{"row": int, "error": str}]}``.
@@ -110,10 +174,10 @@ def import_sites_from_xlsx(file) -> dict:
         if not all(data.values()):
             errors.append({"row": idx, "error": "Thiếu dữ liệu bắt buộc."})
             continue
-        if Site.objects.filter(base_url=data["base_url"]).exists():
+        if Site.objects.filter(base_url=data["base_url"], is_deleted=False).exists():
             errors.append({"row": idx, "error": f"base_url đã tồn tại: {data['base_url']}"})
             continue
-        create_site(**data)
+        create_site(**data, hosting=hosting)
         created += 1
 
     return {"created": created, "errors": errors}

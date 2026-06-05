@@ -1,35 +1,58 @@
-import { Button, Modal } from "antd";
-import { ClipboardCheck, Plus } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Button, Modal, Popconfirm, Select } from "antd";
+import {
+  ClipboardCheck,
+  ExternalLink,
+  Globe,
+  Pencil,
+  Play,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import { useState } from "react";
 import toast from "react-hot-toast";
 
+import { hostingLabel, useHostings } from "../api/hostings.js";
 import {
   useCreateSite,
   useDeleteSite,
   useImportSites,
   useSites,
+  useSiteStats,
   useTestConnection,
   useTestConnections,
   useUpdateSite,
 } from "../api/sites.js";
+import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
-import Loading from "../components/Loading.jsx";
 import SiteImport from "../components/SiteImport.jsx";
 import SiteRegisterForm from "../components/SiteRegisterForm.jsx";
-import SitesTable from "../components/SitesTable.jsx";
 import SiteStats from "../components/SiteStats.jsx";
-import TablePagination from "../components/TablePagination.jsx";
+import StatusDot from "../components/StatusDot.jsx";
+import { formatDate } from "../lib/format.js";
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 export default function Sites() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null); // site being edited, or null
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [sortDir, setSortDir] = useState(null); // null | "asc" | "desc"
+  const [selectedKeys, setSelectedKeys] = useState([]);
+  const [ordering, setOrdering] = useState(null); // null | "name" | "-name"
+  const [hostingFilter, setHostingFilter] = useState("all"); // "all" | "none" | hosting id
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
-  const { data, isLoading, isError, refetch } = useSites();
+  // Server-side params: any change re-queries the backend (page / size / sort / filter).
+  const { data, isLoading, isFetching, isError, refetch } = useSites({
+    page,
+    page_size: pageSize,
+    ordering: ordering ?? undefined,
+    hosting: hostingFilter === "all" ? undefined : hostingFilter,
+  });
+  const { data: stats } = useSiteStats();
+  // Large page so the filter dropdown lists every hosting, not just page 1.
+  const { data: hostingData } = useHostings({ page_size: 100 });
+
   const createSite = useCreateSite();
   const updateSite = useUpdateSite();
   const deleteSite = useDeleteSite();
@@ -37,33 +60,10 @@ export default function Sites() {
   const bulkTest = useTestConnections();
   const importSites = useImportSites();
 
-  const sites = useMemo(() => data?.results ?? [], [data]);
+  const sites = data?.results ?? [];
+  const total = data?.count ?? 0;
+  const hostings = hostingData?.results ?? [];
   const testingId = testConn.isPending ? testConn.variables : null;
-
-  const counts = useMemo(
-    () => ({
-      total: sites.length,
-      up: sites.filter((s) => s.status === "up").length,
-      down: sites.filter((s) => s.status === "down").length,
-      unknown: sites.filter((s) => s.status !== "up" && s.status !== "down").length,
-    }),
-    [sites]
-  );
-
-  const sorted = useMemo(() => {
-    if (!sortDir) return sites;
-    const dir = sortDir === "asc" ? 1 : -1;
-    return [...sites].sort((a, b) => a.name.localeCompare(b.name, "vi") * dir);
-  }, [sites, sortDir]);
-
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const safePage = Math.min(page, totalPages);
-  const pageSites = sorted.slice((safePage - 1) * pageSize, safePage * pageSize);
-
-  // Keep the page in range when the list shrinks (delete / page-size change).
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
 
   const closeForm = () => {
     setShowForm(false);
@@ -96,10 +96,9 @@ export default function Sites() {
   };
 
   const handleBulkTest = async () => {
-    const ids = [...selectedIds];
-    if (ids.length === 0) return;
+    if (selectedKeys.length === 0) return;
     try {
-      const { results } = await bulkTest.mutateAsync(ids);
+      const { results } = await bulkTest.mutateAsync(selectedKeys);
       const up = results.filter((r) => r.ok).length;
       toast.success(`Đã kiểm tra ${results.length} site, ${up} hoạt động.`);
     } catch {
@@ -110,20 +109,16 @@ export default function Sites() {
   const handleDelete = async (site) => {
     try {
       await deleteSite.mutateAsync(site.id);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(site.id);
-        return next;
-      });
+      setSelectedKeys((prev) => prev.filter((id) => id !== site.id));
       toast.success("Đã xóa site.");
     } catch {
       toast.error("Xóa thất bại.");
     }
   };
 
-  const handleImport = async (file) => {
+  const handleImport = async ({ file, hosting }) => {
     try {
-      const res = await importSites.mutateAsync(file);
+      const res = await importSites.mutateAsync({ file, hosting });
       if (res.errors?.length) {
         toast(`Tạo ${res.created} site, ${res.errors.length} dòng lỗi.`, { icon: "⚠️" });
       } else {
@@ -139,42 +134,132 @@ export default function Sites() {
     setShowForm(true);
   };
 
-  const toggleSort = () =>
-    setSortDir((prev) => (prev === "asc" ? "desc" : prev === "desc" ? null : "asc"));
+  // antd drives page / page-size / sort changes through onChange. A page-size or
+  // sort change resets to page 1; otherwise honour the requested page.
+  const handleTableChange = (pagination, _filters, sorter) => {
+    const nextOrdering = !sorter?.order ? null : sorter.order === "ascend" ? "name" : "-name";
+    const resets = pagination.pageSize !== pageSize || nextOrdering !== ordering;
+    setOrdering(nextOrdering);
+    setPageSize(pagination.pageSize);
+    setPage(resets ? 1 : pagination.current);
+  };
 
-  const toggle = (id) =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
+  const columns = [
+    {
+      key: "name",
+      dataIndex: "name",
+      title: "Tên website",
+      width: 240,
+      sorter: true,
+      sortOrder: ordering === "name" ? "ascend" : ordering === "-name" ? "descend" : null,
+      render: (name) => (
+        <span className="inline-flex items-center gap-2.5 font-medium">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+            <Globe size={15} />
+          </span>
+          <span className="truncate">{name}</span>
+        </span>
+      ),
+    },
+    {
+      key: "base_url",
+      dataIndex: "base_url",
+      title: "Base URL",
+      width: 260,
+      render: (url) => (
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 text-blue-600 hover:underline"
+        >
+          <span className="truncate">{url}</span>
+          <ExternalLink size={14} className="shrink-0 text-slate-400" />
+        </a>
+      ),
+    },
+    {
+      key: "hosting_name",
+      dataIndex: "hosting_name",
+      title: "Hosting",
+      width: 160,
+      render: (v) => <span className="text-muted">{v || "—"}</span>,
+    },
+    {
+      key: "status",
+      dataIndex: "status",
+      title: "Trạng thái",
+      width: 150,
+      ellipsis: false,
+      render: (status) => <StatusDot status={status} />,
+    },
+    {
+      key: "last_checked_at",
+      dataIndex: "last_checked_at",
+      title: "Kiểm tra lúc",
+      width: 170,
+      render: (v) => <span className="tabular-nums text-muted">{formatDate(v)}</span>,
+    },
+    {
+      key: "actions",
+      title: "Hành động",
+      width: 280,
+      align: "right",
+      hideable: false,
+      ellipsis: false,
+      render: (_, site) => {
+        const testing = testingId === site.id;
+        return (
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              size="small"
+              icon={<Play size={14} />}
+              loading={testing}
+              onClick={() => handleTest(site)}
+            >
+              {testing ? "Đang kiểm tra…" : "Test"}
+            </Button>
+            <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(site)}>
+              Sửa
+            </Button>
+            <Popconfirm
+              title="Xóa website này?"
+              description="Site sẽ bị gỡ khỏi hệ thống Hub."
+              okText="Xóa"
+              cancelText="Hủy"
+              onConfirm={() => handleDelete(site)}
+            >
+              <Button size="small" danger icon={<Trash2 size={14} />}>
+                Xóa
+              </Button>
+            </Popconfirm>
+          </div>
+        );
+      },
+    },
+  ];
 
-  // Header checkbox toggles the rows on the current page.
-  const toggleAll = () =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      const allOnPage = pageSites.every((s) => next.has(s.id));
-      pageSites.forEach((s) => (allOnPage ? next.delete(s.id) : next.add(s.id)));
-      return next;
-    });
+  const filterActive = hostingFilter !== "all";
 
   return (
     <section>
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
           <h1 className="font-display text-2xl font-bold">Quản lý website</h1>
           <p className="mt-1 text-sm text-muted">
             Quản lý danh sách website và trạng thái hoạt động
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-1">
           <Button
             icon={<ClipboardCheck size={16} />}
             onClick={handleBulkTest}
-            disabled={selectedIds.size === 0}
+            disabled={selectedKeys.length === 0}
             loading={bulkTest.isPending}
           >
-            {bulkTest.isPending ? "Đang kiểm tra…" : `Kiểm tra đã chọn (${selectedIds.size})`}
+            {bulkTest.isPending
+              ? "Đang kiểm tra…"
+              : `Kiểm tra đã chọn (${selectedKeys.length})`}
           </Button>
           <Button
             type="primary"
@@ -189,47 +274,72 @@ export default function Sites() {
         </div>
       </div>
 
-      <div className="mb-5">
-        <SiteImport onImport={handleImport} pending={importSites.isPending} />
+      <div className="mb-2.5">
+        <SiteImport onImport={handleImport} pending={importSites.isPending} hostings={hostings} />
       </div>
 
-      <div className="mb-6">
-        <SiteStats counts={counts} />
+      <div className="mb-3">
+        <SiteStats counts={stats ?? {}} />
       </div>
 
-      {isLoading && <Loading />}
-      {isError && <ErrorState message="Không tải được danh sách site" onRetry={refetch} />}
-      {!isLoading && !isError && sites.length === 0 && (
-        <EmptyState title="Chưa có website" hint="Bấm “Thêm website” hoặc import Excel." />
+      {hostings.length > 0 && (
+        <div className="mb-2.5 flex items-center gap-2">
+          <span className="text-sm text-muted">Lọc theo hosting:</span>
+          <Select
+            value={hostingFilter}
+            onChange={(v) => {
+              setHostingFilter(v);
+              setPage(1);
+            }}
+            className="min-w-52"
+            options={[
+              { value: "all", label: "Tất cả hosting" },
+              { value: "none", label: "Chưa gán hosting" },
+              ...hostings.map((h) => ({ value: h.id, label: hostingLabel(h) })),
+            ]}
+          />
+        </div>
       )}
-      {!isLoading && !isError && sites.length > 0 && (
-        <div className="overflow-hidden rounded-xl bg-white shadow-card">
-          <div className="overflow-x-auto">
-            <SitesTable
-              sites={pageSites}
-              selectedIds={selectedIds}
-              onToggle={toggle}
-              onToggleAll={toggleAll}
-              onTest={handleTest}
-              testingId={testingId}
-              onEdit={openEdit}
-              onDelete={handleDelete}
-              sortDir={sortDir}
-              onToggleSort={toggleSort}
-            />
-          </div>
-          <div className="border-t border-slate-100">
-            <TablePagination
-              page={safePage}
-              pageSize={pageSize}
-              total={sorted.length}
-              onPageChange={setPage}
-              onPageSizeChange={(n) => {
-                setPageSize(n);
-                setPage(1);
-              }}
-            />
-          </div>
+
+      {isError ? (
+        <ErrorState message="Không tải được danh sách site" onRetry={refetch} />
+      ) : (
+        <div className="rounded bg-white p-2.5 shadow-card">
+          <DataTable
+            columns={columns}
+            dataSource={sites}
+            rowKey="id"
+            size="middle"
+            loading={isLoading || isFetching}
+            onRefresh={refetch}
+            refreshing={isFetching}
+            rowSelection={{
+              selectedRowKeys: selectedKeys,
+              onChange: setSelectedKeys,
+              preserveSelectedRowKeys: true,
+            }}
+            onChange={handleTableChange}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              pageSizeOptions: PAGE_SIZE_OPTIONS,
+              showTotal: (t, range) => `${range[0]}–${range[1]} trên ${t}`,
+            }}
+            locale={{
+              emptyText: (
+                <EmptyState
+                  title={filterActive ? "Không có website phù hợp" : "Chưa có website"}
+                  hint={
+                    filterActive
+                      ? "Thử đổi bộ lọc hosting."
+                      : "Bấm “Thêm website” hoặc import Excel."
+                  }
+                />
+              ),
+            }}
+          />
         </div>
       )}
 
@@ -243,6 +353,7 @@ export default function Sites() {
         <SiteRegisterForm
           mode={editing ? "edit" : "create"}
           defaultValues={editing ?? undefined}
+          hostings={hostings}
           onSubmit={handleSubmit}
           onCancel={closeForm}
           pending={createSite.isPending || updateSite.isPending}
