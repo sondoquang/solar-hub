@@ -1,6 +1,6 @@
 import { Button, DatePicker, Input, Select } from "antd";
-import { Eye, Globe, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Eye, Globe, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
 import { hostingLabel, useHostings } from "../api/hostings.js";
@@ -42,7 +42,16 @@ export default function Orders() {
   const [ordering, setOrdering] = useState("-date_created_woo");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [detail, setDetail] = useState(null);
+
+  // Bulk view: the modal takes an array of orders. Per-row "Xem chi tiết" opens
+  // it with a single order; the toolbar action opens it with every ticked order.
+  const [viewOrders, setViewOrders] = useState([]);
+  const [viewOpen, setViewOpen] = useState(false);
+
+  // Row selection. Keys + a separate id→row map so a selection survives paging
+  // (antd's onChange `rows` only carries the current page when server-paginated).
+  const [selectedKeys, setSelectedKeys] = useState([]);
+  const [selectedMap, setSelectedMap] = useState(() => new Map());
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -95,8 +104,26 @@ export default function Orders() {
     },
   ];
 
+  // Sync exactly what the filters describe: the chosen status (the periodic
+  // poll only does "processing", so an explicit status is how other statuses
+  // get pulled), the scoped site(s) — a hosting scope expands to its sites —
+  // and the date range. One run syncs one status; "Tất cả trạng thái" falls
+  // back to the backend default (processing).
   const handlePoll = () => {
-    poll.mutate(undefined, {
+    const [scopeKind, scopeId] = scope.split(":");
+    let pollSites;
+    if (scopeKind === "site") {
+      pollSites = [Number(scopeId)];
+    } else if (scopeKind === "hosting") {
+      pollSites = sites.filter((s) => String(s.hosting) === scopeId).map((s) => s.id);
+    }
+    const payload = {
+      status: statusFilter === "all" ? undefined : statusFilter,
+      sites: pollSites,
+      date_from: range?.[0]?.format("YYYY-MM-DD"),
+      date_to: range?.[1]?.format("YYYY-MM-DD"),
+    };
+    poll.mutate(payload, {
       onSuccess: () => toast.success("Đã kích hoạt đồng bộ đơn hàng."),
       onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
     });
@@ -118,6 +145,36 @@ export default function Orders() {
 
   const sortOrder = (field) =>
     ordering === field ? "ascend" : ordering === `-${field}` ? "descend" : null;
+
+  // Keep the keys in sync and remember each ticked row's full object so the bulk
+  // modal has the data even for rows selected on a now-unloaded page.
+  const handleSelectChange = useCallback((keys, selectedRows) => {
+    setSelectedKeys(keys);
+    setSelectedMap((prev) => {
+      const next = new Map(prev);
+      selectedRows.forEach((r) => r && next.set(r.id, r));
+      // Drop rows that are no longer selected so the map stays bounded.
+      const keySet = new Set(keys);
+      for (const id of next.keys()) if (!keySet.has(id)) next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = () => {
+    setSelectedKeys([]);
+    setSelectedMap(new Map());
+  };
+
+  const openOrders = (list) => {
+    setViewOrders(list);
+    setViewOpen(true);
+  };
+
+  // Bulk view follows the order the rows appear in the current list.
+  const openSelected = () => {
+    const list = selectedKeys.map((k) => selectedMap.get(k)).filter(Boolean);
+    if (list.length) openOrders(list);
+  };
 
   const columns = [
     {
@@ -202,7 +259,7 @@ export default function Orders() {
       hideable: false,
       ellipsis: false,
       render: (_v, r) => (
-        <Button type="link" size="small" icon={<Eye size={14} />} onClick={() => setDetail(r)}>
+        <Button type="link" size="small" icon={<Eye size={14} />} onClick={() => openOrders([r])}>
           Xem chi tiết
         </Button>
       ),
@@ -293,6 +350,28 @@ export default function Orders() {
             loading={isLoading || isFetching}
             onRefresh={refetch}
             refreshing={isFetching}
+            rowSelection={{
+              selectedRowKeys: selectedKeys,
+              preserveSelectedRowKeys: true,
+              onChange: handleSelectChange,
+            }}
+            toolbarExtra={
+              selectedKeys.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<Eye size={14} />}
+                    onClick={openSelected}
+                  >
+                    Xem chi tiết ({selectedKeys.length})
+                  </Button>
+                  <Button size="small" icon={<X size={14} />} onClick={clearSelection}>
+                    Bỏ chọn
+                  </Button>
+                </div>
+              )
+            }
             searchSlot={
               <Input.Search
                 allowClear
@@ -327,7 +406,11 @@ export default function Orders() {
         </div>
       )}
 
-      <OrderDetailModal order={detail} open={detail != null} onClose={() => setDetail(null)} />
+      <OrderDetailModal
+        orders={viewOrders}
+        open={viewOpen}
+        onClose={() => setViewOpen(false)}
+      />
     </section>
   );
 }

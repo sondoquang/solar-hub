@@ -17,8 +17,28 @@ from .models import Order
 
 logger = logging.getLogger(__name__)
 
-# Order statuses we poll for (new orders worth forwarding to marketing).
+# Default status the periodic poll fetches (new orders worth forwarding to
+# marketing). Other statuses are synced on demand from the UI.
 POLL_STATUS = "processing"
+
+# Every WooCommerce order status the Hub is allowed to sync. One sync run pulls
+# exactly one status; the API validates the requested status against this set.
+ALLOWED_POLL_STATUSES = (
+    "pending",
+    "processing",
+    "on-hold",
+    "completed",
+    "cancelled",
+    "refunded",
+    "failed",
+)
+
+# Status an order is pushed to when an admin marks it done.
+COMPLETED_STATUS = "completed"
+
+
+class InvalidStatusTransition(Exception):
+    """Raised when an order cannot move to the requested status (maps to 409)."""
 
 
 def _to_aware(value) -> datetime.datetime | None:
@@ -68,6 +88,9 @@ def normalize_order(site, raw: dict) -> dict:
     created = _to_aware(raw.get("date_created_gmt")) or _to_aware(
         raw.get("date_created")
     )
+    modified = _to_aware(raw.get("date_modified_gmt")) or _to_aware(
+        raw.get("date_modified")
+    )
     return {
         "number": str(raw.get("number") or raw.get("id") or ""),
         "status": raw.get("status", ""),
@@ -80,6 +103,7 @@ def normalize_order(site, raw: dict) -> dict:
         "customer_note": raw.get("customer_note", ""),
         "line_items": _line_items(raw),
         "date_created_woo": created or timezone.now(),
+        "date_modified_woo": modified or created or timezone.now(),
         "raw": raw,
     }
 
@@ -98,34 +122,103 @@ def upsert_order(site, raw: dict) -> tuple[Order, bool]:
     )
 
 
-def poll_site(site) -> dict:
-    """Fetch new orders for one site and upsert them.
+def mark_order_completed(order: Order) -> Order:
+    """Push an order to ``completed`` on its WooCommerce site, then sync the Hub.
 
-    Watermark = the newest ``date_created_woo`` already stored for the site, so
-    each poll only asks WooCommerce for orders created since the last one.
+    Only allowed from ``processing`` (business rule). Writes to WooCommerce
+    first (the order's source of truth lives on the site), then upserts from the
+    returned payload so the Hub row matches what the site now reports — and so
+    the advanced ``date_modified_woo`` keeps the next poll from reverting it.
+
+    Raises ``InvalidStatusTransition`` for a disallowed source status; lets
+    ``httpx.HTTPError`` propagate so the caller can map it to a 502.
+    """
+    from apps.sites.services import client_for_site
+
+    if order.status != "processing":
+        raise InvalidStatusTransition(
+            f"Chỉ đơn đang xử lý mới được hoàn thành (hiện tại: {order.status})."
+        )
+
+    raw = client_for_site(order.site).update_order(
+        order.woo_order_id, status=COMPLETED_STATUS
+    )
+    obj, _ = upsert_order(order.site, raw)
+    return obj
+
+
+def _date_bounds(date_from, date_to) -> tuple[str | None, str | None]:
+    """Turn ``YYYY-MM-DD`` strings into Woo ``after`` / ``before`` ISO bounds.
+
+    Mirrors the list-screen filter (``date_created_woo__date`` between the two
+    days, both inclusive): ``after`` is exclusive on Woo's side so we step back
+    a second to include all of ``date_from``, and ``before`` uses end-of-day to
+    include all of ``date_to``. Bounds are naive (GMT) to match
+    ``dates_are_gmt=true`` and the stored ``*_gmt`` watermark.
+    """
+    after = before = None
+    d_from = parse_date(date_from) if date_from else None
+    d_to = parse_date(date_to) if date_to else None
+    if d_from:
+        start = datetime.datetime.combine(d_from, datetime.time.min)
+        after = (start - datetime.timedelta(seconds=1)).isoformat()
+    if d_to:
+        before = datetime.datetime.combine(d_to, datetime.time.max).isoformat()
+    return after, before
+
+
+def poll_site(site, status: str = POLL_STATUS, *, date_from=None, date_to=None) -> dict:
+    """Fetch orders of one ``status`` for one site and upsert them.
+
+    Two modes, mutually exclusive:
+
+    - **Watermark (default, periodic poll):** ``modified_after`` = the newest
+      ``date_modified_woo`` already stored for this ``(site, status)`` so each
+      poll only asks WooCommerce for orders touched since the last one. Keying
+      on *modified* (not created) means a status transition on an older order is
+      caught too: when it flips into ``status`` its ``date_modified`` jumps past
+      the watermark and the next poll for that status re-fetches it.
+    - **Date range (on-demand backfill):** when ``date_from``/``date_to`` is
+      given the watermark is skipped and the fetch is bounded by ``after`` /
+      ``before`` on ``date_created`` instead, so the whole requested window is
+      re-pulled regardless of when each order was last modified.
+
     Network errors are caught and returned (never raised) so one bad site does
     not abort the whole fan-out; the site id is logged but never the payload
     (PII / secrets stay out of logs).
     """
     from apps.sites.services import client_for_site
 
-    latest = (
-        Order.objects.filter(site=site)
-        .order_by("-date_created_woo")
-        .values_list("date_created_woo", flat=True)
-        .first()
-    )
-    after = latest.isoformat() if latest else None
+    after, before = _date_bounds(date_from, date_to)
+    if after or before:
+        modified_after = None
+    else:
+        latest = (
+            Order.objects.filter(site=site, status=status)
+            .order_by("-date_modified_woo")
+            .values_list("date_modified_woo", flat=True)
+            .first()
+        )
+        modified_after = latest.isoformat() if latest else None
 
     created = updated = 0
     try:
-        orders = client_for_site(site).list_orders(after=after, status=POLL_STATUS)
+        orders = client_for_site(site).list_orders(
+            status=status,
+            after=after,
+            before=before,
+            modified_after=modified_after,
+        )
     except httpx.HTTPError as exc:
         logger.error(
-            "poll_site failed site_id=%s: %s", site.id, exc.__class__.__name__
+            "poll_site failed site_id=%s status=%s: %s",
+            site.id,
+            status,
+            exc.__class__.__name__,
         )
         return {
             "site_id": site.id,
+            "status": status,
             "fetched": 0,
             "created": 0,
             "updated": 0,
@@ -141,6 +234,7 @@ def poll_site(site) -> dict:
 
     return {
         "site_id": site.id,
+        "status": status,
         "fetched": len(orders),
         "created": created,
         "updated": updated,

@@ -16,8 +16,9 @@ from apps.sites.tests.factories import SiteFactory
         (True, 999, HealthCheck.Status.HEALTHY),
         (True, 1000, HealthCheck.Status.WARNING),
         (True, 4999, HealthCheck.Status.WARNING),
-        (True, 5000, HealthCheck.Status.CRITICAL),
-        (True, 8000, HealthCheck.Status.CRITICAL),
+        # Reachable (HTTP 2xx) is never critical, however slow — just a warning.
+        (True, 5000, HealthCheck.Status.WARNING),
+        (True, 8000, HealthCheck.Status.WARNING),
         (False, 50, HealthCheck.Status.CRITICAL),
         (True, None, HealthCheck.Status.HEALTHY),
     ],

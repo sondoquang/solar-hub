@@ -9,8 +9,9 @@ class Order(models.Model):
     real-time webhook. The ``UNIQUE(site, woo_order_id)`` constraint makes the
     upsert in ``apps/orders/services.upsert_order`` safe against duplication.
 
-    ``date_created_woo`` is the order's creation time *on the site*; the poll
-    uses ``MAX(date_created_woo)`` per site as its watermark (``after=``).
+    ``date_created_woo`` is the order's creation time *on the site*. The poll's
+    watermark is ``MAX(date_modified_woo)`` per ``(site, status)`` (sent as
+    ``modified_after=``) so a status change on an older order is caught too.
 
     PII (customer name/phone/email/address) is stored here because the Hub
     aggregates orders, but it MUST NOT be logged in production (see CLAUDE.md).
@@ -40,6 +41,11 @@ class Order(models.Model):
     line_items = models.JSONField(default=list)
 
     date_created_woo = models.DateTimeField(db_index=True)
+    # Order's last-modified time on the site. Drives the per-(site, status)
+    # poll watermark (``modified_after=``) so status transitions on older
+    # orders are caught, not just newly created ones. Nullable for rows that
+    # predate this field; populated on the next upsert.
+    date_modified_woo = models.DateTimeField(null=True, blank=True, db_index=True)
     forwarded = models.BooleanField(default=False, db_index=True)  # sent to marketing?
     forwarded_at = models.DateTimeField(null=True, blank=True)
 
@@ -60,6 +66,8 @@ class Order(models.Model):
             models.Index(fields=["site", "date_created_woo"]),
             models.Index(fields=["status", "date_created_woo"]),
             models.Index(fields=["forwarded", "date_created_woo"]),
+            # Per-(site, status) poll watermark: MAX(date_modified_woo).
+            models.Index(fields=["site", "status", "date_modified_woo"]),
         ]
 
     def __str__(self) -> str:

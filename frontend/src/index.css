@@ -42,3 +42,43 @@ button:not(.ant-btn) {
 .ant-input-affix-wrapper input::placeholder {
   font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
 }
+
+/* Order carousel (OrderDetailModal) — direction-aware slide + fade when the
+   shown order changes. The content wrapper is keyed on the index so it remounts
+   and re-runs the animation; the direction class picks which side it enters from. */
+@keyframes order-slide-next {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes order-slide-prev {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-order-next {
+  animation: order-slide-next 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.animate-order-prev {
+  animation: order-slide-prev 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-order-next,
+  .animate-order-prev {
+    animation: none;
+  }
+}

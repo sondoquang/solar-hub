@@ -126,6 +126,9 @@ CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=CELERY_BROKER_URL)
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 
+# Sites polled concurrently per order-sync batch (one batch task per chunk).
+ORDER_POLL_BATCH_SIZE = env.int("ORDER_POLL_BATCH_SIZE", default=8)
+
 # --- CORS / CSRF (CORS only needed for dev-on-host Vite at :5173) --------
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173"])
 CSRF_TRUSTED_ORIGINS = env.list(

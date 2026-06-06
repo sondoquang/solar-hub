@@ -15,16 +15,18 @@ from django.utils.dateparse import parse_date
 
 from .models import HealthCheck
 
-# Response-time thresholds (ms) used to derive the 3-level health status.
-HEALTHY_MAX_MS = 1000  # < 1s  → khỏe mạnh
-WARNING_MAX_MS = 5000  # 1–5s  → cảnh báo; ≥ 5s or unreachable → lỗi nghiêm trọng
+# Response-time threshold (ms) used to derive the 3-level health status.
+HEALTHY_MAX_MS = 1000  # < 1s → khỏe mạnh; ≥ 1s → cảnh báo (chậm nhưng vẫn 2xx)
 
 
 def derive_status(ok: bool, response_time_ms: int | None) -> str:
-    """Map reachability + response time to a 3-level health status."""
+    """Map reachability + response time to a 3-level health status.
+
+    CRITICAL is reserved for an unreachable site (``ok`` False). A reachable
+    site (HTTP 2xx) is never critical — no matter how slow it is — it is only
+    healthy or, when slow, a performance WARNING.
+    """
     if not ok:
-        return HealthCheck.Status.CRITICAL
-    if response_time_ms is not None and response_time_ms >= WARNING_MAX_MS:
         return HealthCheck.Status.CRITICAL
     if response_time_ms is not None and response_time_ms >= HEALTHY_MAX_MS:
         return HealthCheck.Status.WARNING

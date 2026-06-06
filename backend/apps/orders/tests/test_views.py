@@ -76,18 +76,148 @@ def test_orders_are_read_only(client):
 
 
 @pytest.mark.django_db
-def test_poll_now_dispatches(client, monkeypatch):
+def test_poll_now_dispatches_default_status(client, monkeypatch):
     class _Result:
         id = "task-123"
 
     called = {}
 
-    def _delay():
-        called["hit"] = True
+    def _delay(**kwargs):
+        called.update(kwargs)
         return _Result()
 
     monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _delay)
     resp = client.post("/api/orders/poll_now/")
     assert resp.status_code == 200
     assert resp.data["task_id"] == "task-123"
-    assert called.get("hit") is True
+    assert resp.data["status"] == "processing"
+    # No body → default status, whole fleet, no date window.
+    assert called == {
+        "status": "processing",
+        "site_ids": None,
+        "date_from": None,
+        "date_to": None,
+    }
+
+
+@pytest.mark.django_db
+def test_poll_now_passes_status_and_sites(client, monkeypatch):
+    class _Result:
+        id = "task-9"
+
+    called = {}
+
+    def _delay(**kwargs):
+        called.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _delay)
+    resp = client.post(
+        "/api/orders/poll_now/",
+        {"status": "completed", "sites": [1, 2]},
+        format="json",
+    )
+    assert resp.status_code == 200
+    assert resp.data["status"] == "completed"
+    assert called == {
+        "status": "completed",
+        "site_ids": [1, 2],
+        "date_from": None,
+        "date_to": None,
+    }
+
+
+@pytest.mark.django_db
+def test_poll_now_passes_date_range(client, monkeypatch):
+    class _Result:
+        id = "task-d"
+
+    called = {}
+
+    def _delay(**kwargs):
+        called.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _delay)
+    resp = client.post(
+        "/api/orders/poll_now/",
+        {"status": "completed", "date_from": "2026-06-01", "date_to": "2026-06-03"},
+        format="json",
+    )
+    assert resp.status_code == 200
+    assert called == {
+        "status": "completed",
+        "site_ids": None,
+        "date_from": "2026-06-01",
+        "date_to": "2026-06-03",
+    }
+
+
+@pytest.mark.django_db
+def test_poll_now_rejects_bad_date(client, monkeypatch):
+    def _boom(**kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("delay should not be called for an invalid date")
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _boom)
+    resp = client.post(
+        "/api/orders/poll_now/",
+        {"date_from": "01/06/2026"},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_poll_now_rejects_unknown_status(client, monkeypatch):
+    def _boom(**kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("delay should not be called for an invalid status")
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _boom)
+    resp = client.post(
+        "/api/orders/poll_now/", {"status": "bogus"}, format="json"
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_poll_now_rejects_bad_sites(client, monkeypatch):
+    def _boom(**kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("delay should not be called for invalid sites")
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _boom)
+    resp = client.post(
+        "/api/orders/poll_now/",
+        {"status": "processing", "sites": "not-a-list"},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_complete_pushes_status_and_returns_order(client, monkeypatch):
+    order = OrderFactory(woo_order_id=77, status="processing")
+
+    class _Client:
+        def update_order(self, woo_order_id, *, status):
+            return {"id": woo_order_id, "number": "77", "status": status}
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", lambda s: _Client())
+    resp = client.post(f"/api/orders/{order.id}/complete/")
+    assert resp.status_code == 200
+    assert resp.data["status"] == "completed"
+    order.refresh_from_db()
+    assert order.status == "completed"
+
+
+@pytest.mark.django_db
+def test_complete_rejects_non_processing(client, monkeypatch):
+    order = OrderFactory(status="pending")
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("WooCommerce must not be called for a bad transition")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    resp = client.post(f"/api/orders/{order.id}/complete/")
+    assert resp.status_code == 409
+    order.refresh_from_db()
+    assert order.status == "pending"

@@ -22,3 +22,4 @@ class OrderFactory(factory.django.DjangoModelFactory):
         lambda: [{"sku": "SP-1", "name": "Pin mặt trời", "quantity": 1, "total": "150000.00"}]
     )
     date_created_woo = factory.LazyFunction(timezone.now)
+    date_modified_woo = factory.LazyFunction(timezone.now)

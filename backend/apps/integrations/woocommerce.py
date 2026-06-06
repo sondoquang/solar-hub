@@ -19,21 +19,36 @@ class WooClient:
 
     def list_orders(
         self,
-        after: str | None = None,
         status: str = "processing",
         per_page: int = 100,
+        after: str | None = None,
+        before: str | None = None,
+        modified_after: str | None = None,
     ) -> list[dict]:
-        """GET /orders, paginated — used by the periodic poll to gather new orders.
+        """GET /orders, paginated — used by the poll to gather orders of one status.
 
-        ``after`` is an ISO-8601 timestamp (the per-site watermark); only orders
-        created after it are returned. Walks every page (``X-WP-TotalPages``)
-        and concatenates the results. Auth is Basic; on a 401 (some shared hosts
-        strip the ``Authorization`` header) it retries with the key/secret in the
-        query string, per docs/backend/ARCHITECTURE.md §6.
+        ``after`` / ``before`` / ``modified_after`` are ISO-8601 timestamps. The
+        periodic poll uses ``modified_after`` (the per-site watermark) so status
+        transitions on older orders are caught, not just newly created ones; an
+        on-demand sync over a date range uses ``after`` / ``before`` (bounds on
+        ``date_created``) instead. ``dates_are_gmt`` tells Woo all bounds are GMT
+        (we store the ``*_gmt`` timestamps). Walks every page
+        (``X-WP-TotalPages``) and concatenates the results. Auth is Basic; on a
+        401 (some shared hosts strip the ``Authorization`` header) it retries
+        with the key/secret in the query string, per
+        docs/backend/ARCHITECTURE.md §6.
         """
-        base_params: dict = {"status": status, "per_page": min(per_page, 100)}
+        base_params: dict = {
+            "status": status,
+            "per_page": min(per_page, 100),
+            "dates_are_gmt": "true",
+        }
         if after:
             base_params["after"] = after
+        if before:
+            base_params["before"] = before
+        if modified_after:
+            base_params["modified_after"] = modified_after
 
         orders: list[dict] = []
         page = 1
@@ -61,6 +76,28 @@ class WooClient:
             )
         r.raise_for_status()
         return r
+
+    def update_order(self, woo_order_id: int, *, status: str) -> dict:
+        """PUT /orders/{id} — change an order's status on the site.
+
+        Mirrors the read path: per-call timeout + ``raise_for_status()``, Basic
+        auth with the query-string fallback on a 401 (some shared hosts strip
+        the ``Authorization`` header). Returns the updated order payload, which
+        the caller upserts so the Hub row matches the site.
+        """
+        url = f"{self.base}/orders/{woo_order_id}"
+        payload = {"status": status}
+        r = httpx.put(url, json=payload, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.put(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                json=payload,
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r.json()
 
     def batch_products(
         self,

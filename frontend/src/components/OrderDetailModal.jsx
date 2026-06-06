@@ -1,64 +1,161 @@
-import { Descriptions, Modal, Table } from "antd";
+import { Button, Modal } from "antd";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import toast from "react-hot-toast";
 
-import { formatDateTime, formatVND } from "../lib/format.js";
-import OrderStatusBadge from "./OrderStatusBadge.jsx";
+import { useCompleteOrder } from "../api/orders.js";
+import OrderDetailContent from "./OrderDetailContent.jsx";
 
-// Read-only detail of a single order (the "Xem chi tiết" action), including the
-// line items and customer info (PII — shown in the admin UI, never logged).
-const ITEM_COLUMNS = [
-  { key: "sku", dataIndex: "sku", title: "SKU", width: 120 },
-  { key: "name", dataIndex: "name", title: "Sản phẩm" },
-  {
-    key: "quantity",
-    dataIndex: "quantity",
-    title: "SL",
-    width: 64,
-    align: "center",
-  },
-  {
-    key: "total",
-    dataIndex: "total",
-    title: "Thành tiền",
-    width: 120,
-    align: "right",
-    render: (v) => formatVND(v),
-  },
-];
+// The modal shows orders one at a time; with more than one selected it becomes a
+// carousel navigated by Prev/Next buttons, dot indicators, the ←/→ keys, or the
+// mouse wheel. A single order hides all navigation (the per-row "Xem chi tiết").
 
-export default function OrderDetailModal({ order, open, onClose }) {
+const WHEEL_THROTTLE_MS = 350;
+
+export default function OrderDetailModal({ orders, open, onClose }) {
+  const list = orders ?? [];
+  const [index, setIndex] = useState(0);
+  // Slide direction of the last move (1 = forward, -1 = backward) so the content
+  // animates in from the matching side.
+  const [direction, setDirection] = useState(1);
+  const completeOrder = useCompleteOrder();
+  const lastWheelRef = useRef(0);
+
+  // Reset to the first order whenever the modal (re)opens.
+  useEffect(() => {
+    if (open) {
+      setIndex(0);
+      setDirection(1);
+    }
+  }, [open]);
+
+  const count = list.length;
+  // Clamp in case the order list shrinks underneath us.
+  const safeIndex = Math.min(index, Math.max(count - 1, 0));
+  const current = list[safeIndex];
+  const isCarousel = count > 1;
+
+  const goTo = (next) => {
+    const clamped = Math.min(Math.max(next, 0), count - 1);
+    setDirection(clamped >= safeIndex ? 1 : -1);
+    setIndex(clamped);
+  };
+  const goPrev = () => goTo(safeIndex - 1);
+  const goNext = () => goTo(safeIndex + 1);
+
+  // Arrow-key navigation while the carousel is open.
+  useEffect(() => {
+    if (!open || !isCarousel) return undefined;
+    const onKey = (e) => {
+      if (e.key === "ArrowLeft") goPrev();
+      else if (e.key === "ArrowRight") goNext();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // safeIndex/count drive the clamp inside goPrev/goNext.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isCarousel, safeIndex, count]);
+
+  // Mouse-wheel navigation, throttled so one flick moves one order (and so it
+  // doesn't fight scrolling a long order's content).
+  const handleWheel = (e) => {
+    if (!isCarousel) return;
+    const now = e.timeStamp;
+    if (now - lastWheelRef.current < WHEEL_THROTTLE_MS) return;
+    if (Math.abs(e.deltaY) < 8) return;
+    lastWheelRef.current = now;
+    if (e.deltaY > 0) goNext();
+    else goPrev();
+  };
+
+  // Only a processing order can be completed (matches the backend rule).
+  const canComplete = current?.status === "processing";
+
+  const handleComplete = async () => {
+    try {
+      await completeOrder.mutateAsync(current.id);
+      toast.success("Đã đánh dấu hoàn thành.");
+      // Move to the next order if there is one, otherwise close.
+      if (safeIndex < count - 1) goNext();
+      else onClose();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Cập nhật thất bại.");
+    }
+  };
+
+  const title = (
+    <div className="flex items-center gap-2">
+      <span>Chi tiết đơn hàng</span>
+      {isCarousel && (
+        <span
+          key={safeIndex}
+          className="animate-order-next rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-600"
+        >
+          Đơn {safeIndex + 1}/{count}
+        </span>
+      )}
+    </div>
+  );
+
+  const footer = (
+    // Gap 6px giữa các nút (mặc định antd là 8px) — đồng nhất khoảng cách button toàn hệ thống.
+    <div className="flex justify-end gap-1.5">
+      <Button key="close" onClick={onClose}>
+        Đóng
+      </Button>
+      {canComplete && (
+        <Button
+          key="complete"
+          type="primary"
+          loading={completeOrder.isPending}
+          onClick={handleComplete}
+        >
+          Đánh dấu hoàn thành
+        </Button>
+      )}
+    </div>
+  );
+
   return (
-    <Modal open={open} onCancel={onClose} footer={null} title="Chi tiết đơn hàng" width={640}>
-      {order && (
-        <div className="mt-2 space-y-3">
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="Số đơn">#{order.number}</Descriptions.Item>
-            <Descriptions.Item label="Website">{order.site_name}</Descriptions.Item>
-            <Descriptions.Item label="Hosting">{order.hosting_name || "—"}</Descriptions.Item>
-            <Descriptions.Item label="Trạng thái">
-              <OrderStatusBadge status={order.status} />
-            </Descriptions.Item>
-            <Descriptions.Item label="Ngày tạo">
-              {formatDateTime(order.date_created_woo)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Khách hàng">{order.customer_name || "—"}</Descriptions.Item>
-            <Descriptions.Item label="Điện thoại">{order.customer_phone || "—"}</Descriptions.Item>
-            <Descriptions.Item label="Email">{order.customer_email || "—"}</Descriptions.Item>
-            <Descriptions.Item label="Địa chỉ giao">
-              {order.shipping_address || "—"}
-            </Descriptions.Item>
-            <Descriptions.Item label="Ghi chú">{order.customer_note || "—"}</Descriptions.Item>
-            <Descriptions.Item label="Tổng tiền">
-              <span className="font-semibold">{formatVND(order.total)}</span>
-            </Descriptions.Item>
-          </Descriptions>
+    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={640}>
+      {current && (
+        <div className="mt-2 space-y-3" onWheel={handleWheel}>
+          {isCarousel && (
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-1.5">
+              <Button
+                type="text"
+                icon={<ChevronLeft size={16} />}
+                onClick={goPrev}
+                disabled={safeIndex === 0}
+              >
+                Trước
+              </Button>
+              <div className="flex items-center gap-1.5">
+                {list.map((o, i) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    aria-label={`Đơn ${i + 1}`}
+                    aria-current={i === safeIndex}
+                    onClick={() => goTo(i)}
+                    className={`rounded-full transition-all duration-200 ${
+                      i === safeIndex
+                        ? "h-2 w-5 bg-blue-500"
+                        : "h-2 w-2 bg-gray-300 hover:scale-125 hover:bg-gray-400"
+                    }`}
+                  />
+                ))}
+              </div>
+              <Button type="text" onClick={goNext} disabled={safeIndex === count - 1}>
+                Sau
+                <ChevronRight size={16} />
+              </Button>
+            </div>
+          )}
 
-          <Table
-            columns={ITEM_COLUMNS}
-            dataSource={(order.line_items || []).map((it, i) => ({ ...it, key: i }))}
-            size="small"
-            pagination={false}
-            locale={{ emptyText: "Không có sản phẩm" }}
-          />
+          <div key={safeIndex} className={direction >= 0 ? "animate-order-next" : "animate-order-prev"}>
+            <OrderDetailContent order={current} />
+          </div>
         </div>
       )}
     </Modal>
