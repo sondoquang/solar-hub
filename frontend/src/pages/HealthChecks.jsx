@@ -1,48 +1,43 @@
-import { Button, DatePicker, Input, Select } from "antd";
-import { Eye, Globe, RefreshCw } from "lucide-react";
+import { Button, DatePicker, Dropdown, Input, Select } from "antd";
+import { Download, Eye, Globe, MoreVertical, Server } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
+import { exportHealthChecks, useHealthCheckStats, useHealthChecks } from "../api/healthChecks.js";
 import { hostingLabel, useHostings } from "../api/hostings.js";
-import { useOrders, useOrderStats, usePollOrders } from "../api/orders.js";
 import { useSites } from "../api/sites.js";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
-import OrderDetailModal from "../components/OrderDetailModal.jsx";
-import OrderStats from "../components/OrderStats.jsx";
-import OrderStatusBadge from "../components/OrderStatusBadge.jsx";
-import { formatDateTime, formatVND } from "../lib/format.js";
+import HealthCheckDetailModal from "../components/HealthCheckDetailModal.jsx";
+import HealthCheckStats from "../components/HealthCheckStats.jsx";
+import HealthStatusBadge from "../components/HealthStatusBadge.jsx";
+import { formatDateTime, formatResponseTime } from "../lib/format.js";
 
 const { RangePicker } = DatePicker;
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 const STATUS_OPTIONS = [
   { value: "all", label: "Tất cả trạng thái" },
-  { value: "processing", label: "Đang xử lý" },
-  { value: "completed", label: "Hoàn thành" },
-  { value: "on-hold", label: "Tạm giữ" },
-  { value: "pending", label: "Chờ thanh toán" },
-  { value: "cancelled", label: "Đã hủy" },
+  { value: "healthy", label: "Khỏe mạnh" },
+  { value: "warning", label: "Cảnh báo" },
+  { value: "critical", label: "Lỗi nghiêm trọng" },
 ];
 
-const FORWARDED_OPTIONS = [
-  { value: "all", label: "Tất cả" },
-  { value: "false", label: "Chưa chuyển marketing" },
-  { value: "true", label: "Đã chuyển marketing" },
-];
+// Response time inherits the row's health colour so the table scans quickly.
+const RT_COLOR = { healthy: "text-success", warning: "text-warning", critical: "text-danger" };
 
-export default function Orders() {
+export default function HealthChecks() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [forwardedFilter, setForwardedFilter] = useState("all");
   const [scope, setScope] = useState("all"); // "all" | "site:<id>" | "hosting:<id>"
   const [range, setRange] = useState(null); // [dayjs, dayjs] | null
-  const [ordering, setOrdering] = useState("-date_created_woo");
+  const [ordering, setOrdering] = useState("-checked_at");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [detail, setDetail] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -53,30 +48,28 @@ export default function Orders() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Shared filter payload — the list and the stats cards both use it.
+  // Shared filter payload — the list, the stats cards and the export all use it.
   const filters = useMemo(() => {
     const [scopeKind, scopeId] = scope.split(":");
     return {
       search: search || undefined,
       status: statusFilter === "all" ? undefined : statusFilter,
-      forwarded: forwardedFilter === "all" ? undefined : forwardedFilter,
       site: scopeKind === "site" ? scopeId : undefined,
       hosting: scopeKind === "hosting" ? scopeId : undefined,
       date_from: range?.[0]?.format("YYYY-MM-DD"),
       date_to: range?.[1]?.format("YYYY-MM-DD"),
     };
-  }, [search, statusFilter, forwardedFilter, scope, range]);
+  }, [search, statusFilter, scope, range]);
 
-  const { data, isLoading, isFetching, isError, refetch } = useOrders({
+  const { data, isLoading, isFetching, isError, refetch } = useHealthChecks({
     ...filters,
     ordering,
     page,
     page_size: pageSize,
   });
-  const { data: stats } = useOrderStats(filters);
+  const { data: stats } = useHealthCheckStats(filters);
   const { data: hostingData } = useHostings({ page_size: 100 });
   const { data: siteData } = useSites({ page_size: 100 });
-  const poll = usePollOrders();
 
   const rows = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -95,17 +88,22 @@ export default function Orders() {
     },
   ];
 
-  const handlePoll = () => {
-    poll.mutate(undefined, {
-      onSuccess: () => toast.success("Đã kích hoạt đồng bộ đơn hàng."),
-      onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
-    });
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await exportHealthChecks(filters);
+      toast.success("Đã xuất báo cáo CSV.");
+    } catch {
+      toast.error("Xuất báo cáo thất bại.");
+    } finally {
+      setExporting(false);
+    }
   };
 
-  // antd drives sort/page through onChange. date_created_woo + total are
+  // antd drives sort/page through onChange. checked_at + response_time_ms are
   // server-sortable; a sort or page-size change resets to page 1.
   const handleTableChange = (pagination, _filters, sorter) => {
-    let next = "-date_created_woo";
+    let next = "-checked_at";
     if (sorter?.order) {
       const prefix = sorter.order === "descend" ? "-" : "";
       next = `${prefix}${sorter.field}`;
@@ -129,114 +127,122 @@ export default function Orders() {
       render: (_v, _r, i) => (page - 1) * pageSize + i + 1,
     },
     {
-      key: "number",
-      title: "Đơn hàng",
-      width: 200,
+      key: "site",
+      title: "Website / Hosting",
+      width: 240,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
             <Globe size={15} />
           </span>
           <div className="min-w-0">
-            <p className="truncate font-medium">#{r.number}</p>
-            <p className="truncate text-xs text-muted">{r.site_name}</p>
+            <p className="truncate font-medium">{r.site_name}</p>
+            <p className="truncate text-xs text-muted">
+              {r.hosting_name ? `Hosting: ${r.hosting_name}` : "Chưa gán hosting"}
+            </p>
           </div>
         </div>
       ),
     },
     {
-      key: "customer",
-      title: "Khách hàng",
-      width: 200,
-      render: (_v, r) => (
-        <div className="min-w-0">
-          <p className="truncate">{r.customer_name || "—"}</p>
-          <p className="truncate text-xs text-muted">{r.customer_phone || ""}</p>
-        </div>
-      ),
+      key: "check_type",
+      dataIndex: "check_type_display",
+      title: "Loại kiểm tra",
+      width: 150,
     },
     {
-      key: "total",
-      dataIndex: "total",
-      title: "Tổng tiền",
-      width: 140,
-      align: "right",
+      key: "checked_at",
+      dataIndex: "checked_at",
+      title: "Thời gian kiểm tra",
+      width: 180,
       sorter: true,
-      sortOrder: sortOrder("total"),
-      render: (v) => <span className="font-medium tabular-nums">{formatVND(v)}</span>,
+      sortOrder: sortOrder("checked_at"),
+      render: (v) => <span className="tabular-nums text-muted">{formatDateTime(v)}</span>,
     },
     {
       key: "status",
       dataIndex: "status",
       title: "Trạng thái",
-      width: 150,
+      width: 160,
       ellipsis: false,
-      render: (status) => <OrderStatusBadge status={status} />,
+      render: (status, r) => <HealthStatusBadge status={status} label={r.status_display} />,
     },
     {
-      key: "forwarded",
-      dataIndex: "forwarded",
-      title: "Marketing",
-      width: 130,
-      render: (v) =>
-        v ? (
-          <span className="text-xs font-medium text-success">Đã chuyển</span>
-        ) : (
-          <span className="text-xs text-muted">Chưa chuyển</span>
-        ),
-    },
-    {
-      key: "date_created_woo",
-      dataIndex: "date_created_woo",
-      title: "Ngày tạo",
-      width: 170,
+      key: "response_time_ms",
+      dataIndex: "response_time_ms",
+      title: "Thời gian phản hồi",
+      width: 160,
       sorter: true,
-      sortOrder: sortOrder("date_created_woo"),
-      render: (v) => <span className="tabular-nums text-muted">{formatDateTime(v)}</span>,
+      sortOrder: sortOrder("response_time_ms"),
+      render: (v, r) => (
+        <span className={`font-medium tabular-nums ${RT_COLOR[r.status] || ""}`}>
+          {formatResponseTime(v)}
+        </span>
+      ),
+    },
+    {
+      key: "performed_by",
+      dataIndex: "performed_by_name",
+      title: "Người thực hiện",
+      width: 150,
+      render: (v) => (
+        <span className="inline-flex items-center gap-1.5 text-muted">
+          <Server size={14} className="text-slate-400" />
+          {v}
+        </span>
+      ),
     },
     {
       key: "actions",
       title: "Thao tác",
-      width: 130,
+      width: 150,
       align: "right",
       hideable: false,
       ellipsis: false,
       render: (_v, r) => (
-        <Button type="link" size="small" icon={<Eye size={14} />} onClick={() => setDetail(r)}>
-          Xem chi tiết
-        </Button>
+        <div className="flex items-center justify-end gap-1">
+          <Button type="link" size="small" icon={<Eye size={14} />} onClick={() => setDetail(r)}>
+            Xem chi tiết
+          </Button>
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: [{ key: "detail", label: "Xem chi tiết", icon: <Eye size={14} /> }],
+              onClick: () => setDetail(r),
+            }}
+          >
+            <Button type="text" size="small" icon={<MoreVertical size={16} />} />
+          </Dropdown>
+        </div>
       ),
     },
   ];
 
   const filterActive =
-    search !== "" ||
-    statusFilter !== "all" ||
-    forwardedFilter !== "all" ||
-    scope !== "all" ||
-    range != null;
+    search !== "" || statusFilter !== "all" || scope !== "all" || range != null;
 
   return (
     <section>
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
-          <h1 className="font-display text-2xl font-bold">Đơn hàng</h1>
+          <h1 className="font-display text-2xl font-bold">Lịch sử kiểm tra sức khỏe hệ thống</h1>
           <p className="mt-1 text-sm text-muted">
-            Đơn hàng được gom tự động từ các website WooCommerce về Hub.
+            Theo dõi và quản lý lịch sử kiểm tra sức khỏe của các website và dịch vụ hosting.
           </p>
         </div>
         <Button
           type="primary"
-          icon={<RefreshCw size={16} />}
-          loading={poll.isPending}
-          onClick={handlePoll}
+          ghost
+          icon={<Download size={16} />}
+          loading={exporting}
+          onClick={handleExport}
         >
-          Đồng bộ ngay
+          Xuất báo cáo
         </Button>
       </div>
 
       <div className="mb-3">
-        <OrderStats stats={stats ?? {}} />
+        <HealthCheckStats stats={stats ?? {}} />
       </div>
 
       <div className="mb-2.5 flex flex-wrap items-center gap-2">
@@ -260,15 +266,6 @@ export default function Orders() {
           className="min-w-44"
         />
         <Select
-          value={forwardedFilter}
-          onChange={(v) => {
-            setForwardedFilter(v);
-            setPage(1);
-          }}
-          options={FORWARDED_OPTIONS}
-          className="min-w-48"
-        />
-        <Select
           value={scope}
           onChange={(v) => {
             setScope(v);
@@ -282,7 +279,7 @@ export default function Orders() {
       </div>
 
       {isError ? (
-        <ErrorState message="Không tải được danh sách đơn hàng" onRetry={refetch} />
+        <ErrorState message="Không tải được lịch sử kiểm tra" onRetry={refetch} />
       ) : (
         <div className="rounded bg-white p-2.5 shadow-card">
           <DataTable
@@ -296,7 +293,7 @@ export default function Orders() {
             searchSlot={
               <Input.Search
                 allowClear
-                placeholder="Tìm theo số đơn, tên/SĐT khách…"
+                placeholder="Tìm theo tên website, hosting…"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 className="w-64"
@@ -314,11 +311,11 @@ export default function Orders() {
             locale={{
               emptyText: (
                 <EmptyState
-                  title={filterActive ? "Không có đơn hàng phù hợp" : "Chưa có đơn hàng nào"}
+                  title={filterActive ? "Không có kết quả phù hợp" : "Chưa có lần kiểm tra nào"}
                   hint={
                     filterActive
                       ? "Thử đổi bộ lọc hoặc khoảng thời gian."
-                      : 'Nhấn "Đồng bộ ngay" để gom đơn từ các website.'
+                      : "Kiểm tra sức khỏe website ở trang Quản lý website hoặc Hosting."
                   }
                 />
               ),
@@ -327,7 +324,11 @@ export default function Orders() {
         </div>
       )}
 
-      <OrderDetailModal order={detail} open={detail != null} onClose={() => setDetail(null)} />
+      <HealthCheckDetailModal
+        check={detail}
+        open={detail != null}
+        onClose={() => setDetail(null)}
+      />
     </section>
   );
 }

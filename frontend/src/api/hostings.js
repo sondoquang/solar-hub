@@ -8,6 +8,7 @@ import { api } from "./client.js";
 //   PATCH  /hostings/{id}/        -> updateHosting / useUpdateHosting
 //   DELETE /hostings/{id}/        -> deleteHosting / useDeleteHosting
 //   POST   /hostings/{id}/check/  -> checkHosting / useCheckHosting (grouped healthcheck)
+//   POST   /hostings/import_excel/-> importHostingsExcel / useImportHostings (.xlsx)
 
 // Hostings can share the same name but differ by account, so always show the
 // account username alongside the name to disambiguate them in selects.
@@ -26,6 +27,11 @@ export const updateHosting = ({ id, ...payload }) =>
   api.patch(`/hostings/${id}/`, payload).then((r) => r.data);
 export const deleteHosting = (id) => api.delete(`/hostings/${id}/`).then((r) => r.data);
 export const checkHosting = (id) => api.post(`/hostings/${id}/check/`).then((r) => r.data);
+export const importHostingsExcel = ({ file } = {}) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post("/hostings/import_excel/", form).then((r) => r.data);
+};
 
 const HOSTINGS_KEY = ["hostings"];
 const SITES_KEY = ["sites"];
@@ -58,3 +64,6 @@ export const useCreateHosting = () => useHostingMutation(createHosting);
 export const useUpdateHosting = () => useHostingMutation(updateHosting);
 export const useDeleteHosting = () => useHostingMutation(deleteHosting);
 export const useCheckHosting = () => useHostingMutation(checkHosting, { settle: true });
+
+// Import only creates hostings (no site assignment), so refresh the hostings list.
+export const useImportHostings = () => useHostingMutation(importHostingsExcel);

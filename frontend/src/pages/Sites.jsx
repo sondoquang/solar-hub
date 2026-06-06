@@ -369,7 +369,7 @@ export default function Sites() {
         open={showForm}
         onCancel={closeForm}
         footer={null}
-        destroyOnClose
+        destroyOnHidden
         title={editing ? "Sửa website" : "Thêm website"}
       >
         <SiteRegisterForm

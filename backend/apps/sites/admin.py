@@ -49,6 +49,7 @@ class SiteAdmin(admin.ModelAdmin):
     form = SiteAdminForm
     list_display = ("name", "base_url", "hosting", "status", "last_checked_at")
     list_filter = ("status", "hosting")
+    search_fields = ("name", "base_url")
     readonly_fields = ("status", "last_checked_at", "created_at", "updated_at")
     actions = ["run_test_connection"]
 

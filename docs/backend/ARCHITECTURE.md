@@ -36,7 +36,7 @@ Hai chiều dữ liệu:
 | `catalog` | `MasterProduct` (catalog gốc) + `ProductMapping` (master ↔ woo_product_id từng site). |
 | `orders` | `Order` (đơn đã chuẩn hóa) + endpoint webhook + logic forward marketing. |
 | `sync` | Celery tasks: push sản phẩm xuống site (batch), poll đơn định kỳ. |
-| `monitoring` | Healthcheck site **theo nhóm hosting** (fan-out 1 task/hosting, throttle song song trong mỗi hosting), cập nhật `Site.status`. |
+| `monitoring` | Healthcheck site **theo nhóm hosting** (fan-out 1 task/hosting, throttle song song trong mỗi hosting), cập nhật `Site.status`. Lưu **lịch sử kiểm tra** (`HealthCheck`) mỗi lần test kết nối + API đọc lịch sử cho dashboard. |
 | `integrations` | `WooClient` — lớp trừu tượng hóa toàn bộ giao tiếp WooCommerce REST API. |
 | `core` | App hạ tầng (không phải domain): expose `GET /api/health/` trả `{status, db, redis}` để kiểm tra stack đã kết nối. Endpoint **không auth** (health check không được chạm DB). |
 | `accounts` | Auth JWT (SimpleJWT) + hồ sơ người dùng. Endpoints: `POST /api/auth/token/` (đăng nhập), `POST /api/auth/token/refresh/`, `GET/PATCH /api/auth/me/` (xem/cập nhật `full_name`+`email`, trả thêm `role` suy ra từ `is_superuser`/`is_staff`), `POST /api/auth/change-password/` (đổi mật khẩu, validate mật khẩu cũ + password validators). |
@@ -131,9 +131,40 @@ App `sites` đã hiện thực đầy đủ vertical slice (model → service �
   - Model: `name`, `provider`, `account_username`, `note`, `check_concurrency` (mặc định 5 = số domain check đồng thời), soft-delete (`is_deleted`/`deleted_at`).
   - `GET/POST /api/hostings/`, `GET/PATCH/DELETE /api/hostings/{id}/` — CRUD (xóa = soft-delete, **giữ FK của site**). List trả kèm `site_count` + `status_counts` ({up,down,unknown}) gom theo hosting.
   - `POST /api/hostings/{id}/check/` — healthcheck đồng bộ toàn bộ site của hosting (throttle theo `check_concurrency`), trả `{results:[{id, ok, status, detail}]}`.
+  - `POST /api/hostings/import_excel/` — upload `.xlsx` (multipart field `file`), parse bằng `openpyxl` ở service, bulk-create hosting. Cột bắt buộc: `name`; tùy chọn `provider, account_username, note, check_concurrency` (mặc định 5 nếu trống/không hợp lệ, clamp 1–50). Dòng thiếu `name` hoặc trùng `(name, account_username)` (chưa xóa) bị bỏ qua + báo lỗi từng dòng. Trả `{created, errors:[{row, error}]}`.
   - Task định kỳ `apps/monitoring/tasks.check_all_sites` đã được hiện thực: fan-out `check_hosting_task` mỗi hosting (xem §5.3).
 - **Admin**: `SiteAdmin` cho nhập key (password widget, mã hóa khi save) + action "Test connection".
 - `WooClient.system_status()` đã hiện thực; `list_orders`/`batch_products` còn `NotImplementedError`.
+
+## 8c. Trạng thái hiện thực (monitoring — Lịch sử kiểm tra sức khỏe)
+
+App `monitoring` đã hiện thực lịch sử kiểm tra sức khỏe website (model → service → API/Admin → FE):
+
+- **Model `HealthCheck`** (`apps/monitoring/models.py`): `site` (FK→Site, CASCADE), `status` (healthy/warning/critical, `db_index`), `check_type` (periodic/manual), `response_time_ms`, `ok` (reachability thô), `detail`, `performed_by` (FK→User nullable, SET_NULL — `None` = "Hệ thống"), `checked_at` (`db_index`). Là **log append-only** (giống `sync_logs`) → **không** soft-delete, **không** có endpoint create/update/delete. Index kép `(status, checked_at)` + `(site, checked_at)`.
+- **Suy ra trạng thái** (`services.derive_status`): không reachable hoặc `response_time ≥ 5000ms` → `critical`; `1000–4999ms` → `warning`; `< 1000ms` → `healthy`.
+- **Ghi lịch sử**: `apps/sites/services.test_connection` được mở rộng — đo round-trip `system_status()`, cập nhật `Site.status` (up/down) **và** gọi `monitoring.services.record_check(...)` (lazy import tránh vòng lặp). `check_type`/`performed_by` chảy xuyên qua `bulk_test_connections` và `check_hosting` (mặc định `periodic`/None cho Celery; `manual`+user cho action UI). View truyền user qua helper `_actor(request)`.
+- **API** (router DRF, prefix `/api/`, read-only):
+  - `GET /api/healthchecks/` — list phân trang server-side. Filter: `status`, `check_type`, `site`, `hosting` (`none` = chưa gán), `date_from`/`date_to` (theo `checked_at__date`). Search (`?search=`) trên tên/URL website + tên hosting. Sort (`?ordering=`) `checked_at`/`response_time_ms`/`status`. Serializer flatten `site_name`/`base_url`/`hosting_name`/`performed_by_name`/`status_display`/`check_type_display`.
+  - `GET /api/healthchecks/{id}/` — chi tiết một lần kiểm tra.
+  - `GET /api/healthchecks/stats/` — đếm theo trạng thái cho range đang lọc (`total/healthy/warning/critical`) + `trend_pct` (so với kỳ liền trước cùng độ dài, chỉ khi có đủ `date_from`+`date_to`). **Lưu ý:** dùng `.order_by().values().annotate()` để clear Meta ordering, tránh `checked_at` lọt vào GROUP BY.
+  - `GET /api/healthchecks/export/` — `StreamingHttpResponse` CSV (UTF-8 BOM cho Excel) theo đúng filter hiện tại.
+- **Admin**: `HealthCheckAdmin` read-only (list_filter status/check_type/checked_at, date_hierarchy, autocomplete site).
+- **Seed dev**: `python manage.py seed_healthchecks --days 30 --per-day 8 [--reset]` sinh dữ liệu mẫu (≈84% healthy) cho các site hiện có.
+
+## 8d. Trạng thái hiện thực (orders — Gom đơn theo polling)
+
+App `orders` đã hiện thực vertical slice gom đơn bằng **polling** (webhook real-time + forward marketing để giai đoạn sau; model đã để sẵn cờ `forwarded`/`forwarded_at`):
+
+- **Model `Order`** (`apps/orders/models.py`): `site` (FK→Site, CASCADE, `db_index`), `woo_order_id` (BigInteger — riêng từng site), `number`, `status` (`db_index`), `currency`, `total` (Decimal 12,2), thông tin KH `customer_name/phone/email/shipping_address/customer_note` (**PII — lưu DB nhưng KHÔNG log**), `line_items` (JSON: `{sku,name,quantity,total}`), `date_created_woo` (`db_index` — mốc tạo bên Woo, dùng làm watermark), `forwarded`/`forwarded_at`, `raw` (JSON payload gốc), timestamps. Ràng buộc `UniqueConstraint(site, woo_order_id)` (`order_unique_per_site`) → **upsert idempotent** an toàn khi poll/webhook trùng. Index kép `(site, date_created_woo)`, `(status, date_created_woo)`, `(forwarded, date_created_woo)`.
+- **`WooClient.list_orders(after, status, per_page)`** (`apps/integrations/woocommerce.py`) đã hiện thực: `GET /orders` phân trang theo header `X-WP-TotalPages`, auth Basic + **fallback query-string khi gặp 401** (shared host strip header `Authorization`), timeout 30s, `raise_for_status()`.
+- **Service** (`apps/orders/services.py`): `normalize_order` (map payload Woo → fields, ưu tiên `date_created_gmt`), `upsert_order` (`update_or_create` theo `(site, woo_order_id)`), `poll_site` (watermark = `MAX(date_created_woo)` của site → `list_orders(after=...)` → upsert; bắt `httpx.HTTPError` trả `error`, **không** raise, log `site_id` + class lỗi, không log payload), `list_orders_qs`/`order_stats` cho API.
+- **Celery** (`apps/sync/tasks.py`): `poll_all_orders` (Beat mỗi ~3 phút, đã có sẵn trong `config/celery.py`) **fan-out** `poll_site_task.delay(site_id)` cho từng site (lỗi một site không kéo cả mẻ); `poll_site_task` (`bind=True, max_retries=3, default_retry_backoff=True`) retry lỗi mạng.
+- **API** (router DRF, prefix `/api/`, read-only — đơn được kéo về, không CRUD tay):
+  - `GET /api/orders/` — list phân trang. Filter: `site`, `hosting` (`none` = chưa gán), `status`, `forwarded` (`true`/`false`), `date_from`/`date_to` (theo `date_created_woo__date`). Search (`?search=`) trên số đơn / tên KH / SĐT / tên site. Sort `date_created_woo`/`total`/`status`. Serializer flatten `site_name`/`hosting_name`; **không** expose `raw` ở list.
+  - `GET /api/orders/{id}/` — chi tiết (modal hiển thị `line_items` + thông tin KH).
+  - `GET /api/orders/stats/` — `{total, revenue, not_forwarded, by_status}` cho range đang lọc (**lưu ý** alias `Count` không được trùng tên field `total`, nếu không `Sum("total")` sẽ vỡ).
+  - `POST /api/orders/poll_now/` — kích hoạt `poll_all_orders.delay()`, trả `{task_id}` (nút "Đồng bộ ngay" của UI).
+- **Admin**: `OrderAdmin` read-only (list_filter status/forwarded/site, date_hierarchy `date_created_woo`, không cho add/change).
 
 ## 9. Local vs Production
 
