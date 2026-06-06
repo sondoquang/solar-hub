@@ -4,7 +4,7 @@ import openpyxl
 import pytest
 
 from apps.sites.crypto import decrypt_secret
-from apps.sites.models import Site
+from apps.sites.models import Hosting, Site
 
 from .factories import HostingFactory
 
@@ -89,3 +89,67 @@ def test_import_rejects_invalid_hosting(client):
     )
     assert resp.status_code == 400
     assert Site.objects.count() == 0
+
+
+# --- Hosting import ----------------------------------------------------------
+
+HOSTING_HEADER = ("name", "provider", "account_username", "note", "check_concurrency")
+
+
+@pytest.mark.django_db
+def test_import_hostings_creates_with_concurrency(client):
+    buf = make_xlsx(
+        [
+            ("TenTen A", "TenTen", "user_a", "note a", 3),
+            ("TenTen B", "TenTen", "user_b", "", ""),  # blank concurrency -> default 5
+        ],
+        header=HOSTING_HEADER,
+    )
+    resp = client.post("/api/hostings/import_excel/", {"file": buf}, format="multipart")
+    assert resp.status_code == 200
+    assert resp.data["created"] == 2
+    assert resp.data["errors"] == []
+    assert Hosting.objects.get(name="TenTen A").check_concurrency == 3
+    assert Hosting.objects.get(name="TenTen B").check_concurrency == 5
+
+
+@pytest.mark.django_db
+def test_import_hostings_skips_missing_name_and_duplicates(client):
+    Hosting.objects.create(name="Dup", account_username="acc")
+    buf = make_xlsx(
+        [
+            ("Good", "TenTen", "acc1", "", 5),
+            ("", "TenTen", "acc2", "", 5),  # missing name
+            ("Dup", "TenTen", "acc", "", 5),  # duplicate (name, account)
+        ],
+        header=HOSTING_HEADER,
+    )
+    resp = client.post("/api/hostings/import_excel/", {"file": buf}, format="multipart")
+    assert resp.data["created"] == 1
+    assert len(resp.data["errors"]) == 2
+
+
+@pytest.mark.django_db
+def test_import_hostings_missing_name_column(client):
+    buf = make_xlsx([("TenTen",)], header=("provider",))
+    resp = client.post("/api/hostings/import_excel/", {"file": buf}, format="multipart")
+    assert resp.data["created"] == 0
+    assert "Thiếu cột" in resp.data["errors"][0]["error"]
+
+
+@pytest.mark.django_db
+def test_import_hostings_only_name_column(client):
+    buf = make_xlsx([("Solo",)], header=("name",))
+    resp = client.post("/api/hostings/import_excel/", {"file": buf}, format="multipart")
+    assert resp.data["created"] == 1
+    h = Hosting.objects.get(name="Solo")
+    assert h.check_concurrency == 5
+    assert h.provider == ""
+
+
+@pytest.mark.django_db
+def test_import_hostings_invalid_concurrency_falls_back(client):
+    buf = make_xlsx([("Bad", "", "", "", "abc")], header=HOSTING_HEADER)
+    resp = client.post("/api/hostings/import_excel/", {"file": buf}, format="multipart")
+    assert resp.data["created"] == 1
+    assert Hosting.objects.get(name="Bad").check_concurrency == 5

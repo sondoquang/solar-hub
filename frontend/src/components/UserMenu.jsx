@@ -45,7 +45,7 @@ function ProfileModal({ open, onClose }) {
       open={open}
       onCancel={onClose}
       footer={null}
-      destroyOnClose
+      destroyOnHidden
       afterOpenChange={(o) =>
         o &&
         form.setFieldsValue({
@@ -117,7 +117,7 @@ function PasswordModal({ open, onClose }) {
       open={open}
       onCancel={onClose}
       footer={null}
-      destroyOnClose
+      destroyOnHidden
       afterOpenChange={(o) => o && form.resetFields()}
     >
       <Form form={form} layout="vertical" onFinish={handleSubmit} requiredMark={false} className="mt-2">

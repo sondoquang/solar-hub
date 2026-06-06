@@ -34,7 +34,7 @@ function Logo({ collapsed }) {
     <img
       src={collapsed ? "/logo.png" : "/logo-admin-page.png"}
       alt="Solar Hub"
-      className={collapsed ? "h-9 w-9 object-contain" : "h-10 w-auto object-contain"}
+      className={collapsed ? "h-9 w-9 object-contain" : "h-16 w-auto object-contain"}
       onError={() => setImgError(true)}
     />
   );
@@ -50,9 +50,9 @@ const MAIN_NAV = [
 ];
 
 const WEBSITE_SUB = [
-  { to: "/sites", label: "Quản lý website" },
   { to: "/hostings", label: "Hosting" },
-  { label: "Lịch sử kiểm tra" },
+  { to: "/sites", label: "Quản lý website" },
+  { to: "/health-checks", label: "Lịch sử kiểm tra" },
 ];
 
 const SECONDARY_NAV = [
@@ -80,7 +80,12 @@ function NavRow({ item, collapsed }) {
   const { to, end, label, icon: Icon } = item;
   if (to) {
     return (
-      <NavLink to={to} end={end} className={navClass(collapsed)} title={collapsed ? label : undefined}>
+      <NavLink
+        to={to}
+        end={end}
+        className={navClass(collapsed)}
+        title={collapsed ? label : undefined}
+      >
         <Icon size={18} />
         {!collapsed && label}
       </NavLink>
@@ -89,7 +94,11 @@ function NavRow({ item, collapsed }) {
   return (
     <button
       type="button"
-      className={[itemBase, "cursor-default text-slate-600 hover:bg-slate-50", collapsed && "justify-center"]
+      className={[
+        itemBase,
+        "cursor-default text-slate-600 hover:bg-slate-50",
+        collapsed && "justify-center",
+      ]
         .filter(Boolean)
         .join(" ")}
       title={collapsed ? label : "Sắp ra mắt"}
@@ -107,7 +116,11 @@ function LogoutButton({ collapsed }) {
       type="button"
       onClick={logout}
       title={collapsed ? "Đăng xuất" : undefined}
-      className={[itemBase, "text-slate-600 hover:bg-slate-50 hover:text-ink", collapsed && "justify-center"]
+      className={[
+        itemBase,
+        "text-slate-600 hover:bg-slate-50 hover:text-ink",
+        collapsed && "justify-center",
+      ]
         .filter(Boolean)
         .join(" ")}
     >
@@ -119,7 +132,10 @@ function LogoutButton({ collapsed }) {
 
 function Sidebar() {
   const { pathname } = useLocation();
-  const websiteActive = pathname.startsWith("/sites") || pathname.startsWith("/hostings");
+  const websiteActive =
+    pathname.startsWith("/sites") ||
+    pathname.startsWith("/hostings") ||
+    pathname.startsWith("/health-checks");
   const [collapsed, setCollapsed] = useState(false);
   const [websiteOpen, setWebsiteOpen] = useState(websiteActive);
 
@@ -156,11 +172,7 @@ function Sidebar() {
 
         {/* Website — expandable section, active on /sites */}
         {collapsed ? (
-          <NavLink
-            to="/sites"
-            title="Website"
-            className={navClass(true)}
-          >
+          <NavLink to="/sites" title="Website" className={navClass(true)}>
             <Globe size={18} />
           </NavLink>
         ) : (
@@ -172,7 +184,9 @@ function Sidebar() {
               className={[
                 itemBase,
                 "justify-between",
-                websiteActive ? "bg-amber-50 text-brand" : "text-slate-600 hover:bg-slate-50 hover:text-ink",
+                websiteActive
+                  ? "bg-amber-50 text-brand"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-ink",
               ].join(" ")}
             >
               <span className="flex items-center gap-3">
@@ -210,7 +224,7 @@ function Sidebar() {
                       <span className="h-1.5 w-1.5 rounded-full bg-slate-300" />
                       {sub.label}
                     </button>
-                  )
+                  ),
                 )}
               </div>
             )}

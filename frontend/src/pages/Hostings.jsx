@@ -8,11 +8,13 @@ import {
   useCreateHosting,
   useDeleteHosting,
   useHostings,
+  useImportHostings,
   useUpdateHosting,
 } from "../api/hostings.js";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
+import HostingImport from "../components/HostingImport.jsx";
 import HostingRegisterForm from "../components/HostingRegisterForm.jsx";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -67,6 +69,7 @@ export default function Hostings() {
   const updateHosting = useUpdateHosting();
   const deleteHosting = useDeleteHosting();
   const checkHosting = useCheckHosting();
+  const importHostings = useImportHostings();
 
   const hostings = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -111,6 +114,19 @@ export default function Hostings() {
       toast.success("Đã xóa hosting.");
     } catch {
       toast.error("Xóa thất bại.");
+    }
+  };
+
+  const handleImport = async ({ file }) => {
+    try {
+      const res = await importHostings.mutateAsync({ file });
+      if (res.errors?.length) {
+        toast(`Tạo ${res.created} hosting, ${res.errors.length} dòng lỗi.`, { icon: "⚠️" });
+      } else {
+        toast.success(`Đã import ${res.created} hosting.`);
+      }
+    } catch {
+      toast.error("Import thất bại.");
     }
   };
 
@@ -237,6 +253,10 @@ export default function Hostings() {
         </Button>
       </div>
 
+      <div className="mb-2.5">
+        <HostingImport onImport={handleImport} pending={importHostings.isPending} />
+      </div>
+
       {isError ? (
         <ErrorState message="Không tải được danh sách hosting" onRetry={refetch} />
       ) : (
@@ -274,7 +294,7 @@ export default function Hostings() {
                   hint={
                     search
                       ? "Thử đổi từ khóa tìm kiếm."
-                      : "Bấm “Thêm hosting” để tạo nhóm đầu tiên."
+                      : "Bấm “Thêm hosting” hoặc import Excel."
                   }
                 />
               ),
@@ -287,7 +307,7 @@ export default function Hostings() {
         open={showForm}
         onCancel={closeForm}
         footer={null}
-        destroyOnClose
+        destroyOnHidden
         title={editing ? "Sửa hosting" : "Thêm hosting"}
       >
         <HostingRegisterForm

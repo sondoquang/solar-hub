@@ -1,20 +1,16 @@
-import { Button, Modal, Select } from "antd";
+import { Button, Modal } from "antd";
 import { FileSpreadsheet, Upload, X } from "lucide-react";
 import { useRef, useState } from "react";
 
-import { hostingLabel } from "../api/hostings.js";
-
-// Bulk import from .xlsx. The file is parsed on the backend (SSOT). The user
-// first picks a target hosting (optional) and a file in a modal, then imports.
-// Expected columns: name, base_url, consumer_key, consumer_secret.
-export default function SiteImport({ onImport, pending, hostings = [] }) {
+// Bulk import hostings from .xlsx. The file is parsed on the backend (SSOT).
+// Required column: name. Optional: provider, account_username, note,
+// check_concurrency (defaults to 5 when blank/invalid).
+export default function HostingImport({ onImport, pending }) {
   const [open, setOpen] = useState(false);
-  const [hosting, setHosting] = useState(null);
   const [file, setFile] = useState(null);
   const inputRef = useRef(null);
 
   const reset = () => {
-    setHosting(null);
     setFile(null);
     if (inputRef.current) inputRef.current.value = "";
   };
@@ -27,7 +23,7 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
 
   const handleImport = async () => {
     if (!file) return;
-    await onImport({ file, hosting });
+    await onImport({ file });
     setOpen(false);
     reset();
   };
@@ -41,7 +37,8 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
         <div className="text-sm">
           <p className="font-semibold">Import từ Excel (.xlsx)</p>
           <p className="text-muted">
-            Cột yêu cầu: <span className="font-medium text-ink">name, base_url, consumer_key, consumer_secret</span>
+            Cột yêu cầu: <span className="font-medium text-ink">name</span> — tùy chọn:{" "}
+            <span className="font-medium text-ink">provider, account_username, note, check_concurrency</span>
           </p>
         </div>
         <Button type="primary" ghost className="ml-auto" onClick={() => setOpen(true)}>
@@ -49,24 +46,8 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
         </Button>
       </div>
 
-      <Modal open={open} onCancel={close} footer={null} destroyOnHidden title="Import website từ Excel">
+      <Modal open={open} onCancel={close} footer={null} destroyOnHidden title="Import hosting từ Excel">
         <div className="grid gap-3">
-          <div>
-            <label className="mb-1 block text-sm font-medium">Hosting</label>
-            <Select
-              value={hosting}
-              onChange={(v) => setHosting(v ?? null)}
-              size="large"
-              className="w-full"
-              allowClear
-              placeholder="Chọn hosting để gán cho các site import (tùy chọn)"
-              options={hostings.map((h) => ({ value: h.id, label: hostingLabel(h) }))}
-            />
-            <p className="mt-1 text-xs text-muted">
-              Mọi site trong file sẽ được gán vào hosting này. Để trống = không gán.
-            </p>
-          </div>
-
           <div>
             <label className="mb-1 block text-sm font-medium">File Excel (.xlsx)</label>
             <label className="flex cursor-pointer items-center gap-2 rounded border border-dashed border-slate-300 px-3 py-2 text-sm hover:bg-slate-50">
@@ -96,15 +77,13 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
                 </span>
               )}
             </label>
+            <p className="mt-1 text-xs text-muted">
+              Dòng trùng (cùng tên + tài khoản với hosting đã có) sẽ bị bỏ qua.
+            </p>
           </div>
 
           <div className="flex gap-1 pt-1">
-            <Button
-              type="primary"
-              loading={pending}
-              disabled={!file}
-              onClick={handleImport}
-            >
+            <Button type="primary" loading={pending} disabled={!file} onClick={handleImport}>
               {pending ? "Đang import…" : "Bắt đầu import"}
             </Button>
             <Button onClick={close} disabled={pending}>

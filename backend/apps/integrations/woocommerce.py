@@ -23,7 +23,44 @@ class WooClient:
         status: str = "processing",
         per_page: int = 100,
     ) -> list[dict]:
-        raise NotImplementedError
+        """GET /orders, paginated — used by the periodic poll to gather new orders.
+
+        ``after`` is an ISO-8601 timestamp (the per-site watermark); only orders
+        created after it are returned. Walks every page (``X-WP-TotalPages``)
+        and concatenates the results. Auth is Basic; on a 401 (some shared hosts
+        strip the ``Authorization`` header) it retries with the key/secret in the
+        query string, per docs/backend/ARCHITECTURE.md §6.
+        """
+        base_params: dict = {"status": status, "per_page": min(per_page, 100)}
+        if after:
+            base_params["after"] = after
+
+        orders: list[dict] = []
+        page = 1
+        while True:
+            r = self._get_orders_page({**base_params, "page": page})
+            batch = r.json()
+            if not batch:
+                break
+            orders.extend(batch)
+            total_pages = int(r.headers.get("X-WP-TotalPages", 1) or 1)
+            if page >= total_pages:
+                break
+            page += 1
+        return orders
+
+    def _get_orders_page(self, params: dict) -> httpx.Response:
+        """One page of /orders, with the query-string-auth fallback on 401."""
+        r = httpx.get(f"{self.base}/orders", params=params, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.get(
+                f"{self.base}/orders",
+                params={**params, "consumer_key": key, "consumer_secret": secret},
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r
 
     def batch_products(
         self,

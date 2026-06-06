@@ -11,6 +11,7 @@ const Orders = lazy(() => import("./pages/Orders.jsx"));
 const Products = lazy(() => import("./pages/Products.jsx"));
 const Sites = lazy(() => import("./pages/Sites.jsx"));
 const Hostings = lazy(() => import("./pages/Hostings.jsx"));
+const HealthChecks = lazy(() => import("./pages/HealthChecks.jsx"));
 const Login = lazy(() => import("./pages/Login.jsx"));
 
 const wrap = (Page) => (
@@ -58,6 +59,7 @@ export const router = createBrowserRouter([
           { path: "products", element: wrap(Products) },
           { path: "sites", element: wrap(Sites) },
           { path: "hostings", element: wrap(Hostings) },
+          { path: "health-checks", element: wrap(HealthChecks) },
         ],
       },
       { path: "/login", element: wrap(Login) },

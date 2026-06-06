@@ -5,7 +5,9 @@ stay thin; all WooCommerce traffic goes through ``WooClient``.
 """
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import httpx
 import openpyxl
@@ -21,7 +23,12 @@ logger = logging.getLogger(__name__)
 
 IMPORT_COLUMNS = ["name", "base_url", "consumer_key", "consumer_secret"]
 
+# Hosting import: only ``name`` is required; the rest are optional.
+HOSTING_IMPORT_COLUMNS = ["name", "provider", "account_username", "note", "check_concurrency"]
+HOSTING_REQUIRED_COLUMNS = ["name"]
+
 DEFAULT_CHECK_CONCURRENCY = 5
+MAX_CHECK_CONCURRENCY = 50
 
 
 def create_site(
@@ -60,10 +67,17 @@ def client_for_site(site: Site) -> WooClient:
     )
 
 
-def test_connection(site: Site) -> dict:
-    """Call system_status to verify the key. Updates Site.status, returns a result dict."""
+def test_connection(site: Site, *, check_type: str = "manual", performed_by=None) -> dict:
+    """Call system_status to verify the key, timing the round-trip.
+
+    Updates ``Site.status`` (up/down) and appends a ``HealthCheck`` history row
+    via the monitoring app (status there is the 3-level health derived from the
+    response time). ``check_type``/``performed_by`` flow through to that row so
+    the history shows who ran it ("Hệ thống" for the periodic task).
+    """
     ok = False
     detail = ""
+    started = time.monotonic()
     try:
         client_for_site(site).system_status()
         ok = True
@@ -74,16 +88,39 @@ def test_connection(site: Site) -> dict:
     except Exception as exc:  # noqa: BLE001 — surface as down, but log the cause
         detail = f"Lỗi không xác định: {exc.__class__.__name__}"
         logger.error("test_connection error site_id=%s: %s", site.id, exc)
+    response_time_ms = int((time.monotonic() - started) * 1000)
 
     site.status = Site.Status.UP if ok else Site.Status.DOWN
     site.last_checked_at = timezone.now()
     site.save(update_fields=["status", "last_checked_at", "updated_at"])
-    return {"ok": ok, "status": site.status, "detail": detail}
+
+    # Lazy import: apps.monitoring.tasks imports apps.sites, so importing
+    # monitoring at module load would be circular.
+    from apps.monitoring import services as monitoring
+
+    health = monitoring.record_check(
+        site=site,
+        ok=ok,
+        response_time_ms=response_time_ms,
+        detail=detail,
+        check_type=check_type,
+        performed_by=performed_by,
+    )
+    return {
+        "ok": ok,
+        "status": site.status,
+        "detail": detail,
+        "response_time_ms": response_time_ms,
+        "health_status": health.status,
+    }
 
 
-def bulk_test_connections(sites) -> list[dict]:
+def bulk_test_connections(sites, *, performed_by=None) -> list[dict]:
     """Test a list of sites sequentially (one at a time = natural throttle)."""
-    return [{"id": s.id, **test_connection(s)} for s in sites]
+    return [
+        {"id": s.id, **test_connection(s, performed_by=performed_by)}
+        for s in sites
+    ]
 
 
 # --- Hosting -----------------------------------------------------------------
@@ -108,20 +145,31 @@ def delete_hosting(hosting: Hosting) -> None:
     hosting.save(update_fields=["is_deleted", "deleted_at", "updated_at"])
 
 
-def _check_site_threadsafe(site: Site) -> dict:
+def _check_site_threadsafe(site: Site, *, check_type: str, performed_by) -> dict:
     try:
-        return {"id": site.id, **test_connection(site)}
+        return {
+            "id": site.id,
+            **test_connection(
+                site, check_type=check_type, performed_by=performed_by
+            ),
+        }
     finally:
         # Each worker thread opens its own (thread-local) DB connection; close it
         # so the pool does not leak connections every health-check round.
         connection.close()
 
 
-def check_hosting(hosting_id) -> list[dict]:
+def check_hosting(
+    hosting_id, *, check_type: str = "periodic", performed_by=None
+) -> list[dict]:
     """Health-check every site of one hosting, at most ``check_concurrency``
     domains at a time (the rest queue and run as slots free up). Different
     hostings are checked in parallel by the Celery fan-out in
-    apps/monitoring/tasks.py. ``hosting_id=None`` checks sites with no hosting."""
+    apps/monitoring/tasks.py. ``hosting_id=None`` checks sites with no hosting.
+
+    Defaults to ``check_type="periodic"`` (the Celery caller); the on-demand
+    "Check ngay" button passes ``manual`` + the acting user.
+    """
     sites = list(Site.objects.filter(hosting_id=hosting_id, is_deleted=False))
     if not sites:
         return []
@@ -132,8 +180,11 @@ def check_hosting(hosting_id) -> list[dict]:
         if hosting:
             concurrency = max(1, hosting.check_concurrency)
 
+    worker = partial(
+        _check_site_threadsafe, check_type=check_type, performed_by=performed_by
+    )
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        return list(executor.map(_check_site_threadsafe, sites))
+        return list(executor.map(worker, sites))
 
 
 def import_sites_from_xlsx(file, hosting=None) -> dict:
@@ -178,6 +229,77 @@ def import_sites_from_xlsx(file, hosting=None) -> dict:
             errors.append({"row": idx, "error": f"base_url đã tồn tại: {data['base_url']}"})
             continue
         create_site(**data, hosting=hosting)
+        created += 1
+
+    return {"created": created, "errors": errors}
+
+
+def _parse_check_concurrency(value) -> int:
+    """Coerce a cell value to a valid check_concurrency (1..MAX), default on junk."""
+    try:
+        n = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return DEFAULT_CHECK_CONCURRENCY
+    if n <= 0:
+        return DEFAULT_CHECK_CONCURRENCY
+    return min(MAX_CHECK_CONCURRENCY, n)
+
+
+def import_hostings_from_xlsx(file) -> dict:
+    """Parse an uploaded .xlsx and bulk-create hostings.
+
+    Expected header row: name (required), provider, account_username, note,
+    check_concurrency (optional; defaults to 5 when blank/invalid, clamped 1..50).
+    Returns ``{"created": int, "errors": [{"row": int, "error": str}]}``.
+    Rows missing a name or duplicating an existing (name, account_username) are
+    skipped with an error entry (so partial imports surface clearly).
+    """
+    try:
+        wb = openpyxl.load_workbook(file, read_only=True, data_only=True)
+    except Exception:
+        return {"created": 0, "errors": [{"row": 0, "error": "File không đọc được (.xlsx)."}]}
+
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    try:
+        header = next(rows)
+    except StopIteration:
+        return {"created": 0, "errors": [{"row": 0, "error": "File rỗng."}]}
+
+    cols = {str(h).strip().lower(): i for i, h in enumerate(header) if h is not None}
+    missing = [c for c in HOSTING_REQUIRED_COLUMNS if c not in cols]
+    if missing:
+        return {"created": 0, "errors": [{"row": 1, "error": f"Thiếu cột: {', '.join(missing)}"}]}
+
+    def cell(row, col):
+        i = cols.get(col)
+        if i is None or i >= len(row):
+            return ""
+        value = row[i]
+        return str(value).strip() if value is not None else ""
+
+    created = 0
+    errors: list[dict] = []
+    for idx, row in enumerate(rows, start=2):
+        name = cell(row, "name")
+        if not name:
+            errors.append({"row": idx, "error": "Thiếu tên hosting."})
+            continue
+
+        account = cell(row, "account_username")
+        if Hosting.objects.filter(
+            name=name, account_username=account, is_deleted=False
+        ).exists():
+            errors.append({"row": idx, "error": f"Hosting đã tồn tại: {name}"})
+            continue
+
+        create_hosting(
+            name=name,
+            provider=cell(row, "provider"),
+            account_username=account,
+            note=cell(row, "note"),
+            check_concurrency=_parse_check_concurrency(cell(row, "check_concurrency")),
+        )
         created += 1
 
     return {"created": created, "errors": errors}

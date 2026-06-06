@@ -15,6 +15,13 @@ from .models import Hosting, Site
 from .serializers import HostingSerializer, SiteSerializer
 
 
+def _actor(request):
+    """The authenticated user behind a request, or None (recorded as the system
+    actor in the health-check history)."""
+    user = getattr(request, "user", None)
+    return user if user is not None and user.is_authenticated else None
+
+
 class SiteViewSet(viewsets.ModelViewSet):
     serializer_class = SiteSerializer
     # Server-side sort (e.g. ?ordering=name / ?ordering=-name) and search
@@ -70,7 +77,11 @@ class SiteViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def test_connection(self, request, pk=None):
-        result = services.test_connection(self.get_object())
+        result = services.test_connection(
+            self.get_object(),
+            check_type="manual",
+            performed_by=_actor(request),
+        )
         http_status = status.HTTP_200_OK if result["ok"] else status.HTTP_502_BAD_GATEWAY
         return Response(result, status=http_status)
 
@@ -79,7 +90,10 @@ class SiteViewSet(viewsets.ModelViewSet):
         """Bulk test: body {"ids": [..]} → run each site's test sequentially."""
         ids = request.data.get("ids") or []
         sites = list(Site.objects.filter(id__in=ids, is_deleted=False))
-        return Response({"results": services.bulk_test_connections(sites)})
+        results = services.bulk_test_connections(
+            sites, performed_by=_actor(request)
+        )
+        return Response({"results": results})
 
     @action(
         detail=False,
@@ -138,4 +152,23 @@ class HostingViewSet(viewsets.ModelViewSet):
         """Health-check every site of this hosting now, throttled to its
         check_concurrency. Returns per-site results."""
         hosting = self.get_object()
-        return Response({"results": services.check_hosting(hosting.id)})
+        results = services.check_hosting(
+            hosting.id, check_type="manual", performed_by=_actor(request)
+        )
+        return Response({"results": results})
+
+    @action(
+        detail=False,
+        methods=["post"],
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def import_excel(self, request):
+        """Bulk import hostings from an uploaded .xlsx (multipart field
+        ``file``). Required column: name; optional: provider,
+        account_username, note, check_concurrency."""
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "Thiếu file."}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(services.import_hostings_from_xlsx(upload))
