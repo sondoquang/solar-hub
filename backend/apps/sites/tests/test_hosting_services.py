@@ -1,14 +1,17 @@
+from datetime import timedelta
+
 import httpx
 import pytest
+from django.utils import timezone
 
 from apps.integrations.woocommerce import WooClient
 from apps.sites import services
-from apps.sites.models import Hosting, Site
+from apps.sites.models import Site
 
 from .factories import HostingFactory, SiteFactory
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_check_hosting_only_checks_its_own_sites(monkeypatch):
     monkeypatch.setattr(WooClient, "system_status", lambda self: {"environment": {}})
     h1, h2 = HostingFactory(), HostingFactory()
@@ -29,7 +32,7 @@ def test_check_hosting_only_checks_its_own_sites(monkeypatch):
     assert orphan.status == Site.Status.UNKNOWN
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_check_hosting_none_checks_orphan_sites(monkeypatch):
     monkeypatch.setattr(WooClient, "system_status", lambda self: {"environment": {}})
     orphan = SiteFactory(hosting=None)
@@ -42,7 +45,7 @@ def test_check_hosting_none_checks_orphan_sites(monkeypatch):
     assert grouped.status == Site.Status.UNKNOWN
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_check_hosting_marks_down_on_error(monkeypatch):
     def boom(self):
         raise httpx.ConnectError("refused")
@@ -57,7 +60,7 @@ def test_check_hosting_marks_down_on_error(monkeypatch):
     assert site.status == Site.Status.DOWN
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_check_hosting_respects_concurrency(monkeypatch):
     """With check_concurrency=1, no two checks overlap. We assert the executor
     never runs more workers than the configured concurrency."""
@@ -85,6 +88,72 @@ def test_check_hosting_respects_concurrency(monkeypatch):
     monkeypatch.setattr(WooClient, "system_status", tracking_status)
     services.check_hosting(hosting.id)
     assert peak == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_periodic_check_skips_recently_passed_site(monkeypatch):
+    """A site that passed within the OK interval (10 min) is not re-checked by a
+    periodic run; one whose OK window has elapsed is."""
+    monkeypatch.setattr(WooClient, "system_status", lambda self: {"environment": {}})
+    now = timezone.now()
+    hosting = HostingFactory()
+    fresh = SiteFactory(
+        hosting=hosting,
+        status=Site.Status.UP,
+        last_checked_at=now - timedelta(minutes=6),
+    )
+    stale = SiteFactory(
+        hosting=hosting,
+        status=Site.Status.UP,
+        last_checked_at=now - timedelta(minutes=11),
+    )
+
+    results = services.check_hosting(hosting.id)
+
+    assert {r["id"] for r in results} == {stale.id}
+    assert fresh.id not in {r["id"] for r in results}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_periodic_check_retries_failed_site_on_fail_interval(monkeypatch):
+    """A failed site is retried every FAIL interval (5 min) — sooner than a
+    passed one — but not before it has elapsed."""
+    monkeypatch.setattr(WooClient, "system_status", lambda self: {"environment": {}})
+    now = timezone.now()
+    hosting = HostingFactory()
+    just_failed = SiteFactory(
+        hosting=hosting,
+        status=Site.Status.DOWN,
+        last_checked_at=now - timedelta(minutes=2),
+    )
+    due_failed = SiteFactory(
+        hosting=hosting,
+        status=Site.Status.DOWN,
+        last_checked_at=now - timedelta(minutes=6),
+    )
+    never_checked = SiteFactory(hosting=hosting)  # UNKNOWN, last_checked_at=None
+
+    results = services.check_hosting(hosting.id)
+
+    assert {r["id"] for r in results} == {due_failed.id, never_checked.id}
+    assert just_failed.id not in {r["id"] for r in results}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_manual_check_ignores_due_filter(monkeypatch):
+    """The on-demand "Check ngay" button checks every site regardless of when it
+    was last seen (passed seconds ago is still re-checked)."""
+    monkeypatch.setattr(WooClient, "system_status", lambda self: {"environment": {}})
+    hosting = HostingFactory()
+    just_passed = SiteFactory(
+        hosting=hosting,
+        status=Site.Status.UP,
+        last_checked_at=timezone.now(),
+    )
+
+    results = services.check_hosting(hosting.id, check_type="manual")
+
+    assert {r["id"] for r in results} == {just_passed.id}
 
 
 @pytest.mark.django_db

@@ -40,7 +40,7 @@ Ranh giới then chốt: **frontend ↔ Hub** (REST `/api/...`). Frontend **khô
 
 - **Dashboard (`/`)** — tổng quan: số đơn mới/đã forward, trạng thái sync gần nhất, đèn up/down từng site.
 - **Orders (`/orders`)** — *quan trọng nhất* (đã hiện thực, gom đơn theo polling): bảng đơn gom từ mọi site (read-only), 3 thẻ tổng hợp (tổng đơn / tổng doanh thu / chưa chuyển marketing), lọc theo website-hosting / trạng thái / cờ forwarded / khoảng ngày + tìm kiếm (số đơn, tên/SĐT khách), sort `date_created_woo`/`total`, modal chi tiết (thông tin KH + bảng `line_items`), nút **Đồng bộ ngay** gọi `POST /orders/poll_now/`. API ở `src/api/orders.js` (`useOrders`/`useOrderStats`/`usePollOrders` — poll xong invalidate `["orders"]`); component `OrderStats`/`OrderStatusBadge`/`OrderDetailModal`.
-- **Products (`/products`)** — danh sách + form CRUD master catalog (SKU, giá, tồn, ảnh), nút **Sync all** (gọi API kích hoạt task đồng bộ ở backend), hiển thị trạng thái mapping theo site.
+- **Products (`/products`)** — danh sách + **Drawer form kiểu WooCommerce** (`ProductRegisterForm`): chọn **loại sản phẩm** (simple/grouped/external/variable) → Tabs dữ liệu sản phẩm đổi theo loại (giá/tồn, liên kết ngoài, sản phẩm nhóm theo SKU, hoặc **thuộc tính + bảng biến thể** với nút "Tạo tất cả biến thể" = cartesian); mô tả/mô tả ngắn dùng `RichTextEditor` (TipTap); **danh mục** tick từ danh sách có sẵn (kéo từ site về) + thêm mới, nút "Cập nhật từ site". Nút **Sync all** (kích hoạt task đồng bộ ở backend) + mỗi dòng có nút **Trạng thái đồng bộ** mở `ProductSyncStatusModal` (xem §5.3).
 - **Sites (`/sites`)** — danh sách website, trạng thái up/down, **cột Hosting** + **lọc theo hosting** (gồm "Chưa gán hosting"), form đăng ký site (nhập base_url + key — key chỉ gửi đi, không hiển thị lại; chọn hosting tùy chọn). Mỗi dòng có nút **Ghi chú** mở modal nhật ký ghi chú (rich-text + đính kèm ảnh, mới nhất lên đầu).
 - **Hostings (`/hostings`)** — quản lý hosting (nhóm site): CRUD hosting, xem sức khỏe gom theo hosting (số site + đếm up/down/unknown), chỉnh `check_concurrency`, nút **Check ngay** chạy healthcheck cả nhóm (throttle ở backend).
 - **Health Checks (`/health-checks`)** — *Lịch sử kiểm tra sức khỏe*: bảng các lần kiểm tra website (read-only), 4 thẻ tổng hợp (tổng/khỏe mạnh/cảnh báo/lỗi nghiêm trọng + % và trend), lọc theo trạng thái / website-hosting / khoảng ngày / tìm kiếm, modal xem chi tiết, nút **Xuất báo cáo** (CSV).
@@ -59,6 +59,8 @@ Form (tạo/sửa sản phẩm, đăng ký site, bấm Sync all) gọi mutation 
 ### 5.3. Đồng bộ sản phẩm (từ phía FE)
 
 FE **không** tự đẩy sản phẩm xuống site. Bấm "Sync all" chỉ gọi một endpoint backend để **kích hoạt Celery task**; FE sau đó poll/hiển thị trạng thái sync (`SyncLog`/mapping) trả về từ Hub.
+
+**Trạng thái đồng bộ theo domain** (`ProductSyncStatusModal`): mở từ nút "Trạng thái đồng bộ" mỗi sản phẩm → gọi `GET /products/{id}/sync_status/` (backend trả mọi site active kèm cờ `synced` + `last_synced_at` + `woo_product_id`), bảng sắp **chưa-đồng-bộ lên trước**, tick chọn site (hoặc "Chọn site chưa đồng bộ") rồi **Đồng bộ site đã chọn** → `syncProducts({sites, products:[id]})`. **Danh mục 2 chiều:** "Cập nhật từ site" gọi `POST /products/categories/pull_now/` (kéo danh mục Woo→Hub), danh mục mới gõ trong form sẽ được Woo tạo khi đồng bộ.
 
 ## 6. Quản lý state
 

@@ -126,3 +126,53 @@ def push_products_batch_task(site_ids, master_ids=None):
     with ThreadPoolExecutor(max_workers=_push_batch_size()) as executor:
         results = list(executor.map(_push, sites))
     return {"pushed": len(results), "results": results}
+
+
+@shared_task
+def pull_all_categories(site_ids=None):
+    """Pull product categories from sites into the Hub, in concurrent batches.
+
+    Mirrors ``poll_all_orders``: live sites are chunked into batches of
+    ``ORDER_POLL_BATCH_SIZE`` and one ``pull_categories_batch_task`` is dispatched
+    per chunk, so a slow/broken site only holds up its own batch. The pull is
+    idempotent (upsert on ``(site, woo_category_id)``), so re-running is safe.
+    """
+    from apps.sites.models import Site
+
+    qs = Site.objects.filter(is_deleted=False)
+    if site_ids is not None:
+        qs = qs.filter(id__in=site_ids)
+    ids = list(qs.values_list("id", flat=True))
+
+    size = _batch_size()
+    batches = [ids[i : i + size] for i in range(0, len(ids), size)]
+    for chunk in batches:
+        pull_categories_batch_task.delay(chunk)
+    return {"sites": len(ids), "batches": len(batches)}
+
+
+@shared_task
+def pull_categories_batch_task(site_ids):
+    """Pull categories for a batch of sites, ``ORDER_POLL_BATCH_SIZE`` at a time.
+
+    Mirrors poll_sites_batch_task: a ThreadPoolExecutor caps how many sites hit
+    the network at once, and each worker closes its DB connection on the way out.
+    ``pull_categories_for_site`` swallows network errors into its result (never
+    raises), so one bad site does not abort the batch.
+    """
+    from apps.catalog import services
+    from apps.sites.models import Site
+
+    sites = list(Site.objects.filter(id__in=site_ids, is_deleted=False))
+    if not sites:
+        return {"pulled": 0, "results": []}
+
+    def _pull(site):
+        try:
+            return services.pull_categories_for_site(site)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=_batch_size()) as executor:
+        results = list(executor.map(_pull, sites))
+    return {"pulled": len(results), "results": results}

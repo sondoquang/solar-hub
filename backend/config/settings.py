@@ -140,6 +140,20 @@ PRODUCT_PUSH_BATCH_SIZE = env.int("PRODUCT_PUSH_BATCH_SIZE", default=8)
 PRODUCT_BATCH_ITEM_LIMIT = env.int("PRODUCT_BATCH_ITEM_LIMIT", default=100)
 PRODUCT_PUSH_THROTTLE_SECONDS = env.float("PRODUCT_PUSH_THROTTLE_SECONDS", default=0.5)
 
+# Site health-check (periodic, apps.monitoring.tasks.check_all_sites):
+#  - TIMEOUT: per-call timeout (s) for the system_status round-trip.
+#  - OK / FAIL INTERVAL: re-check cadence. A site that passed its last check is
+#    re-checked every OK interval; a site that failed (or was never reached) is
+#    retried every FAIL interval. The Celery beat tick (config/celery.py) is the
+#    FAIL interval, so it must stay <= OK interval.
+SITE_HEALTHCHECK_TIMEOUT_SECONDS = env.float("SITE_HEALTHCHECK_TIMEOUT_SECONDS", default=15.0)
+SITE_HEALTHCHECK_OK_INTERVAL_SECONDS = env.int(
+    "SITE_HEALTHCHECK_OK_INTERVAL_SECONDS", default=600
+)  # 10 min
+SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS = env.int(
+    "SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS", default=300
+)  # 5 min
+
 # --- CORS / CSRF (CORS only needed for dev-on-host Vite at :5173) --------
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173"])
 CSRF_TRUSTED_ORIGINS = env.list(

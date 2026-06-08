@@ -7,12 +7,15 @@ stay thin; all WooCommerce traffic goes through ``WooClient``.
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from functools import partial
 
 import httpx
 import nh3
 import openpyxl
+from django.conf import settings
 from django.db import connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -66,6 +69,7 @@ def client_for_site(site: Site) -> WooClient:
         base_url=site.base_url,
         consumer_key=site.consumer_key,
         consumer_secret=decrypt_secret(site.consumer_secret_enc),
+        status_timeout=settings.SITE_HEALTHCHECK_TIMEOUT_SECONDS,
     )
 
 
@@ -161,18 +165,52 @@ def _check_site_threadsafe(site: Site, *, check_type: str, performed_by) -> dict
         connection.close()
 
 
+# Grace (s) subtracted from the due cutoffs so beat/check-execution jitter does
+# not bump a site to the next tick (e.g. a site checked ~599s ago still counts as
+# due for its 600s window). Small relative to the gap between the two intervals.
+_DUE_TOLERANCE_SECONDS = 30
+
+
+def _due_filter():
+    """Q for sites whose next periodic check is due now.
+
+    A site that passed its last check (status UP) is re-checked every
+    ``SITE_HEALTHCHECK_OK_INTERVAL_SECONDS``; a site that failed or was never
+    reached (DOWN/UNKNOWN, or never checked) is retried every
+    ``SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS``. This keeps healthy sites off the
+    every-tick cadence so we don't hammer them needlessly.
+    """
+    now = timezone.now()
+    ok_cutoff = now - timedelta(
+        seconds=settings.SITE_HEALTHCHECK_OK_INTERVAL_SECONDS - _DUE_TOLERANCE_SECONDS
+    )
+    fail_cutoff = now - timedelta(
+        seconds=settings.SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS - _DUE_TOLERANCE_SECONDS
+    )
+    return (
+        Q(last_checked_at__isnull=True)
+        | Q(status=Site.Status.UP, last_checked_at__lte=ok_cutoff)
+        | (~Q(status=Site.Status.UP) & Q(last_checked_at__lte=fail_cutoff))
+    )
+
+
 def check_hosting(
     hosting_id, *, check_type: str = "periodic", performed_by=None
 ) -> list[dict]:
-    """Health-check every site of one hosting, at most ``check_concurrency``
+    """Health-check the due sites of one hosting, at most ``check_concurrency``
     domains at a time (the rest queue and run as slots free up). Different
     hostings are checked in parallel by the Celery fan-out in
     apps/monitoring/tasks.py. ``hosting_id=None`` checks sites with no hosting.
 
-    Defaults to ``check_type="periodic"`` (the Celery caller); the on-demand
-    "Check ngay" button passes ``manual`` + the acting user.
+    Defaults to ``check_type="periodic"`` (the Celery caller), which only checks
+    sites that are *due* (see ``_due_filter`` — healthy sites are re-checked less
+    often than failed ones). The on-demand "Check ngay" button passes ``manual``
+    + the acting user and checks every site regardless of when it was last seen.
     """
-    sites = list(Site.objects.filter(hosting_id=hosting_id, is_deleted=False))
+    qs = Site.objects.filter(hosting_id=hosting_id, is_deleted=False)
+    if check_type == "periodic":
+        qs = qs.filter(_due_filter())
+    sites = list(qs)
     if not sites:
         return []
 

@@ -18,8 +18,12 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
 
 from . import services
-from .models import MasterProduct
-from .serializers import MasterProductSerializer
+from .models import Category, MasterProduct
+from .serializers import (
+    CategorySerializer,
+    MasterProductSerializer,
+    ProductSyncStatusSerializer,
+)
 
 
 class MasterProductViewSet(viewsets.ModelViewSet):
@@ -75,4 +79,47 @@ class MasterProductViewSet(viewsets.ModelViewSet):
             )
 
         result = push_all_products.delay(site_ids=sites or None, master_ids=products or None)
+        return Response({"task_id": result.id})
+
+    @action(detail=True, methods=["get"])
+    def sync_status(self, request, pk=None):
+        """Per-product sync state across every active site (đã/chưa đồng bộ)."""
+        master = self.get_object()
+        rows = services.product_sync_status(master)
+        return Response(ProductSyncStatusSerializer(rows, many=True).data)
+
+
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only category catalog for the form picker, plus a manual pull trigger.
+
+    - ``GET  /api/products/categories/``          — list known categories (search).
+    - ``POST /api/products/categories/pull_now/`` — pull categories from the sites.
+
+    Categories are created/synced *down* implicitly through the product push
+    (a product carrying a new category name makes Woo create it); this viewset is
+    the *up* direction (Woo → Hub) so the picker shows what already exists.
+    """
+
+    queryset = Category.objects.filter(is_deleted=False)
+    serializer_class = CategorySerializer
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ["name"]
+    ordering_fields = ["name"]
+    ordering = ["name"]
+
+    @action(detail=False, methods=["post"])
+    def pull_now(self, request):
+        """Trigger an async category pull from sites (validation only here)."""
+        from apps.sync.tasks import pull_all_categories
+
+        sites = request.data.get("sites")
+        if sites is not None and (
+            not isinstance(sites, list) or not all(isinstance(s, int) for s in sites)
+        ):
+            return Response(
+                {"detail": "sites phải là danh sách id (số nguyên)."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = pull_all_categories.delay(site_ids=sites or None)
         return Response({"task_id": result.id})

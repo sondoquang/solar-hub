@@ -1,5 +1,5 @@
-import { Button, Input, Modal, Popconfirm, Select } from "antd";
-import { Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Button, Drawer, Input, Popconfirm, Select } from "antd";
+import { Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
@@ -20,6 +20,7 @@ import ProductRegisterForm, {
 } from "../components/ProductRegisterForm.jsx";
 import ProductStats from "../components/ProductStats.jsx";
 import ProductStatusBadge from "../components/ProductStatusBadge.jsx";
+import ProductSyncStatusModal from "../components/ProductSyncStatusModal.jsx";
 import { formatDate, formatVND } from "../lib/format.js";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -39,6 +40,7 @@ export default function Products() {
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null); // product being edited, or null
+  const [syncProduct, setSyncProduct] = useState(null); // product whose sync panel is open
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -223,12 +225,20 @@ export default function Products() {
     {
       key: "actions",
       title: "Thao tác",
-      width: 170,
+      width: 230,
       align: "right",
       hideable: false,
       ellipsis: false,
       render: (_v, r) => (
         <div className="flex items-center justify-end gap-1">
+          <Button
+            size="small"
+            icon={<Network size={14} />}
+            onClick={() => setSyncProduct(r)}
+            title="Trạng thái đồng bộ theo domain"
+          >
+            Đồng bộ
+          </Button>
           <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(r)}>
             Sửa
           </Button>
@@ -351,12 +361,11 @@ export default function Products() {
         </div>
       )}
 
-      <Modal
+      <Drawer
         open={showForm}
-        onCancel={closeForm}
-        footer={null}
-        destroyOnHidden
-        width={640}
+        onClose={closeForm}
+        destroyOnClose
+        width={920}
         title={editing ? "Sửa sản phẩm" : "Thêm sản phẩm"}
       >
         <ProductRegisterForm
@@ -365,7 +374,13 @@ export default function Products() {
           onCancel={closeForm}
           pending={createProduct.isPending || updateProduct.isPending}
         />
-      </Modal>
+      </Drawer>
+
+      <ProductSyncStatusModal
+        product={syncProduct}
+        open={!!syncProduct}
+        onClose={() => setSyncProduct(null)}
+      />
     </section>
   );
 }

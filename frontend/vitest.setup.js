@@ -2,6 +2,15 @@ import "@testing-library/jest-dom/vitest";
 import { afterAll, afterEach, beforeAll, vi } from "vitest";
 import { server } from "./src/mocks/server.js";
 
+// jsdom has no ResizeObserver; antd's Table (rc-component) observes its size.
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 // jsdom has no matchMedia; antd's responsive components (Table, Grid) call it.
 if (!window.matchMedia) {
   window.matchMedia = (query) => ({

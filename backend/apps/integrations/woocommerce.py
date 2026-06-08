@@ -13,9 +13,22 @@ import httpx
 
 
 class WooClient:
-    def __init__(self, base_url: str, consumer_key: str, consumer_secret: str) -> None:
+    # Default per-call timeout (s) for the system_status health-check round-trip.
+    # Overridable per instance so the sites layer can drive it from settings/env
+    # without giving this class a settings dependency.
+    DEFAULT_STATUS_TIMEOUT = 15.0
+
+    def __init__(
+        self,
+        base_url: str,
+        consumer_key: str,
+        consumer_secret: str,
+        *,
+        status_timeout: float = DEFAULT_STATUS_TIMEOUT,
+    ) -> None:
         self.base = base_url.rstrip("/") + "/wp-json/wc/v3"
         self._auth = (consumer_key, consumer_secret)
+        self._status_timeout = status_timeout
 
     def list_orders(
         self,
@@ -137,8 +150,86 @@ class WooClient:
         r.raise_for_status()
         return r.json()
 
+    def list_categories(self, per_page: int = 100) -> list[dict]:
+        """GET /products/categories, paginated — pull a site's category tree.
+
+        Mirrors ``list_orders``: walks every page (``X-WP-TotalPages``) and
+        concatenates, Basic auth with the query-string fallback on a 401 (some
+        shared hosts strip the ``Authorization`` header). Returns each remote
+        category dict (``{id, name, slug, parent, ...}``), which the caller
+        upserts into ``Category`` / ``CategoryMapping``.
+        """
+        base_params = {"per_page": min(per_page, 100)}
+        categories: list[dict] = []
+        page = 1
+        while True:
+            r = self._get_categories_page({**base_params, "page": page})
+            batch = r.json()
+            if not batch:
+                break
+            categories.extend(batch)
+            total_pages = int(r.headers.get("X-WP-TotalPages", 1) or 1)
+            if page >= total_pages:
+                break
+            page += 1
+        return categories
+
+    def _get_categories_page(self, params: dict) -> httpx.Response:
+        """One page of /products/categories, with the 401 query-string fallback."""
+        url = f"{self.base}/products/categories"
+        r = httpx.get(url, params=params, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.get(
+                url,
+                params={**params, "consumer_key": key, "consumer_secret": secret},
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r
+
+    def batch_variations(
+        self,
+        parent_id: int,
+        create: list[dict] | None = None,
+        update: list[dict] | None = None,
+        delete: list[int] | None = None,
+    ) -> dict:
+        """POST /products/{parent_id}/variations/batch — variations in one request.
+
+        Mirrors ``batch_products`` (60s timeout, Basic auth + query-string
+        fallback on 401, ``raise_for_status()``). WooCommerce variations are child
+        products of a *variable* parent, so this must run after the parent exists
+        and its ``woo_product_id`` is known. Returns Woo's response
+        ``{"create": [...], "update": [...], "delete": [...]}`` where each item
+        carries its ``id`` (``woo_variation_id``) and ``sku``, which the caller
+        matches back onto ``ProductVariationMapping``. The caller chunks to the
+        ~100-item cap; this method sends whatever it is given.
+        """
+        url = f"{self.base}/products/{parent_id}/variations/batch"
+        payload = {
+            "create": create or [],
+            "update": update or [],
+            "delete": delete or [],
+        }
+        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.post(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                json=payload,
+                timeout=60,
+            )
+        r.raise_for_status()
+        return r.json()
+
     def system_status(self) -> dict:
-        """GET /system_status — used to verify the site's API key works."""
-        r = httpx.get(f"{self.base}/system_status", auth=self._auth, timeout=15)
+        """GET /system_status — used to verify the site's API key works.
+
+        Timeout is ``status_timeout`` (constructor arg, default 15s) so the
+        periodic health-check can tune it via SITE_HEALTHCHECK_TIMEOUT_SECONDS.
+        """
+        r = httpx.get(f"{self.base}/system_status", auth=self._auth, timeout=self._status_timeout)
         r.raise_for_status()
         return r.json()

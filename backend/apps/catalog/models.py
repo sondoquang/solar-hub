@@ -27,9 +27,15 @@ class MasterProduct(models.Model):
         OUTOFSTOCK = "outofstock", "Out of stock"
         ONBACKORDER = "onbackorder", "On backorder"
 
+    class Type(models.TextChoices):
+        SIMPLE = "simple", "Simple"
+        GROUPED = "grouped", "Grouped"
+        EXTERNAL = "external", "External/Affiliate"
+        VARIABLE = "variable", "Variable"
+
     sku = models.CharField(max_length=120, unique=True, db_index=True)
     name = models.CharField(max_length=255)
-    type = models.CharField(max_length=20, default="simple")  # Woo product type
+    type = models.CharField(max_length=20, choices=Type.choices, default=Type.SIMPLE)
     description = models.TextField(blank=True)
     short_description = models.TextField(blank=True)
     regular_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -41,8 +47,25 @@ class MasterProduct(models.Model):
     weight = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     # List of image URLs: ["https://...", ...] (pushed as [{"src": url}]).
     images = models.JSONField(default=list)
-    # List of category names: ["Pin mặt trời", ...] (pushed as [{"name": n}]).
+    # List of category names: ["Pin mặt trời", ...] (pushed as [{"name": n}] or, when
+    # the name is mapped to a site's woo_category_id via CategoryMapping, [{"id": n}]).
     categories = models.JSONField(default=list)
+
+    # --- Type-specific data (all defaulted → simple products are unaffected) -----
+    # external: the affiliate link + buy-button label Woo shows instead of add-to-cart.
+    external_url = models.URLField(blank=True, default="")
+    button_text = models.CharField(max_length=120, blank=True, default="")
+    # grouped: child products referenced by SKU (cross-site safe — resolved to each
+    # site's woo_product_id at push time, never assumed equal across sites).
+    grouped_skus = models.JSONField(default=list)  # ["SP-1", "SP-2"]
+    # variable: attribute definitions and the per-combination variations.
+    #   attributes: [{"name", "options": [...], "variation": bool, "visible": bool}]
+    #   variations: [{"sku", "regular_price", "sale_price", "stock_status",
+    #                 "weight", "attributes": {name: option}, "image"}]
+    # Variations are pushed via a separate endpoint (/products/{id}/variations/batch)
+    # and their per-site woo ids live on ProductVariationMapping.
+    attributes = models.JSONField(default=list)
+    variations = models.JSONField(default=list)
 
     is_deleted = models.BooleanField(default=False, db_index=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -93,3 +116,112 @@ class ProductMapping(models.Model):
 
     def __str__(self) -> str:
         return f"{self.master_id}@{self.site_id} → {self.woo_product_id}"
+
+
+class Category(models.Model):
+    """Hub-side catalog of category names, populated by a pull from each site.
+
+    The product still references categories by **name** (``MasterProduct.categories``);
+    this table is the picker source ("tick from existing") and the per-site
+    ``woo_category_id`` lives on ``CategoryMapping``. ``name`` is normalized
+    (trim + collapse whitespace, case preserved for display) and UNIQUE, so the
+    same category coming from several sites converges to one row with several
+    mappings.
+    """
+
+    name = models.CharField(max_length=255, unique=True, db_index=True)
+    slug = models.CharField(max_length=255, blank=True, default="")
+    parent_name = models.CharField(max_length=255, blank=True, default="")  # by name (v1)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name_plural = "categories"
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class CategoryMapping(models.Model):
+    """Maps one ``Category`` to its ``woo_category_id`` on one ``Site``.
+
+    Mirrors ``ProductMapping``: per-site ids are RIÊNG, so resolving a category
+    name to the right remote id on push goes through this row. UNIQUE
+    ``(category, site)`` keeps the pull idempotent; UNIQUE ``(site,
+    woo_category_id)`` guards against two categories claiming the same remote id.
+    """
+
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.CASCADE,
+        related_name="mappings",
+    )
+    site = models.ForeignKey(
+        "sites.Site",
+        on_delete=models.CASCADE,
+        related_name="category_mappings",
+        db_index=True,
+    )
+    woo_category_id = models.BigIntegerField()
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["category", "site"], name="catmap_unique_category_site"
+            ),
+            models.UniqueConstraint(
+                fields=["site", "woo_category_id"], name="catmap_unique_site_woo"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.category_id}@{self.site_id} → {self.woo_category_id}"
+
+
+class ProductVariationMapping(models.Model):
+    """Maps one variation (by ``variation_sku``) of a variable ``MasterProduct``
+    to its ``woo_variation_id`` on one ``Site``.
+
+    Variations are child products in WooCommerce with their own ids, pushed via
+    ``/products/{parent}/variations/batch`` after the parent. ``woo_parent_id`` is
+    kept for convenience (that endpoint needs the parent id). UNIQUE
+    ``(master, site, variation_sku)`` keeps the variation push idempotent; UNIQUE
+    ``(site, woo_variation_id)`` guards against duplicates.
+    """
+
+    master = models.ForeignKey(
+        MasterProduct,
+        on_delete=models.CASCADE,
+        related_name="variation_mappings",
+    )
+    site = models.ForeignKey(
+        "sites.Site",
+        on_delete=models.CASCADE,
+        related_name="variation_mappings",
+        db_index=True,
+    )
+    variation_sku = models.CharField(max_length=120, db_index=True)
+    woo_variation_id = models.BigIntegerField()
+    woo_parent_id = models.BigIntegerField()
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["master", "site", "variation_sku"],
+                name="varmap_unique_master_site_sku",
+            ),
+            models.UniqueConstraint(
+                fields=["site", "woo_variation_id"], name="varmap_unique_site_woo"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.master_id}/{self.variation_sku}@{self.site_id}"

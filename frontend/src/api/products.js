@@ -18,6 +18,9 @@ import { api } from "./client.js";
 //   DELETE /products/{id}/      -> deleteProduct / useDeleteProduct (soft-delete)
 //   POST   /products/sync_now/  -> syncProducts / useSyncProducts (Celery fan-out)
 //       body: { sites?: number[], products?: number[] }
+//   GET    /products/{id}/sync_status/        -> getProductSyncStatus (per-domain)
+//   GET    /products/categories/              -> getProductCategories (picker)
+//   POST   /products/categories/pull_now/     -> pullProductCategories (Woo → Hub)
 
 const clean = (params = {}) =>
   Object.fromEntries(
@@ -44,7 +47,22 @@ export const deleteProduct = (id) =>
 export const syncProducts = (body = {}) =>
   api.post("/products/sync_now/", clean(body)).then((r) => r.data);
 
+// Per-product sync state across every active site (đã/chưa đồng bộ + thời gian).
+export const getProductSyncStatus = (id) =>
+  api.get(`/products/${id}/sync_status/`).then((r) => r.data);
+
+// Known categories for the form picker (a big page so the whole list comes back).
+export const getProductCategories = () =>
+  api
+    .get("/products/categories/", { params: { page_size: 1000 } })
+    .then((r) => r.data.results ?? r.data);
+
+// Trigger the async pull of categories from the sites (Woo → Hub).
+export const pullProductCategories = () =>
+  api.post("/products/categories/pull_now/", {}).then((r) => r.data);
+
 const KEY = ["products"];
+const CAT_KEY = [...KEY, "categories"];
 
 // Server-side pagination/sort/filter: params live in the query key so any
 // change (page / size / sort / filter / search) re-fetches from the backend.
@@ -64,6 +82,43 @@ export function useProductStats(params = {}) {
   });
 }
 
+// One product's full detail (carries nested `mappings`) — used by the sync panel.
+export function useProduct(id, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: [...KEY, "detail", id],
+    queryFn: () => getProduct(id),
+    enabled: enabled && id != null,
+  });
+}
+
+// Debounced server-side product search for the grouped-product picker.
+export function useProductSearch(search) {
+  return useQuery({
+    queryKey: [...KEY, "search", search],
+    queryFn: () => getProducts({ search, page_size: 20 }),
+    enabled: !!search,
+    placeholderData: keepPreviousData,
+  });
+}
+
+// Categories rarely change within a session; cache to avoid refetch churn while
+// the form is open. The pull mutation invalidates this on settle.
+export function useProductCategories() {
+  return useQuery({
+    queryKey: CAT_KEY,
+    queryFn: getProductCategories,
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useProductSyncStatus(id, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: [...KEY, "sync_status", id],
+    queryFn: () => getProductSyncStatus(id),
+    enabled: enabled && id != null,
+  });
+}
+
 function useInvalidatingMutation(mutationFn) {
   const qc = useQueryClient();
   return useMutation({
@@ -80,3 +135,13 @@ export const useDeleteProduct = () => useInvalidatingMutation(deleteProduct);
 // but mappings/last_synced_at update once the task runs — invalidate so a later
 // refetch shows them. (The task is async; we don't await its completion here.)
 export const useSyncProducts = () => useInvalidatingMutation(syncProducts);
+
+// Pulling categories from sites is async; invalidate the picker cache on settle
+// so it refreshes once the task has run.
+export function useSyncCategories() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: pullProductCategories,
+    onSettled: () => qc.invalidateQueries({ queryKey: CAT_KEY }),
+  });
+}
