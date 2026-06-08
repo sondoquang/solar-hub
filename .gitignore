@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 *.sqlite3
 backend/staticfiles/
+backend/media/
 .pytest_cache/
 .ruff_cache/
 

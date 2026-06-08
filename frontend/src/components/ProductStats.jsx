@@ -1,33 +1,30 @@
 import { Skeleton } from "antd";
-import { Banknote, Send, ShoppingCart } from "lucide-react";
+import { Link2, Package, Unlink } from "lucide-react";
 
-import { formatVND } from "../lib/format.js";
-
-// Presentational summary cards for the orders screen. Counts come from the
-// /orders/stats/ endpoint (independent of the paginated list). While `loading`
+// Presentational summary cards for the products screen. Counts come from the
+// /products/stats/ endpoint (independent of the paginated list). While `loading`
 // the values render as skeleton blocks instead of flashing 0 → real number.
-export default function OrderStats({ stats = {}, loading = false }) {
-  const total = stats.total ?? 0;
+export default function ProductStats({ stats = {}, loading = false }) {
   const cards = [
     {
       key: "total",
-      label: "Tổng số đơn",
-      value: (total).toLocaleString("vi-VN"),
-      Icon: ShoppingCart,
+      label: "Tổng sản phẩm",
+      value: (stats.total ?? 0).toLocaleString("vi-VN"),
+      Icon: Package,
       tint: "bg-blue-50 text-blue-500",
     },
     {
-      key: "revenue",
-      label: "Tổng doanh thu",
-      value: formatVND(stats.revenue ?? 0),
-      Icon: Banknote,
+      key: "mapped",
+      label: "Đã đồng bộ site",
+      value: (stats.mapped ?? 0).toLocaleString("vi-VN"),
+      Icon: Link2,
       tint: "bg-green-50 text-success",
     },
     {
-      key: "not_forwarded",
-      label: "Chưa chuyển marketing",
-      value: (stats.not_forwarded ?? 0).toLocaleString("vi-VN"),
-      Icon: Send,
+      key: "unmapped",
+      label: "Chưa đồng bộ",
+      value: (stats.unmapped ?? 0).toLocaleString("vi-VN"),
+      Icon: Unlink,
       tint: "bg-amber-50 text-warning",
     },
   ];

@@ -11,8 +11,8 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from . import services
-from .models import Hosting, Site
-from .serializers import HostingSerializer, SiteSerializer
+from .models import Hosting, Site, SiteNote
+from .serializers import HostingSerializer, SiteNoteSerializer, SiteSerializer
 
 
 def _actor(request):
@@ -172,3 +172,62 @@ class HostingViewSet(viewsets.ModelViewSet):
                 {"detail": "Thiếu file."}, status=status.HTTP_400_BAD_REQUEST
             )
         return Response(services.import_hostings_from_xlsx(upload))
+
+
+class SiteNoteViewSet(viewsets.ModelViewSet):
+    """Per-site note history (a running journal, newest first).
+
+    Multipart so a note carries its rich-text ``content`` plus any number of
+    ``images`` file attachments in one request. List is scoped to one site via
+    ``?site=<id>``; create/update/destroy go through the service layer so HTML
+    is sanitized and attachments validated.
+    """
+
+    serializer_class = SiteNoteSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    ordering = ["-created_at"]
+
+    def get_queryset(self):
+        qs = (
+            SiteNote.objects.filter(is_deleted=False)
+            .select_related("created_by")
+            .prefetch_related("images")
+        )
+        site = self.request.query_params.get("site")
+        if site:
+            qs = qs.filter(site_id=site)
+        return qs
+
+    def _remove_image_ids(self):
+        data = self.request.data
+        ids = data.getlist("remove_image_ids") if hasattr(data, "getlist") else (
+            data.get("remove_image_ids") or []
+        )
+        result = []
+        for value in ids:
+            try:
+                result.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def perform_create(self, serializer):
+        data = serializer.validated_data
+        serializer.instance = services.create_site_note(
+            site=data["site"],
+            content=data.get("content", ""),
+            created_by=_actor(self.request),
+            images=self.request.FILES.getlist("images"),
+        )
+
+    def perform_update(self, serializer):
+        data = serializer.validated_data
+        serializer.instance = services.update_site_note(
+            serializer.instance,
+            content=data.get("content"),
+            new_images=self.request.FILES.getlist("images"),
+            remove_image_ids=self._remove_image_ids(),
+        )
+
+    def perform_destroy(self, instance):
+        services.delete_site_note(instance)

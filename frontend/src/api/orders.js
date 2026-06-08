@@ -16,11 +16,38 @@ import { api } from "./client.js";
 //   POST /orders/poll_now/ -> pollOrdersNow / usePollOrders (kick the Celery fan-out)
 //       body: { status?, sites?: number[], date_from?, date_to? }
 //   POST /orders/{id}/complete/ -> completeOrder / useCompleteOrder (push 'completed' to Woo)
+//   GET  /orders/export_pdf/ -> exportOrdersPdf (PDF blob download)
+//       params: ?ids=1,2,3 (selected orders) — or the active list filters when omitted
 
 const clean = (params = {}) =>
   Object.fromEntries(
     Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")
   );
+
+// Pull the server-suggested filename out of Content-Disposition, else fall back.
+const filenameFromDisposition = (disposition, fallback) => {
+  const match = /filename="?([^"]+)"?/.exec(disposition || "");
+  return match ? match[1] : fallback;
+};
+
+// Download the selected orders as a single PDF (one order per page). Pass
+// `ids` as an array of selected order ids; omit to export the current filters.
+export async function exportOrdersPdf({ ids, ...params } = {}) {
+  const query = clean({ ...params, ids: ids?.length ? ids.join(",") : undefined });
+  const res = await api.get("/orders/export_pdf/", {
+    params: query,
+    responseType: "blob",
+  });
+  const filename = filenameFromDisposition(res.headers["content-disposition"], "don-hang.pdf");
+  const url = URL.createObjectURL(res.data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 export const getOrders = (params = {}) =>
   api.get("/orders/", { params: clean(params) }).then((r) => r.data);

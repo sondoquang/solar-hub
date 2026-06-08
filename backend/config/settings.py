@@ -94,6 +94,10 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
+# --- Media (user uploads: site-note image attachments) ------------------
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- DRF ----------------------------------------------------------------
@@ -128,6 +132,13 @@ CELERY_TASK_TRACK_STARTED = True
 
 # Sites polled concurrently per order-sync batch (one batch task per chunk).
 ORDER_POLL_BATCH_SIZE = env.int("ORDER_POLL_BATCH_SIZE", default=8)
+
+# Product push ("Sync all"): sites pushed concurrently per batch task, max items
+# (create+update+delete) per WooCommerce /products/batch request (~100 cap), and
+# a small throttle between chunks to one site (shared hosts choke easily).
+PRODUCT_PUSH_BATCH_SIZE = env.int("PRODUCT_PUSH_BATCH_SIZE", default=8)
+PRODUCT_BATCH_ITEM_LIMIT = env.int("PRODUCT_BATCH_ITEM_LIMIT", default=100)
+PRODUCT_PUSH_THROTTLE_SECONDS = env.float("PRODUCT_PUSH_THROTTLE_SECONDS", default=0.5)
 
 # --- CORS / CSRF (CORS only needed for dev-on-host Vite at :5173) --------
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173"])

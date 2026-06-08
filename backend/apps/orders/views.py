@@ -44,6 +44,31 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         qs = self.filter_queryset(self.get_queryset())
         return Response(services.order_stats(qs))
 
+    @action(detail=False, methods=["get"])
+    def export_pdf(self, request):
+        """Stream the selected orders as a single PDF (one order per page).
+
+        ``?ids=1,2,3`` restricts to those orders (the "Xuất PDF" of ticked rows
+        or one order from the detail modal); without it the whole filtered
+        selection is exported. Capped at ``services.MAX_PDF_ORDERS``.
+        """
+        from django.http import HttpResponse
+
+        from .pdf import build_orders_pdf
+
+        qs = self.filter_queryset(self.get_queryset())
+        orders = services.select_orders_for_pdf(qs, request.query_params.get("ids"))
+        pdf_bytes = build_orders_pdf(orders)
+
+        filename = (
+            f"don-hang-{orders[0].number}.pdf"
+            if len(orders) == 1
+            else "don-hang.pdf"
+        )
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
     @action(detail=False, methods=["post"])
     def poll_now(self, request):
         """Trigger an immediate poll of ONE status (async, via Celery).

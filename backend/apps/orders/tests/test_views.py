@@ -69,6 +69,39 @@ def test_stats_endpoint(client):
 
 
 @pytest.mark.django_db
+def test_export_pdf_returns_pdf(client):
+    OrderFactory(number="A-1")
+    OrderFactory(number="A-2")
+    resp = client.get("/api/orders/export_pdf/")
+    assert resp.status_code == 200
+    assert resp["Content-Type"] == "application/pdf"
+    body = b"".join(resp.streaming_content) if resp.streaming else resp.content
+    assert body[:5] == b"%PDF-"  # valid PDF magic bytes
+    assert "attachment" in resp["Content-Disposition"]
+
+
+@pytest.mark.django_db
+def test_export_pdf_restricts_to_ids(client):
+    o1 = OrderFactory(number="KEEP")
+    OrderFactory(number="DROP")
+    resp = client.get("/api/orders/export_pdf/", {"ids": str(o1.id)})
+    assert resp.status_code == 200
+    # A single id names the file after that order's number.
+    assert "don-hang-KEEP.pdf" in resp["Content-Disposition"]
+
+
+@pytest.mark.django_db
+def test_export_pdf_honours_filters(client):
+    """Without ids, the export follows the active list filters."""
+    OrderFactory(status="processing")
+    OrderFactory(status="completed")
+    # filtered to one order → multi-order filename rule does not apply
+    resp = client.get("/api/orders/export_pdf/", {"status": "completed"})
+    assert resp.status_code == 200
+    assert resp["Content-Type"] == "application/pdf"
+
+
+@pytest.mark.django_db
 def test_orders_are_read_only(client):
     """Orders are pulled in, not created by hand — no write endpoint."""
     resp = client.post("/api/orders/", {}, format="json")

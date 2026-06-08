@@ -67,7 +67,7 @@ export default function HealthChecks() {
     page,
     page_size: pageSize,
   });
-  const { data: stats } = useHealthCheckStats(filters);
+  const { data: stats, isLoading: statsLoading } = useHealthCheckStats(filters);
   const { data: hostingData } = useHostings({ page_size: 100 });
   const { data: siteData } = useSites({ page_size: 100 });
 
@@ -242,7 +242,7 @@ export default function HealthChecks() {
       </div>
 
       <div className="mb-3">
-        <HealthCheckStats stats={stats ?? {}} />
+        <HealthCheckStats stats={stats ?? {}} loading={statsLoading} />
       </div>
 
       <div className="mb-2.5 flex flex-wrap items-center gap-2">

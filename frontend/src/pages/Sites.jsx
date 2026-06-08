@@ -3,6 +3,7 @@ import {
   ClipboardCheck,
   ExternalLink,
   Globe,
+  NotebookPen,
   Pencil,
   Play,
   Plus,
@@ -26,6 +27,7 @@ import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
 import SiteImport from "../components/SiteImport.jsx";
+import SiteNotesModal from "../components/SiteNotesModal.jsx";
 import SiteRegisterForm from "../components/SiteRegisterForm.jsx";
 import SiteStats from "../components/SiteStats.jsx";
 import StatusDot from "../components/StatusDot.jsx";
@@ -36,6 +38,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 export default function Sites() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null); // site being edited, or null
+  const [notesSite, setNotesSite] = useState(null); // site whose notes are open, or null
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [ordering, setOrdering] = useState(null); // null | "name" | "-name"
   const [hostingFilter, setHostingFilter] = useState("all"); // "all" | "none" | hosting id
@@ -62,7 +65,7 @@ export default function Sites() {
     hosting: hostingFilter === "all" ? undefined : hostingFilter,
     search: search || undefined,
   });
-  const { data: stats } = useSiteStats();
+  const { data: stats, isLoading: statsLoading } = useSiteStats();
   // Large page so the filter dropdown lists every hosting, not just page 1.
   const { data: hostingData } = useHostings({ page_size: 100 });
 
@@ -216,7 +219,7 @@ export default function Sites() {
     {
       key: "actions",
       title: "Hành động",
-      width: 280,
+      width: 360,
       align: "right",
       hideable: false,
       ellipsis: false,
@@ -231,6 +234,13 @@ export default function Sites() {
               onClick={() => handleTest(site)}
             >
               {testing ? "Đang kiểm tra…" : "Test"}
+            </Button>
+            <Button
+              size="small"
+              icon={<NotebookPen size={14} />}
+              onClick={() => setNotesSite(site)}
+            >
+              Ghi chú
             </Button>
             <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(site)}>
               Sửa
@@ -292,7 +302,7 @@ export default function Sites() {
       </div>
 
       <div className="mb-3">
-        <SiteStats counts={stats ?? {}} />
+        <SiteStats counts={stats ?? {}} loading={statsLoading} />
       </div>
 
       {hostings.length > 0 && (
@@ -381,6 +391,12 @@ export default function Sites() {
           pending={createSite.isPending || updateSite.isPending}
         />
       </Modal>
+
+      <SiteNotesModal
+        site={notesSite}
+        open={!!notesSite}
+        onClose={() => setNotesSite(null)}
+      />
     </section>
   );
 }
