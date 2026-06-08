@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Hosting, Site
+from .models import Hosting, Site, SiteNote, SiteNoteImage
 
 
 class HostingSerializer(serializers.ModelSerializer):
@@ -106,3 +106,50 @@ class SiteSerializer(serializers.ModelSerializer):
         if self.instance is None and not attrs.get("consumer_secret"):
             raise serializers.ValidationError({"consumer_secret": "Bắt buộc khi tạo site."})
         return attrs
+
+
+class SiteNoteImageSerializer(serializers.ModelSerializer):
+    """Read-only view of a note attachment; ``url`` is absolute so the frontend
+    (served from a different origin in dev) loads it directly."""
+
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SiteNoteImage
+        fields = ["id", "url", "original_name", "uploaded_at"]
+
+    def get_url(self, obj) -> str | None:
+        if not obj.image:
+            return None
+        request = self.context.get("request")
+        url = obj.image.url
+        return request.build_absolute_uri(url) if request else url
+
+
+class SiteNoteSerializer(serializers.ModelSerializer):
+    """One entry in a site's note history. ``content`` (rich-text HTML) is the
+    only writable field here — it is sanitized in the service layer before
+    saving. Attachments are written via multipart ``images`` files in the view,
+    not through this serializer, and read back as nested ``images``."""
+
+    images = SiteNoteImageSerializer(many=True, read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SiteNote
+        fields = [
+            "id",
+            "site",
+            "content",
+            "images",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_by", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj) -> str:
+        if obj.created_by is None:
+            return "Hệ thống"
+        return obj.created_by.get_full_name() or obj.created_by.get_username()

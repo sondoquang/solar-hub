@@ -4,6 +4,7 @@ import { Toaster } from "react-hot-toast";
 
 import AppLayout from "./components/AppLayout.jsx";
 import Loading from "./components/Loading.jsx";
+import PageSkeleton from "./components/PageSkeleton.jsx";
 import { AuthProvider, useAuth } from "./lib/AuthContext.jsx";
 
 const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
@@ -14,8 +15,13 @@ const Hostings = lazy(() => import("./pages/Hostings.jsx"));
 const HealthChecks = lazy(() => import("./pages/HealthChecks.jsx"));
 const Login = lazy(() => import("./pages/Login.jsx"));
 
-const wrap = (Page) => (
-  <Suspense fallback={<Loading />}>
+// Each lazy menu page shows a layout-shaped skeleton while its chunk loads,
+// instead of a centered "Đang tải…" spinner. The fallback mirrors that page's
+// shape (how many stat cards, whether it has a filter row) so the transition
+// reads as the page itself arriving. Login is a plain form → the default
+// branded loader is enough.
+const wrap = (Page, fallback = <PageSkeleton />) => (
+  <Suspense fallback={fallback}>
     <Page />
   </Suspense>
 );
@@ -54,15 +60,15 @@ export const router = createBrowserRouter([
           </RequireAuth>
         ),
         children: [
-          { index: true, element: wrap(Dashboard) },
-          { path: "orders", element: wrap(Orders) },
-          { path: "products", element: wrap(Products) },
-          { path: "sites", element: wrap(Sites) },
-          { path: "hostings", element: wrap(Hostings) },
-          { path: "health-checks", element: wrap(HealthChecks) },
+          { index: true, element: wrap(Dashboard, <PageSkeleton stats={0} filters={false} />) },
+          { path: "orders", element: wrap(Orders, <PageSkeleton stats={3} />) },
+          { path: "products", element: wrap(Products, <PageSkeleton stats={3} />) },
+          { path: "sites", element: wrap(Sites, <PageSkeleton stats={4} />) },
+          { path: "hostings", element: wrap(Hostings, <PageSkeleton stats={0} />) },
+          { path: "health-checks", element: wrap(HealthChecks, <PageSkeleton stats={4} />) },
         ],
       },
-      { path: "/login", element: wrap(Login) },
+      { path: "/login", element: wrap(Login, <Loading />) },
     ],
   },
 ]);

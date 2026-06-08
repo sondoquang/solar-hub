@@ -275,6 +275,25 @@ def list_orders_qs(qs, params):
     return qs
 
 
+# Cap how many orders one PDF export bundles, so a careless "select all" on a
+# huge filter cannot build a giant document / tie up the request.
+MAX_PDF_ORDERS = 200
+
+
+def select_orders_for_pdf(qs, ids_param):
+    """Pick the orders to render in the PDF, oldest first (reading order).
+
+    ``ids_param`` is the raw ``?ids=1,2,3`` string: when present the export is
+    restricted to those ids (intersected with the already-filtered queryset, so
+    permissions/filters still apply); when absent the whole filtered selection
+    is exported. Capped at ``MAX_PDF_ORDERS``.
+    """
+    if ids_param:
+        ids = [int(p) for p in str(ids_param).split(",") if p.strip().isdigit()]
+        qs = qs.filter(id__in=ids)
+    return list(qs.order_by("date_created_woo")[:MAX_PDF_ORDERS])
+
+
 def order_stats(qs) -> dict:
     """Totals for the filtered range (cards), independent of paging."""
     # Alias must not be "total" — that would shadow the ``total`` field and

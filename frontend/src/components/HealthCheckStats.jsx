@@ -1,3 +1,4 @@
+import { Skeleton } from "antd";
 import { Activity, AlertTriangle, ShieldCheck, TrendingDown, TrendingUp, XCircle } from "lucide-react";
 
 // Presentational summary cards for the health-check history. Counts come from
@@ -17,7 +18,7 @@ function Trend({ value }) {
   );
 }
 
-export default function HealthCheckStats({ stats = {} }) {
+export default function HealthCheckStats({ stats = {}, loading = false }) {
   const total = stats.total ?? 0;
   const cards = [
     {
@@ -63,10 +64,16 @@ export default function HealthCheckStats({ stats = {} }) {
           </span>
           <div className="min-w-0">
             <p className="text-sm text-muted">{label}</p>
-            <p className="font-display text-2xl font-bold leading-tight">
-              {value.toLocaleString("vi-VN")}
-            </p>
-            {sub}
+            {loading ? (
+              <Skeleton.Input active size="small" style={{ width: 80, height: 24 }} />
+            ) : (
+              <>
+                <p className="font-display text-2xl font-bold leading-tight">
+                  {value.toLocaleString("vi-VN")}
+                </p>
+                {sub}
+              </>
+            )}
           </div>
         </div>
       ))}

@@ -75,14 +75,14 @@ Cả hai đường cùng đổ vào một upsert idempotent → an toàn khi tr�
 
 ### 5.2. Đồng bộ sản phẩm
 
-Thao tác CRUD diễn ra trên `MasterProduct` tại Hub (qua Admin/API). Khi "Sync all", task `push_products` chạy cho từng site:
+Thao tác CRUD diễn ra trên `MasterProduct` tại Hub (qua Admin/API). Khi "Sync all", `push_all_products` fan-out theo batch site → `push_products_batch_task` → `apps/catalog/services.push_products_to_site` chạy cho từng site:
 
 1. Duyệt `MasterProduct`, tra `ProductMapping` của site đó.
-2. Chưa có mapping → đưa vào mảng `create`; đã có → `update` theo `woo_product_id`.
-3. Gọi `WooClient.batch_products(create, update, delete)` — **một request, tối đa ~100 item**.
-4. Lưu `woo_product_id` trả về vào `ProductMapping`, ghi `SyncLog`.
+2. Chưa có mapping & chưa xóa → mảng `create`; đã có mapping & chưa xóa → `update` theo `woo_product_id`; đã có mapping & **soft-deleted** → `delete` (rồi gỡ mapping).
+3. Gọi `WooClient.batch_products(create, update, delete)` — chia chunk **≤ `PRODUCT_BATCH_ITEM_LIMIT` (~100) item/request**, throttle `PRODUCT_PUSH_THROTTLE_SECONDS` giữa chunk.
+4. Khớp response **theo SKU** → upsert `woo_product_id` + `last_synced_at` vào `ProductMapping`, ghi `SyncLog`. Lỗi mạng được **nuốt theo site** (trả `error`, ghi `SyncLog(error)`, không raise) để một site hỏng không kéo cả mẻ.
 
-Category/attribute được đồng bộ và map **trước** sản phẩm (vì sản phẩm tham chiếu chúng qua ID riêng từng site).
+**v1 (hiện tại):** category/attribute xử lý **theo tên** — `MasterProduct.categories` là list tên, push gửi `categories=[{name}]` để Woo tự khớp/tạo (không có bảng mapping category/attribute per-site). Mapping category/attribute theo ID riêng từng site (đồng bộ **trước** sản phẩm) để dành pha sau.
 
 ### 5.3. Giám sát
 
@@ -97,10 +97,11 @@ Mọi giao tiếp WooCommerce tập trung tại đây để cô lập đặc th�
 - **Throttle**: delay giữa request, giới hạn song song khi sync nhiều site.
 - Dùng **batch** thay vì loop từng item.
 - **Ghi**: `update_order(woo_order_id, status=)` (`PUT /orders/{id}`) — cùng pattern auth/timeout/fallback-401 như `list_orders`, trả payload đơn đã cập nhật để caller upsert lại Hub.
+- **Batch sản phẩm**: `batch_products(create, update, delete)` (`POST /products/batch`) — đã hiện thực, cùng pattern auth/fallback-401, timeout 60s (ghi nặng hơn đọc). Trả `{create, update, delete}` mỗi item kèm `id`+`sku`. **Caller (`push_products_to_site`) chịu trách nhiệm chia chunk ≤100 item.**
 
 ## 7. Xử lý nền
 
-- **Celery worker** thực thi task; **Celery Beat** lên lịch (`poll_all_orders`, `check_all_sites`). Broker = **Redis**.
+- **Celery worker** thực thi task; **Celery Beat** lên lịch (`poll_all_orders`, `check_all_sites`). Broker = **Redis**. Push sản phẩm (`push_all_products` → `push_products_batch_task`) chạy on-demand (UI/Admin), không lên lịch.
 - Task **idempotent**, có **retry + backoff** cho lỗi mạng, **timeout** mọi call ngoài.
 - Sync N site = N task con (lỗi một site không kéo cả mẻ).
 
@@ -135,7 +136,13 @@ App `sites` đã hiện thực đầy đủ vertical slice (model → service �
   - `POST /api/hostings/import_excel/` — upload `.xlsx` (multipart field `file`), parse bằng `openpyxl` ở service, bulk-create hosting. Cột bắt buộc: `name`; tùy chọn `provider, account_username, note, check_concurrency` (mặc định 5 nếu trống/không hợp lệ, clamp 1–50). Dòng thiếu `name` hoặc trùng `(name, account_username)` (chưa xóa) bị bỏ qua + báo lỗi từng dòng. Trả `{created, errors:[{row, error}]}`.
   - Task định kỳ `apps/monitoring/tasks.check_all_sites` đã được hiện thực: fan-out `check_hosting_task` mỗi hosting (xem §5.3).
 - **Admin**: `SiteAdmin` cho nhập key (password widget, mã hóa khi save) + action "Test connection".
-- `WooClient.system_status()` đã hiện thực; `list_orders`/`batch_products` còn `NotImplementedError`.
+- `WooClient.system_status()`, `list_orders()`, `update_order()`, `batch_products()` đã hiện thực đầy đủ.
+- **Ghi chú website (`SiteNote` + `SiteNoteImage`)** — nhật ký ghi chú nhiều lần cho từng site (mới nhất lên đầu):
+  - **Model `SiteNote`** (`apps/sites/models.py`): `site` (FK→Site, CASCADE, `db_index`), `content` (TextField — **HTML rich-text đã sanitize**), `created_by` (FK→User nullable, SET_NULL — `None` = "Hệ thống"), timestamps, **soft-delete** (`is_deleted`/`deleted_at`). `Meta.ordering = ["-created_at"]` + index `(site, created_at)`. `SiteNoteImage`: `note` (FK, CASCADE, `related_name="images"`), `image` (ImageField, `upload_to=site_notes/{note_id}/`), `original_name`, `uploaded_at`. Ảnh **chỉ là đính kèm**, không nhúng inline vào HTML.
+  - **Service** (`apps/sites/services.py`): `sanitize_note_html` dùng **nh3** với allowlist tag rich-text (`p/strong/em/u/s/h1-3/ul/ol/li/a/blockquote/code/pre…`, `link_rel="noopener noreferrer nofollow"`); `create_site_note`/`update_site_note` (transaction, validate ảnh: type ∈ jpeg/png/gif/webp, ≤ 5MB) / `delete_site_note` (soft-delete). HTML được sanitize ở service trước khi lưu — **không tin** HTML từ client.
+  - **API** `SiteNoteViewSet` (router `/api/site-notes/`, **multipart**): `GET /api/site-notes/?site=<id>` (list phân trang, mới nhất trước, scope theo site, ẩn soft-deleted), `POST` (fields `site`, `content`, nhiều file `images`), `PATCH /{id}/` (`content` + `images` mới + `remove_image_ids[]` để gỡ ảnh cũ), `DELETE /{id}/` (soft-delete). Serializer trả `images` (nested, `url` tuyệt đối qua `request.build_absolute_uri`) + `created_by_name`.
+  - **Media**: `MEDIA_URL=/media/`, `MEDIA_ROOT=BASE_DIR/media` (settings); dev serve qua `static()` trong `config/urls.py` khi `DEBUG`. Cần **Pillow** (ImageField) + **nh3** (sanitize) — thêm vào `requirements.txt`. `backend/media/` đã gitignore.
+  - **Admin**: `SiteNoteAdmin` + `SiteNoteImageInline` (đọc/debug).
 
 ## 8c. Trạng thái hiện thực (monitoring — Lịch sử kiểm tra sức khỏe)
 
@@ -166,7 +173,22 @@ App `orders` đã hiện thực vertical slice gom đơn bằng **polling** (web
   - `GET /api/orders/stats/` — `{total, revenue, not_forwarded, by_status}` cho range đang lọc (**lưu ý** alias `Count` không được trùng tên field `total`, nếu không `Sum("total")` sẽ vỡ).
   - `POST /api/orders/poll_now/` — body tùy chọn `{status, sites, date_from, date_to}` (`status` mặc định `processing`, phải ∈ `ALLOWED_POLL_STATUSES`; `sites` = list id, bỏ trống = toàn bộ; `date_from`/`date_to` = `YYYY-MM-DD`, khi có thì sync re-pull đơn **tạo** trong khoảng đó thay vì dùng watermark). Validate sai (status/sites/date) → 400. Kích hoạt `poll_all_orders.delay(status=, site_ids=, date_from=, date_to=)`, trả `{task_id, status}` (nút "Đồng bộ ngay" của UI gửi status/scope/khoảng ngày đang lọc; scope "hosting" được FE expand thành list site id).
   - `POST /api/orders/{id}/complete/` — đánh dấu một đơn `completed`. **Chạy đồng bộ** (một `PUT` lên Woo, như `test_connection`) để UI nhận lại đơn đã cập nhật ngay; gọi `mark_order_completed`. Chỉ từ `processing` (nếu không → 409); lỗi WooCommerce → 502 (log `order_id`+`site_id`, không PII). Trả về đơn đã serialize.
+  - `GET /api/orders/export_pdf/` — xuất **phiếu đơn hàng PDF** cho bộ phận kinh doanh (gom một file, **mỗi đơn một trang**). Query `?ids=1,2,3` giới hạn đúng các đơn đã chọn (giao với queryset đã lọc nên filter/quyền vẫn áp dụng); **bỏ `ids`** thì xuất toàn bộ selection đang lọc. `services.select_orders_for_pdf` sắp theo `date_created_woo` (thứ tự đọc) và **cap `MAX_PDF_ORDERS` (200)**. Trả `application/pdf` (`Content-Disposition: attachment`); một đơn → tên file `don-hang-<số_đơn>.pdf`, nhiều đơn → `don-hang.pdf`.
+- **PDF** (`apps/orders/pdf.py`, lib **reportlab**): `build_orders_pdf(orders) -> bytes` dựng tài liệu Platypus (A4) — header Solar Hub, khối thông tin đơn + khách, bảng line items (STT/SKU/tên/SL/đơn giá/thành tiền) + tổng tiền, layout khớp modal chi tiết. Font **DejaVu Sans nhúng** (`apps/orders/fonts/DejaVuSans.ttf`, đăng ký một lần) vì font Type-1 mặc định của reportlab **không** có glyph tiếng Việt; tiền định dạng kiểu vi-VN (`1.850.000 ₫`). PII xuất hiện trong tài liệu theo chủ đích nhưng **không** log.
 - **Admin**: `OrderAdmin` read-only (list_filter status/forwarded/site, date_hierarchy `date_created_woo`, không cho add/change).
+
+## 8e. Trạng thái hiện thực (catalog + sync — Đồng bộ sản phẩm)
+
+App `catalog` + `sync` đã hiện thực **backend** vertical slice đồng bộ sản phẩm Hub → site (frontend để pha sau). v1 xử lý category **theo tên** (xem §5.2):
+
+- **Model `MasterProduct`** (`apps/catalog/models.py`): `sku` (CharField **UNIQUE**, `db_index` — khóa khớp xuyên site, chuẩn hóa trim/collapse/upper trước khi lưu), `name`, `type` (default `simple`), `description`/`short_description`, `regular_price`/`sale_price` (Decimal 12,2; `sale_price` nullable), `status` (draft/publish/pending/private), `stock_status` (instock/outofstock/onbackorder), `weight` (Decimal 8,3 nullable), `images` (JSON list URL), `categories` (JSON list **tên** category), **soft-delete** (`is_deleted`/`deleted_at`) + timestamps. `Meta.ordering = ["-updated_at"]`.
+- **Model `ProductMapping`** (`apps/catalog/models.py`): `master` (FK→MasterProduct, CASCADE, `related_name="mappings"`), `site` (FK→Site, CASCADE, `db_index`, `related_name="product_mappings"`), `woo_product_id` (BigInteger — **riêng từng site**), `last_synced_at`, timestamps. Ràng buộc `UniqueConstraint(master, site)` (`mapping_unique_master_site` — upsert idempotent) + `UniqueConstraint(site, woo_product_id)` (`mapping_unique_site_woo`).
+- **Model `SyncLog`** (`apps/sync/models.py`): `site` (FK→Site, **SET_NULL** nullable — log sống sót khi xóa site), `operation` (`db_index`, vd `push_products`), `status` (success/partial/error), `created_count`/`updated_count`/`deleted_count`, `error` (chỉ tên class lỗi — **không** payload/PII), `detail` (JSON tóm tắt), `created_at`. Append-only, admin read-only.
+- **`WooClient.batch_products(create, update, delete)`** — xem §6.
+- **Service** (`apps/catalog/services.py`): `normalize_sku` (trim/collapse/upper), `build_product_payload(master)` (map → fields Woo, giá/weight dạng string, `categories=[{name}]`, `images=[{src}]`, tách riêng để unit-test không cần DB), `push_products_to_site(site, *, masters=None)` (lõi "Sync all" — xem §5.2: plan create/update/delete theo mapping, chia chunk `PRODUCT_BATCH_ITEM_LIMIT` + throttle `PRODUCT_PUSH_THROTTLE_SECONDS`, khớp response theo SKU lưu `woo_product_id`, gỡ mapping khi delete, **nuốt lỗi theo site** + ghi `SyncLog`), `list_products_qs`/`product_stats` (mapped/unmapped/by_status) cho API.
+- **Celery** (`apps/sync/tasks.py`): `push_all_products(site_ids=None, master_ids=None)` chia site thành **mẻ `PRODUCT_PUSH_BATCH_SIZE` (mặc định 8, env)** → dispatch `push_products_batch_task.delay(chunk, master_ids)`; batch task chạy qua `ThreadPoolExecutor` (mỗi worker `connection.close()`), gọi `push_products_to_site` mỗi site. On-demand (không Beat). Settings mới: `PRODUCT_PUSH_BATCH_SIZE`, `PRODUCT_BATCH_ITEM_LIMIT` (≤100), `PRODUCT_PUSH_THROTTLE_SECONDS`.
+- **API** (`MasterProductViewSet`, router `/api/products/`): `GET/POST /api/products/`, `GET/PATCH/DELETE /api/products/{id}/` — CRUD (queryset ẩn soft-deleted, prefetch `mappings__site`). `DELETE` = **soft-delete** (để push sau gỡ sản phẩm khỏi site). Serializer normalize + check trùng `sku` (400 nếu trùng), trả `mappings` (nested per-site) + `mapping_count` (read-only). Search `sku`/`name`, sort `name`/`sku`/`updated_at`. `GET /api/products/stats/` (total/mapped/unmapped/by_status). `POST /api/products/sync_now/` — body tùy chọn `{sites, products}` (list id, validate → 400), kích hoạt `push_all_products.delay`, trả `{task_id}`.
+- **Admin**: `MasterProductAdmin` (editable, normalize sku khi save, `ProductMappingInline` read-only, action "Đồng bộ sản phẩm đã chọn" → `push_all_products.delay`); `SyncLogAdmin` read-only.
 
 ## 9. Local vs Production
 

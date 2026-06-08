@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -59,3 +60,59 @@ class Site(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+
+class SiteNote(models.Model):
+    """An append-only-style note in a site's note history. Each save is a new
+    row (newest first) so the UI shows a running journal; old notes can be
+    edited or soft-deleted. ``content`` is sanitized rich-text HTML (see
+    apps/sites/services.sanitize_note_html) and ``created_by`` records who wrote
+    it (mirrors monitoring.HealthCheck.performed_by)."""
+
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name="notes",
+        db_index=True,
+    )
+    content = models.TextField(blank=True)  # sanitized rich-text HTML
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]  # newest note first
+        indexes = [models.Index(fields=["site", "created_at"])]
+
+    def __str__(self) -> str:
+        return f"Note #{self.pk} on {self.site_id}"
+
+
+def site_note_upload_to(instance, filename: str) -> str:
+    """MEDIA_ROOT-relative path for a note attachment, namespaced per note."""
+    return f"site_notes/{instance.note_id}/{filename}"
+
+
+class SiteNoteImage(models.Model):
+    """An image attached to a SiteNote. Attachments only — never inlined into
+    the note's HTML body (the editor has no image button)."""
+
+    note = models.ForeignKey(
+        SiteNote,
+        on_delete=models.CASCADE,
+        related_name="images",
+    )
+    image = models.ImageField(upload_to=site_note_upload_to)
+    original_name = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return self.original_name or f"Image #{self.pk}"

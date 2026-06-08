@@ -105,7 +105,37 @@ class WooClient:
         update: list[dict] | None = None,
         delete: list[int] | None = None,
     ) -> dict:
-        raise NotImplementedError
+        """POST /products/batch — create/update/delete products in one request.
+
+        Mirrors ``update_order``: a per-call timeout (60s — batch writes are
+        heavier than a read), Basic auth with the query-string fallback on a 401
+        (some shared hosts strip the ``Authorization`` header), then
+        ``raise_for_status()``. Returns Woo's response
+        ``{"create": [...], "update": [...], "delete": [...]}`` where each item
+        carries its ``id`` (the ``woo_product_id``) and ``sku``, which the caller
+        matches back onto ``ProductMapping``.
+
+        WooCommerce caps a batch at ~100 items total; the caller
+        (``apps/catalog/services.push_products_to_site``) is responsible for
+        chunking — this method sends whatever it is given.
+        """
+        url = f"{self.base}/products/batch"
+        payload = {
+            "create": create or [],
+            "update": update or [],
+            "delete": delete or [],
+        }
+        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.post(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                json=payload,
+                timeout=60,
+            )
+        r.raise_for_status()
+        return r.json()
 
     def system_status(self) -> dict:
         """GET /system_status — used to verify the site's API key works."""

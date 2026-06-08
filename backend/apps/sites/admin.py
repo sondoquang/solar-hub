@@ -3,7 +3,7 @@ from django.contrib import admin, messages
 
 from . import services
 from .crypto import encrypt_secret
-from .models import Hosting, Site
+from .models import Hosting, Site, SiteNote, SiteNoteImage
 
 
 @admin.register(Hosting)
@@ -64,3 +64,18 @@ class SiteAdmin(admin.ModelAdmin):
             f"Đã test {queryset.count()} site, {up} up.",
             level=messages.INFO,
         )
+
+
+class SiteNoteImageInline(admin.TabularInline):
+    model = SiteNoteImage
+    extra = 0
+    readonly_fields = ("uploaded_at",)
+
+
+@admin.register(SiteNote)
+class SiteNoteAdmin(admin.ModelAdmin):
+    list_display = ("id", "site", "created_by", "created_at", "is_deleted")
+    list_filter = ("is_deleted",)
+    search_fields = ("site__name", "site__base_url", "content")
+    readonly_fields = ("created_at", "updated_at", "deleted_at")
+    inlines = [SiteNoteImageInline]

@@ -1,10 +1,10 @@
 import { Button, DatePicker, Input, Select } from "antd";
-import { Eye, Globe, RefreshCw, X } from "lucide-react";
+import { Eye, FileDown, Globe, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
 import { hostingLabel, useHostings } from "../api/hostings.js";
-import { useOrders, useOrderStats, usePollOrders } from "../api/orders.js";
+import { exportOrdersPdf, useOrders, useOrderStats, usePollOrders } from "../api/orders.js";
 import { useSites } from "../api/sites.js";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -52,6 +52,7 @@ export default function Orders() {
   // (antd's onChange `rows` only carries the current page when server-paginated).
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [selectedMap, setSelectedMap] = useState(() => new Map());
+  const [exporting, setExporting] = useState(false);
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -82,7 +83,7 @@ export default function Orders() {
     page,
     page_size: pageSize,
   });
-  const { data: stats } = useOrderStats(filters);
+  const { data: stats, isLoading: statsLoading } = useOrderStats(filters);
   const { data: hostingData } = useHostings({ page_size: 100 });
   const { data: siteData } = useSites({ page_size: 100 });
   const poll = usePollOrders();
@@ -174,6 +175,20 @@ export default function Orders() {
   const openSelected = () => {
     const list = selectedKeys.map((k) => selectedMap.get(k)).filter(Boolean);
     if (list.length) openOrders(list);
+  };
+
+  // Export the ticked orders to one PDF (one order per page) for the sales team.
+  const exportSelected = async () => {
+    if (!selectedKeys.length) return;
+    setExporting(true);
+    try {
+      await exportOrdersPdf({ ids: selectedKeys });
+      toast.success(`Đã xuất PDF ${selectedKeys.length} đơn hàng.`);
+    } catch {
+      toast.error("Xuất PDF thất bại.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const columns = [
@@ -293,7 +308,7 @@ export default function Orders() {
       </div>
 
       <div className="mb-3">
-        <OrderStats stats={stats ?? {}} />
+        <OrderStats stats={stats ?? {}} loading={statsLoading} />
       </div>
 
       <div className="mb-2.5 flex flex-wrap items-center gap-2">
@@ -365,6 +380,14 @@ export default function Orders() {
                     onClick={openSelected}
                   >
                     Xem chi tiết ({selectedKeys.length})
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<FileDown size={14} />}
+                    loading={exporting}
+                    onClick={exportSelected}
+                  >
+                    Xuất PDF ({selectedKeys.length})
                   </Button>
                   <Button size="small" icon={<X size={14} />} onClick={clearSelection}>
                     Bỏ chọn

@@ -10,14 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 import httpx
+import nh3
 import openpyxl
-from django.db import connection
+from django.db import connection, transaction
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from apps.integrations.woocommerce import WooClient
 
 from .crypto import decrypt_secret, encrypt_secret
-from .models import Hosting, Site
+from .models import Hosting, Site, SiteNote, SiteNoteImage
 
 logger = logging.getLogger(__name__)
 
@@ -303,3 +305,87 @@ def import_hostings_from_xlsx(file) -> dict:
         created += 1
 
     return {"created": created, "errors": errors}
+
+
+# --- Site notes --------------------------------------------------------------
+
+# Rich-text allowlist matching what the TipTap editor can produce. Anything
+# else (scripts, event handlers, inline styles, images) is stripped — note
+# content is HTML stored verbatim, so it must be sanitized before saving.
+NOTE_ALLOWED_TAGS = {
+    "p", "br", "strong", "b", "em", "i", "u", "s", "strike", "del",
+    "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "code", "pre", "a",
+}
+# ``rel`` is intentionally omitted: nh3/ammonia manages it via ``link_rel``
+# below (setting both panics).
+NOTE_ALLOWED_ATTRIBUTES = {"a": {"href", "title", "target"}}
+
+# Image attachment limits.
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB per attachment
+
+
+def sanitize_note_html(html: str) -> str:
+    """Strip unsafe markup from note HTML, keeping only the rich-text tags the
+    editor produces. Prevents stored XSS between admin users."""
+    if not html:
+        return ""
+    return nh3.clean(
+        html,
+        tags=NOTE_ALLOWED_TAGS,
+        attributes=NOTE_ALLOWED_ATTRIBUTES,
+        link_rel="noopener noreferrer nofollow",
+    )
+
+
+def _validate_image(upload) -> None:
+    """Reject attachments that are not small images (type + size)."""
+    content_type = getattr(upload, "content_type", "") or ""
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise ValidationError(
+            {"images": f"Định dạng ảnh không hỗ trợ: {content_type or 'không rõ'}."}
+        )
+    if upload.size and upload.size > MAX_IMAGE_BYTES:
+        raise ValidationError({"images": "Ảnh vượt quá 5MB."})
+
+
+def _attach_images(note: SiteNote, images) -> None:
+    for upload in images:
+        _validate_image(upload)
+        SiteNoteImage.objects.create(
+            note=note,
+            image=upload,
+            original_name=(upload.name or "")[:255],
+        )
+
+
+@transaction.atomic
+def create_site_note(*, site, content, created_by=None, images=()) -> SiteNote:
+    note = SiteNote.objects.create(
+        site=site,
+        content=sanitize_note_html(content or ""),
+        created_by=created_by,
+    )
+    _attach_images(note, images)
+    return note
+
+
+@transaction.atomic
+def update_site_note(
+    note: SiteNote, *, content=None, new_images=(), remove_image_ids=()
+) -> SiteNote:
+    if content is not None:
+        note.content = sanitize_note_html(content)
+        note.save(update_fields=["content", "updated_at"])
+    if remove_image_ids:
+        # Scope the delete to this note so a caller can't remove another's image.
+        note.images.filter(id__in=remove_image_ids).delete()
+    _attach_images(note, new_images)
+    return note
+
+
+def delete_site_note(note: SiteNote) -> None:
+    """Soft-delete a note (kept in the DB for history/audit, hidden from list)."""
+    note.is_deleted = True
+    note.deleted_at = timezone.now()
+    note.save(update_fields=["is_deleted", "deleted_at", "updated_at"])

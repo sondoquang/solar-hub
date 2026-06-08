@@ -1,9 +1,9 @@
 import { Button, Modal } from "antd";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
-import { useCompleteOrder } from "../api/orders.js";
+import { exportOrdersPdf, useCompleteOrder } from "../api/orders.js";
 import OrderDetailContent from "./OrderDetailContent.jsx";
 
 // The modal shows orders one at a time; with more than one selected it becomes a
@@ -19,6 +19,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
   // animates in from the matching side.
   const [direction, setDirection] = useState(1);
   const completeOrder = useCompleteOrder();
+  const [exporting, setExporting] = useState(false);
   const lastWheelRef = useRef(0);
 
   // Reset to the first order whenever the modal (re)opens.
@@ -71,6 +72,20 @@ export default function OrderDetailModal({ orders, open, onClose }) {
   // Only a processing order can be completed (matches the backend rule).
   const canComplete = current?.status === "processing";
 
+  // Export the order being viewed to a PDF ("view xong xuất file").
+  const handleExport = async () => {
+    if (!current) return;
+    setExporting(true);
+    try {
+      await exportOrdersPdf({ ids: [current.id] });
+      toast.success("Đã xuất PDF đơn hàng.");
+    } catch {
+      toast.error("Xuất PDF thất bại.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleComplete = async () => {
     try {
       await completeOrder.mutateAsync(current.id);
@@ -102,6 +117,14 @@ export default function OrderDetailModal({ orders, open, onClose }) {
     <div className="flex justify-end gap-1.5">
       <Button key="close" onClick={onClose}>
         Đóng
+      </Button>
+      <Button
+        key="export"
+        icon={<FileDown size={15} />}
+        loading={exporting}
+        onClick={handleExport}
+      >
+        Xuất PDF
       </Button>
       {canComplete && (
         <Button
