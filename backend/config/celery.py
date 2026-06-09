@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.signals import task_postrun
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
@@ -12,11 +13,18 @@ app.autodiscover_tasks()  # discovers apps/*/tasks.py
 # tick retries failed sites, while sites that passed are skipped until their
 # longer OK interval elapses (the due-filter in apps.sites.services.check_hosting).
 _HEALTHCHECK_TICK = float(os.getenv("SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS", "300"))
+_ORDER_POLL_INTERVAL = float(os.getenv("ORDER_POLL_INTERVAL_SECONDS", "480"))
+
+@task_postrun.connect
+def close_db_connections(**kwargs):
+    from django.db import close_old_connections
+    close_old_connections()
+
 
 app.conf.beat_schedule = {
     "poll-all-orders": {
         "task": "apps.sync.tasks.poll_all_orders",
-        "schedule": 180.0,  # every 3 min — fallback to webhooks
+        "schedule": _ORDER_POLL_INTERVAL,  # default 8 min — fallback to webhooks
     },
     "check-all-sites": {
         "task": "apps.monitoring.tasks.check_all_sites",

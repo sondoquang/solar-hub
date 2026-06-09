@@ -74,7 +74,10 @@ ASGI_APPLICATION = "config.asgi.application"
 
 # --- Database (host-OS Postgres via host.docker.internal; env-driven) ----
 DATABASES = {"default": env.db("DATABASE_URL")}
-DATABASES["default"].setdefault("CONN_MAX_AGE", 60)
+# CONN_MAX_AGE=0: close after each use. Celery workers bypass Django's request
+# middleware (which normally closes persistent connections), so keeping connections
+# alive causes "too many clients" under any meaningful concurrency.
+DATABASES["default"]["CONN_MAX_AGE"] = 0
 
 # --- Auth ---------------------------------------------------------------
 AUTH_PASSWORD_VALIDATORS = [
@@ -124,11 +127,25 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
+# --- Cache (Redis, DB 1 — separate from the Celery broker on DB 0) -------
+# Used for distributed task locks (e.g. pull_all_categories deduplication).
+# Django 4.0+ built-in Redis backend; requires the ``redis`` package (pulled
+# in by celery[redis]).
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": env("CACHE_URL", default="redis://redis:6379/1"),
+    }
+}
+
 # --- Celery -------------------------------------------------------------
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://redis:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=CELERY_BROKER_URL)
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
+
+# How often Celery Beat polls orders across all sites (seconds).
+ORDER_POLL_INTERVAL_SECONDS = env.int("ORDER_POLL_INTERVAL_SECONDS", default=480)
 
 # Sites polled concurrently per order-sync batch (one batch task per chunk).
 ORDER_POLL_BATCH_SIZE = env.int("ORDER_POLL_BATCH_SIZE", default=8)

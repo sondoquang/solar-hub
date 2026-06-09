@@ -233,13 +233,10 @@ export default function Hostings() {
   ];
 
   return (
-    <section>
+    <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
           <h1 className="font-display text-2xl font-bold">Quản lý hosting</h1>
-          <p className="mt-1 text-sm text-muted">
-            Nhóm website theo hosting và kiểm tra sức khỏe có giới hạn để tránh quá tải server
-          </p>
         </div>
         <Button
           type="primary"

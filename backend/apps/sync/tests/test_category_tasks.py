@@ -46,6 +46,23 @@ def test_pull_all_categories_filters_to_selected_sites(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_pull_all_categories_skips_if_already_running(monkeypatch):
+    """A second full-site pull while one is already in flight is a no-op."""
+    from apps.sites.tests.factories import SiteFactory
+
+    SiteFactory()
+    monkeypatch.setattr(tasks, "_batch_size", lambda: 8)
+    monkeypatch.setattr(tasks.pull_categories_batch_task, "delay", lambda chunk: None)
+
+    result1 = tasks.pull_all_categories()
+    assert result1["sites"] == 1
+
+    # Lock is still held → second call skipped.
+    result2 = tasks.pull_all_categories()
+    assert result2 == {"status": "skipped_already_running", "sites": 0, "batches": 0}
+
+
+@pytest.mark.django_db
 def test_pull_categories_batch_task_pulls_each_site(monkeypatch):
     from apps.sites.tests.factories import SiteFactory
 

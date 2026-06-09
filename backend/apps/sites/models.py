@@ -34,10 +34,21 @@ class Site(models.Model):
         DOWN = "down", "Down"
         UNKNOWN = "unknown", "Unknown"
 
+    class SiteType(models.TextChoices):
+        WEBSITE = "website", "Website"
+        API = "api", "API"
+        MAIL = "mail", "Mail Server"
+        DATABASE = "database", "Database"
+
     name = models.CharField(max_length=120)
     base_url = models.URLField()
     consumer_key = models.CharField(max_length=120)
     consumer_secret_enc = models.BinaryField()
+    site_type = models.CharField(
+        max_length=20,
+        choices=SiteType.choices,
+        default=SiteType.WEBSITE,
+    )
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
