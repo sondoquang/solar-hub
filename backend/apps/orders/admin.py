@@ -9,12 +9,14 @@ class OrderAdmin(admin.ModelAdmin):
         "number",
         "site",
         "status",
+        "classification",
+        "risk_score",
         "total",
         "currency",
         "forwarded",
         "date_created_woo",
     )
-    list_filter = ("status", "forwarded", "site")
+    list_filter = ("status", "classification", "forwarded", "site")
     search_fields = ("number", "customer_name", "customer_phone", "site__name")
     date_hierarchy = "date_created_woo"
     autocomplete_fields = ("site",)

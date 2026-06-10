@@ -16,10 +16,20 @@
 }
 
 body {
-  font-family:
-    "Be Vietnam Pro", ui-sans-serif, sans-serif;
+  font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
   color: var(--color-ink);
   background: var(--color-surface);
+}
+
+/* NProgress top loading bar — recolor from its default blue to solar amber. */
+#nprogress .bar {
+  height: 3px;
+  background: var(--color-brand);
+}
+#nprogress .peg {
+  box-shadow:
+    0 0 10px var(--color-brand),
+    0 0 5px var(--color-brand);
 }
 
 /* Reset only NATIVE buttons (nav/layout chrome). Exclude antd's `.ant-btn` —
@@ -31,16 +41,35 @@ button:not(.ant-btn) {
   background: transparent;
 }
 
-/* Force Montserrat on antd Input — placeholder does not inherit font-family automatically */
+/* antd form controls — enforce the project font + a uniform 1rem text/placeholder
+   size across every page (placeholders inherit neither font-family nor size on
+   their own). Covers text Input, InputNumber and Select alike so a select box and
+   a number/text input always read at the same 1rem. Compact size="small" variants
+   (e.g. the product-variation rows) are exempt so dense tables stay dense. These
+   rules are unlayered, so they win over antd's layered defaults without !important. */
 .ant-input,
 .ant-input-affix-wrapper,
-.ant-input-affix-wrapper input {
+.ant-input-affix-wrapper input,
+.ant-input-number-input,
+.ant-select-selector,
+.ant-select-selection-search-input {
   font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
 }
 
-.ant-input::placeholder,
-.ant-input-affix-wrapper input::placeholder {
-  font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
+.ant-input:not(.ant-input-sm),
+.ant-input-affix-wrapper:not(.ant-input-affix-wrapper-sm) input,
+.ant-input-number:not(.ant-input-number-sm) .ant-input-number-input,
+.ant-select:not(.ant-select-sm) .ant-select-selector,
+.ant-select:not(.ant-select-sm) .ant-select-selection-item,
+.ant-select:not(.ant-select-sm) .ant-select-selection-search-input {
+  font-size: 1rem;
+}
+
+.ant-input:not(.ant-input-sm)::placeholder,
+.ant-input-affix-wrapper:not(.ant-input-affix-wrapper-sm) input::placeholder,
+.ant-input-number:not(.ant-input-number-sm) .ant-input-number-input::placeholder,
+.ant-select:not(.ant-select-sm) .ant-select-selection-placeholder {
+  font-size: 1rem;
 }
 
 /* Order carousel (OrderDetailModal) — direction-aware slide + fade when the

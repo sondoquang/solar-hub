@@ -1,11 +1,19 @@
 import { Button, DatePicker, Input, Select } from "antd";
-import { Eye, FileDown, Globe, RefreshCw, X } from "lucide-react";
+import { Eye, FileDown, Globe, RefreshCw, Send, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
+import { useSearchParams } from "react-router-dom";
 
 import { hostingLabel, useHostings } from "../api/hostings.js";
-import { exportOrdersPdf, useOrders, useOrderStats, usePollOrders } from "../api/orders.js";
+import {
+  exportOrdersPdf,
+  useForwardOrdersBulk,
+  useOrders,
+  useOrderStats,
+  usePollOrders,
+} from "../api/orders.js";
 import { useSites } from "../api/sites.js";
+import ClassificationBadge from "../components/ClassificationBadge.jsx";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
@@ -32,11 +40,27 @@ const FORWARDED_OPTIONS = [
   { value: "true", label: "Đã chuyển marketing" },
 ];
 
+const CLASSIFICATION_OPTIONS = [
+  { value: "all", label: "Tất cả phân loại" },
+  { value: "genuine", label: "Hợp lệ" },
+  { value: "suspicious", label: "Nghi ngờ" },
+  { value: "spam", label: "Spam/Bot" },
+];
+
+const isValidStatus = (s) => STATUS_OPTIONS.some((o) => o.value === s);
+
 export default function Orders() {
+  // Deep link: e.g. the notification bell points here with ?status=processing.
+  const [searchParams] = useSearchParams();
+  const urlStatus = searchParams.get("status");
+
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(
+    isValidStatus(urlStatus) ? urlStatus : "all",
+  );
   const [forwardedFilter, setForwardedFilter] = useState("all");
+  const [classificationFilter, setClassificationFilter] = useState("all");
   const [scope, setScope] = useState("all"); // "all" | "site:<id>" | "hosting:<id>"
   const [range, setRange] = useState(null); // [dayjs, dayjs] | null
   const [ordering, setOrdering] = useState("-date_created_woo");
@@ -63,6 +87,15 @@ export default function Orders() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  // When already on this page, a fresh ?status= (e.g. clicking the notification
+  // bell again) doesn't remount the component, so sync the filter from the URL.
+  useEffect(() => {
+    if (isValidStatus(urlStatus)) {
+      setStatusFilter(urlStatus);
+      setPage(1);
+    }
+  }, [urlStatus]);
+
   // Shared filter payload — the list and the stats cards both use it.
   const filters = useMemo(() => {
     const [scopeKind, scopeId] = scope.split(":");
@@ -70,12 +103,13 @@ export default function Orders() {
       search: search || undefined,
       status: statusFilter === "all" ? undefined : statusFilter,
       forwarded: forwardedFilter === "all" ? undefined : forwardedFilter,
+      classification: classificationFilter === "all" ? undefined : classificationFilter,
       site: scopeKind === "site" ? scopeId : undefined,
       hosting: scopeKind === "hosting" ? scopeId : undefined,
       date_from: range?.[0]?.format("YYYY-MM-DD"),
       date_to: range?.[1]?.format("YYYY-MM-DD"),
     };
-  }, [search, statusFilter, forwardedFilter, scope, range]);
+  }, [search, statusFilter, forwardedFilter, classificationFilter, scope, range]);
 
   const { data, isLoading, isFetching, isError, refetch } = useOrders({
     ...filters,
@@ -87,6 +121,7 @@ export default function Orders() {
   const { data: hostingData } = useHostings({ page_size: 100 });
   const { data: siteData } = useSites({ page_size: 100 });
   const poll = usePollOrders();
+  const forwardBulk = useForwardOrdersBulk();
 
   const rows = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -177,6 +212,19 @@ export default function Orders() {
     if (list.length) openOrders(list);
   };
 
+  // Forward the ticked orders to the marketing department (one-way). Already
+  // forwarded rows are no-ops server-side; the count reflects what actually flipped.
+  const forwardSelected = () => {
+    if (!selectedKeys.length) return;
+    forwardBulk.mutate(selectedKeys, {
+      onSuccess: (res) => {
+        toast.success(`Đã chuyển ${res?.forwarded ?? 0} đơn sang marketing.`);
+        clearSelection();
+      },
+      onError: () => toast.error("Chuyển marketing thất bại."),
+    });
+  };
+
   // Export the ticked orders to one PDF (one order per page) for the sales team.
   const exportSelected = async () => {
     if (!selectedKeys.length) return;
@@ -209,8 +257,8 @@ export default function Orders() {
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
             <Globe size={15} />
           </span>
-          <div className="min-w-0">
-            <p className="truncate font-medium">#{r.number}</p>
+          <div className="flex min-w-0 flex-col gap-1">
+            <p className="truncate font-medium mb-1">#{r.number}</p>
             <p className="truncate text-xs text-muted">{r.site_name}</p>
           </div>
         </div>
@@ -221,8 +269,8 @@ export default function Orders() {
       title: "Khách hàng",
       width: 200,
       render: (_v, r) => (
-        <div className="min-w-0">
-          <p className="truncate">{r.customer_name || "—"}</p>
+        <div className="min-w-0 flex flex-col gap-1">
+          <p className="truncate mb-1">{r.customer_name || "—"}</p>
           <p className="truncate text-xs text-muted">{r.customer_phone || ""}</p>
         </div>
       ),
@@ -244,6 +292,16 @@ export default function Orders() {
       width: 150,
       ellipsis: false,
       render: (status) => <OrderStatusBadge status={status} />,
+    },
+    {
+      key: "classification",
+      dataIndex: "classification",
+      title: "Phân loại",
+      width: 150,
+      ellipsis: false,
+      render: (classification, r) => (
+        <ClassificationBadge classification={classification} score={r.risk_score} />
+      ),
     },
     {
       key: "forwarded",
@@ -285,6 +343,7 @@ export default function Orders() {
     search !== "" ||
     statusFilter !== "all" ||
     forwardedFilter !== "all" ||
+    classificationFilter !== "all" ||
     scope !== "all" ||
     range != null;
 
@@ -338,6 +397,15 @@ export default function Orders() {
           className="min-w-48"
         />
         <Select
+          value={classificationFilter}
+          onChange={(v) => {
+            setClassificationFilter(v);
+            setPage(1);
+          }}
+          options={CLASSIFICATION_OPTIONS}
+          className="min-w-44"
+        />
+        <Select
           value={scope}
           onChange={(v) => {
             setScope(v);
@@ -377,6 +445,14 @@ export default function Orders() {
                     onClick={openSelected}
                   >
                     Xem chi tiết ({selectedKeys.length})
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<Send size={14} />}
+                    loading={forwardBulk.isPending}
+                    onClick={forwardSelected}
+                  >
+                    Chuyển marketing ({selectedKeys.length})
                   </Button>
                   <Button
                     size="small"
@@ -426,11 +502,7 @@ export default function Orders() {
         </div>
       )}
 
-      <OrderDetailModal
-        orders={viewOrders}
-        open={viewOpen}
-        onClose={() => setViewOpen(false)}
-      />
+      <OrderDetailModal orders={viewOrders} open={viewOpen} onClose={() => setViewOpen(false)} />
     </section>
   );
 }

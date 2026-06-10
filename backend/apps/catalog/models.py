@@ -127,11 +127,23 @@ class Category(models.Model):
     (trim + collapse whitespace, case preserved for display) and UNIQUE, so the
     same category coming from several sites converges to one row with several
     mappings.
+
+    **Cây danh mục (tree):** ``parent`` là self-FK dựng lại đúng cây như
+    WooCommerce (1 cây toàn cục cho cả Hub). Vì ``Category`` dedup theo *tên*
+    còn cây cha–con có thể khác nhau giữa các site, quan hệ cha là **last-pull-
+    wins**: mỗi lần pull một site ghi đè ``parent`` theo cây của site đó. Gốc =
+    ``parent`` null. ``on_delete=SET_NULL`` để xóa cha không kéo con biến mất.
     """
 
     name = models.CharField(max_length=255, unique=True, db_index=True)
     slug = models.CharField(max_length=255, blank=True, default="")
-    parent_name = models.CharField(max_length=255, blank=True, default="")  # by name (v1)
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="children",
+    )
     is_deleted = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

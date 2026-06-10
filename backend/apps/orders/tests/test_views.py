@@ -243,6 +243,76 @@ def test_complete_pushes_status_and_returns_order(client, monkeypatch):
 
 
 @pytest.mark.django_db
+def test_cancel_pushes_status_and_returns_order(client, monkeypatch):
+    order = OrderFactory(woo_order_id=66, status="processing")
+
+    class _Client:
+        def update_order(self, woo_order_id, *, status):
+            return {"id": woo_order_id, "number": "66", "status": status}
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", lambda s: _Client())
+    resp = client.post(f"/api/orders/{order.id}/cancel/")
+    assert resp.status_code == 200
+    assert resp.data["status"] == "cancelled"
+    order.refresh_from_db()
+    assert order.status == "cancelled"
+
+
+@pytest.mark.django_db
+def test_cancel_rejects_terminal_status(client, monkeypatch):
+    order = OrderFactory(status="completed")
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("WooCommerce must not be called for a bad transition")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    resp = client.post(f"/api/orders/{order.id}/cancel/")
+    assert resp.status_code == 409
+    order.refresh_from_db()
+    assert order.status == "completed"
+
+
+@pytest.mark.django_db
+def test_forward_marks_order_and_is_one_way(client):
+    order = OrderFactory(status="processing", forwarded=False)
+    resp = client.post(f"/api/orders/{order.id}/forward/")
+    assert resp.status_code == 200
+    assert resp.data["forwarded"] is True
+    assert resp.data["forwarded_at"] is not None
+    order.refresh_from_db()
+    assert order.forwarded is True
+    # Idempotent: a second call still 200 and stays forwarded (no un-forward path).
+    resp2 = client.post(f"/api/orders/{order.id}/forward/")
+    assert resp2.status_code == 200
+    assert resp2.data["forwarded"] is True
+
+
+@pytest.mark.django_db
+def test_forward_bulk_forwards_selected_only(client):
+    a = OrderFactory(status="processing", forwarded=False)
+    b = OrderFactory(status="processing", forwarded=False)
+    untouched = OrderFactory(status="processing", forwarded=False)
+    resp = client.post(
+        "/api/orders/forward_bulk/", {"ids": [a.id, b.id]}, format="json"
+    )
+    assert resp.status_code == 200
+    assert resp.data["forwarded"] == 2
+    a.refresh_from_db()
+    b.refresh_from_db()
+    untouched.refresh_from_db()
+    assert a.forwarded and b.forwarded
+    assert untouched.forwarded is False
+
+
+@pytest.mark.django_db
+def test_forward_bulk_rejects_bad_ids(client):
+    resp = client.post(
+        "/api/orders/forward_bulk/", {"ids": "not-a-list"}, format="json"
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
 def test_complete_rejects_non_processing(client, monkeypatch):
     order = OrderFactory(status="pending")
 
@@ -254,3 +324,36 @@ def test_complete_rejects_non_processing(client, monkeypatch):
     assert resp.status_code == 409
     order.refresh_from_db()
     assert order.status == "pending"
+
+
+@pytest.mark.django_db
+def test_filter_by_classification(client):
+    OrderFactory(classification="genuine")
+    OrderFactory(classification="spam")
+    assert client.get("/api/orders/", {"classification": "spam"}).data["count"] == 1
+    assert client.get("/api/orders/", {"classification": "genuine"}).data["count"] == 1
+
+
+@pytest.mark.django_db
+def test_serializer_exposes_classification(client):
+    OrderFactory(
+        classification="suspicious",
+        risk_score=40,
+        risk_reasons=["phone_invalid", "velocity_phone"],
+    )
+    row = client.get("/api/orders/").data["results"][0]
+    assert row["classification"] == "suspicious"
+    assert row["classification_display"] == "Nghi ngờ"
+    assert row["risk_score"] == 40
+    assert row["risk_reasons"] == ["phone_invalid", "velocity_phone"]
+    # Codes are mapped to Vietnamese labels for the UI.
+    assert "SĐT không đúng định dạng Việt Nam" in row["risk_reasons_display"]
+
+
+@pytest.mark.django_db
+def test_stats_by_classification(client):
+    OrderFactory(classification="genuine")
+    OrderFactory(classification="spam")
+    OrderFactory(classification="spam")
+    resp = client.get("/api/orders/stats/")
+    assert resp.data["by_classification"] == {"genuine": 1, "spam": 2}

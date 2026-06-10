@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from . import services
 from .models import Order
 
 
@@ -12,6 +13,16 @@ class OrderSerializer(serializers.ModelSerializer):
     hosting_name = serializers.CharField(
         source="site.hosting.name", read_only=True, default=None
     )
+    classification_display = serializers.CharField(
+        source="get_classification_display", read_only=True
+    )
+    risk_reasons_display = serializers.SerializerMethodField()
+
+    def get_risk_reasons_display(self, obj) -> list[str]:
+        """The fired rule codes mapped to Vietnamese labels for the UI."""
+        return [
+            services.REASON_LABELS.get(code, code) for code in (obj.risk_reasons or [])
+        ]
 
     class Meta:
         model = Order
@@ -33,6 +44,11 @@ class OrderSerializer(serializers.ModelSerializer):
             "line_items",
             "forwarded",
             "forwarded_at",
+            "classification",
+            "classification_display",
+            "risk_score",
+            "risk_reasons",
+            "risk_reasons_display",
             "date_created_woo",
             "created_at",
         ]

@@ -10,12 +10,16 @@ import { api } from "./client.js";
 // Endpoints (Hub backend only) — orders are pulled in by the poll, read-only here:
 //   GET  /orders/          -> getOrders / useOrders
 //       params: ?page, ?page_size, ?ordering, ?search,
-//               ?status, ?site, ?hosting, ?forwarded, ?date_from, ?date_to
+//               ?status, ?classification, ?site, ?hosting, ?forwarded,
+//               ?date_from, ?date_to
 //   GET  /orders/{id}/     -> getOrder / useOrder
 //   GET  /orders/stats/    -> getOrderStats / useOrderStats
 //   POST /orders/poll_now/ -> pollOrdersNow / usePollOrders (kick the Celery fan-out)
 //       body: { status?, sites?: number[], date_from?, date_to? }
 //   POST /orders/{id}/complete/ -> completeOrder / useCompleteOrder (push 'completed' to Woo)
+//   POST /orders/{id}/cancel/   -> cancelOrder / useCancelOrder (push 'cancelled' to Woo)
+//   POST /orders/forward_bulk/  -> forwardOrdersBulk / useForwardOrdersBulk (Hub-internal, one-way)
+//       body: { ids: number[] }
 //   GET  /orders/export_pdf/ -> exportOrdersPdf (PDF blob download)
 //       params: ?ids=1,2,3 (selected orders) — or the active list filters when omitted
 
@@ -63,6 +67,15 @@ export const pollOrdersNow = (body = {}) =>
 export const completeOrder = (id) =>
   api.post(`/orders/${id}/complete/`).then((r) => r.data);
 
+// Cancel one order on its WooCommerce site (only pending/processing/on-hold).
+export const cancelOrder = (id) =>
+  api.post(`/orders/${id}/cancel/`).then((r) => r.data);
+
+// Forward many selected orders to marketing at once; returns { forwarded: <count> }.
+// Hub-internal, one-way (a completed order is forwarded automatically server-side).
+export const forwardOrdersBulk = (ids) =>
+  api.post("/orders/forward_bulk/", { ids }).then((r) => r.data);
+
 const KEY = ["orders"];
 
 // Server-side pagination/sort/filter: params live in the query key so any
@@ -92,11 +105,45 @@ export function usePollOrders() {
   });
 }
 
+// Feed for the notification bell: the latest "processing" ("chưa xử lý") orders,
+// independent of the Orders page filters. Refetches on an interval and on window
+// focus so orders pulled in by the periodic backend poll surface without a manual
+// sync; a manual "Đồng bộ ngay" invalidates the ["orders"] key and refreshes this
+// too. page_size caps the popover list.
+export function useNewOrders({ enabled = true } = {}) {
+  return useQuery({
+    queryKey: [...KEY, "new", "processing"],
+    queryFn: () =>
+      getOrders({ status: "processing", ordering: "-date_created_woo", page_size: 20 }),
+    enabled,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+}
+
 // Mark one order completed (backend pushes to WooCommerce), then refetch.
 export function useCompleteOrder() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: completeOrder,
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+  });
+}
+
+// Cancel one order (backend pushes 'cancelled' to WooCommerce), then refetch.
+export function useCancelOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: cancelOrder,
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+  });
+}
+
+// Forward the ticked orders to marketing in one request, then refetch.
+export function useForwardOrdersBulk() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: forwardOrdersBulk,
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   });
 }

@@ -1,5 +1,5 @@
 import { Skeleton } from "antd";
-import { Banknote, Send, ShoppingCart } from "lucide-react";
+import { Banknote, Send, ShieldAlert, ShoppingCart } from "lucide-react";
 
 import { formatVND } from "../lib/format.js";
 
@@ -8,6 +8,8 @@ import { formatVND } from "../lib/format.js";
 // the values render as skeleton blocks instead of flashing 0 → real number.
 export default function OrderStats({ stats = {}, loading = false }) {
   const total = stats.total ?? 0;
+  const byClass = stats.by_classification ?? {};
+  const flagged = (byClass.suspicious ?? 0) + (byClass.spam ?? 0);
   const cards = [
     {
       key: "total",
@@ -30,10 +32,17 @@ export default function OrderStats({ stats = {}, loading = false }) {
       Icon: Send,
       tint: "bg-amber-50 text-warning",
     },
+    {
+      key: "flagged",
+      label: "Nghi ngờ / Spam",
+      value: flagged.toLocaleString("vi-VN"),
+      Icon: ShieldAlert,
+      tint: "bg-red-50 text-danger",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
       {cards.map(({ key, label, value, Icon, tint }) => (
         <div key={key} className="flex items-start gap-3 rounded bg-white p-3 shadow-card">
           <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${tint}`}>

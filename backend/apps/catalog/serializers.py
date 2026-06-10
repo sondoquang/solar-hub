@@ -15,13 +15,17 @@ class ProductMappingSerializer(serializers.ModelSerializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
-    """Read-only category for the product-form picker ("tick từ có sẵn")."""
+    """Read-only category for the product-form picker ("tick từ có sẵn").
+
+    ``parent`` is the parent category id (null = root); the frontend builds the
+    nested tree from this flat list.
+    """
 
     mapping_count = serializers.IntegerField(source="mappings.count", read_only=True)
 
     class Meta:
         model = Category
-        fields = ["id", "name", "slug", "parent_name", "mapping_count"]
+        fields = ["id", "name", "slug", "parent", "mapping_count"]
 
 
 class ProductSyncStatusSerializer(serializers.Serializer):

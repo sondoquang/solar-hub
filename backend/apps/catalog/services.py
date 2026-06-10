@@ -354,6 +354,33 @@ def _push_variations(site, client, masters) -> dict:
     return {"created": created, "updated": updated, "deleted": deleted}
 
 
+def _collect_batch_failures(sent: list, returned: list, op: str) -> list:
+    """Per-item errors from a ``/products/batch`` response.
+
+    WooCommerce returns HTTP 200 for the batch even when individual items are
+    rejected (e.g. a duplicate SKU): each reject comes back as
+    ``{"error": {"code", "message"}}`` with no ``id``, in request order. Without
+    this the caller counts the reject as "created" and logs a false success while
+    no ``ProductMapping`` is saved. Correlate by position to recover the SKU (the
+    error item itself may omit it). Only the SKU + Woo error code/message are
+    kept — product data, no PII.
+    """
+    failures = []
+    for sent_item, got in zip(sent, returned):
+        if got.get("id"):
+            continue
+        err = got.get("error") or {}
+        failures.append(
+            {
+                "sku": sent_item.get("sku") or got.get("sku", ""),
+                "op": op,
+                "code": err.get("code", ""),
+                "message": err.get("message", ""),
+            }
+        )
+    return failures
+
+
 def push_products_to_site(site, *, masters=None) -> dict:
     """Push products to one WooCommerce site; the core of the "Sync all".
 
@@ -396,6 +423,7 @@ def push_products_to_site(site, *, masters=None) -> dict:
     )
 
     created = updated = deleted = 0
+    failures: list = []
     variations = {}
     try:
         for index, chunk in enumerate(_chunked(work, limit)):
@@ -405,10 +433,17 @@ def push_products_to_site(site, *, masters=None) -> dict:
             u = [x for kind, x in chunk if kind == "update"]
             d = [x for kind, x in chunk if kind == "delete"]
             resp = client.batch_products(create=c, update=u, delete=d)
-            _save_mappings(site, (resp.get("create") or []) + (resp.get("update") or []))
-            created += len(resp.get("create") or [])
-            updated += len(resp.get("update") or [])
+            resp_create = resp.get("create") or []
+            resp_update = resp.get("update") or []
+            _save_mappings(site, resp_create + resp_update)
+            # Woo's batch returns HTTP 200 even when items fail, so count only
+            # the items that actually got an id (a mapping) and collect the
+            # rejects — otherwise a duplicate-SKU reject reads as a false success.
+            created += sum(1 for it in resp_create if it.get("id"))
+            updated += sum(1 for it in resp_update if it.get("id"))
             deleted += len(resp.get("delete") or [])
+            failures += _collect_batch_failures(c, resp_create, "create")
+            failures += _collect_batch_failures(u, resp_update, "update")
 
         # Variations ride on the parent push (parent ids now mapped above).
         variable_masters = [
@@ -441,10 +476,19 @@ def push_products_to_site(site, *, masters=None) -> dict:
         ProductVariationMapping.objects.filter(site=site, woo_parent_id__in=delete).delete()
         ProductMapping.objects.filter(site=site, woo_product_id__in=delete).delete()
 
+    # Per-item Woo rejects → not a clean success: PARTIAL if anything landed,
+    # ERROR if the whole batch was rejected. ``failed`` lists the rejected SKUs
+    # + Woo's error code so the cause (e.g. duplicate SKU) is visible.
+    if failures:
+        status = (
+            SyncLog.Status.PARTIAL if (created or updated or deleted) else SyncLog.Status.ERROR
+        )
+    else:
+        status = SyncLog.Status.SUCCESS
     SyncLog.objects.create(
         site=site,
         operation=OPERATION,
-        status=SyncLog.Status.SUCCESS,
+        status=status,
         created_count=created,
         updated_count=updated,
         deleted_count=deleted,
@@ -452,6 +496,7 @@ def push_products_to_site(site, *, masters=None) -> dict:
             "planned": total,
             "variations": variations,
             "grouped_unresolved": grouped_unresolved,
+            "failed": failures,
         },
     )
     return {
@@ -583,36 +628,62 @@ def pull_categories_for_site(site) -> dict:
         # when multiple threads pull the same category name from different sites.
         Category.objects.bulk_create(
             [
-                Category(
-                    name=name,
-                    slug=slug_by_name.get(name, ""),
-                    parent_name=name_by_woo_id.get(parent_id_by_name.get(name, 0), ""),
-                )
+                Category(name=name, slug=slug_by_name.get(name, ""))
                 for name in unique_names
             ],
             update_conflicts=True,
-            update_fields=["slug", "parent_name"],
+            update_fields=["slug"],
             unique_fields=["name"],
         )
         categories_by_name = {
             c.name: c
             for c in Category.objects.filter(name__in=unique_names)
         }
-        # ON CONFLICT (site_id, woo_category_id) DO UPDATE — idempotent re-pull.
+
+        # Rebuild the category TREE for this site: resolve each category's woo
+        # parent id → parent name → parent Category, then set the self-FK. The
+        # parent always belongs to the same site's pull, so it is present in
+        # categories_by_name. Cha–con là **last-pull-wins** (xem Category model):
+        # ta chỉ đụng các category của site này, ghi đè parent kể cả về None khi
+        # site này coi nó là gốc. Bỏ qua self-parent (woo đôi khi trả về chính nó).
+        tree_updates = []
+        for name, cat in categories_by_name.items():
+            parent_name = name_by_woo_id.get(parent_id_by_name.get(name, 0), "")
+            parent_cat = categories_by_name.get(parent_name) if parent_name else None
+            new_parent_id = parent_cat.id if (parent_cat and parent_cat.id != cat.id) else None
+            if cat.parent_id != new_parent_id:
+                cat.parent_id = new_parent_id
+                tree_updates.append(cat)
+        if tree_updates:
+            Category.objects.bulk_update(tree_updates, ["parent"])
+        # One site can expose several WooCommerce categories whose names
+        # normalize to the same Hub Category (case/whitespace, or genuine
+        # duplicates). They all collapse to one (category, site) row, so an
+        # upsert keyed only on (site, woo_category_id) treats the extras as new
+        # inserts and trips ``catmap_unique_category_site``. Collapse to one woo
+        # id per category first (smallest id wins — deterministic across
+        # re-pulls), then replace the site's mappings wholesale so BOTH unique
+        # constraints hold without an ambiguous ON CONFLICT.
+        woo_id_by_category: dict = {}
+        for woo_id, name in name_by_woo_id.items():
+            category = categories_by_name.get(name)
+            if category is None:
+                continue
+            existing = woo_id_by_category.get(category.id)
+            if existing is None or woo_id < existing:
+                woo_id_by_category[category.id] = woo_id
+
+        CategoryMapping.objects.filter(site=site).delete()
         CategoryMapping.objects.bulk_create(
             [
                 CategoryMapping(
                     site=site,
+                    category_id=category_id,
                     woo_category_id=woo_id,
-                    category=categories_by_name[name],
                     last_synced_at=now,
                 )
-                for woo_id, name in name_by_woo_id.items()
-                if name in categories_by_name
-            ],
-            update_conflicts=True,
-            update_fields=["category", "last_synced_at"],
-            unique_fields=["site", "woo_category_id"],
+                for category_id, woo_id in woo_id_by_category.items()
+            ]
         )
 
     pulled = len(name_by_woo_id)
@@ -620,6 +691,6 @@ def pull_categories_for_site(site) -> dict:
         site=site,
         operation=CATEGORY_OPERATION,
         status=SyncLog.Status.SUCCESS,
-        detail={"pulled": pulled},
+        detail={"pulled": pulled, "mapped": len(woo_id_by_category)},
     )
     return {"site_id": site.id, "pulled": pulled, "error": None}

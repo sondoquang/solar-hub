@@ -172,10 +172,10 @@ SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS = env.int(
 )  # 5 min
 
 # --- CORS / CSRF (CORS only needed for dev-on-host Vite at :5173) --------
-CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173"])
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173", "http://192.168.1.53:5173"])
 CSRF_TRUSTED_ORIGINS = env.list(
     "CSRF_TRUSTED_ORIGINS",
-    default=["http://localhost:5173", "http://localhost:8000"],
+    default=["http://localhost:5173", "http://localhost:8000", "http://192.168.1.53:5173"],
 )
 
 # --- Secrets ------------------------------------------------------------
