@@ -150,3 +150,18 @@ button:not(.ant-btn) {
   background: transparent;
   padding: 0;
 }
+
+/* WP-style left-nav tabs in "Dữ liệu sản phẩm" postbox */
+.wp-product-data-tabs .ant-tabs-nav {
+  width: 130px;
+  min-width: 130px;
+}
+.wp-product-data-tabs .ant-tabs-tab {
+  padding: 8px 12px !important;
+  margin: 0 !important;
+  justify-content: flex-start;
+}
+.wp-product-data-tabs .ant-tabs-content-holder {
+  border-left: 1px solid #e2e8f0;
+  padding-left: 12px;
+}

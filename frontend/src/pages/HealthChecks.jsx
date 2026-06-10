@@ -222,13 +222,10 @@ export default function HealthChecks() {
     search !== "" || statusFilter !== "all" || scope !== "all" || range != null;
 
   return (
-    <section>
+    <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
           <h1 className="font-display text-2xl font-bold">Lịch sử kiểm tra sức khỏe hệ thống</h1>
-          <p className="mt-1 text-sm text-muted">
-            Theo dõi và quản lý lịch sử kiểm tra sức khỏe của các website và dịch vụ hosting.
-          </p>
         </div>
         <Button
           type="primary"

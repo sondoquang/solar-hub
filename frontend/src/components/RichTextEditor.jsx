@@ -37,7 +37,7 @@ function ToolbarButton({ title, active, disabled, onClick, children }) {
   );
 }
 
-export default function RichTextEditor({ value = "", onChange }) {
+export default function RichTextEditor({ value = "", onChange, minHeight = "120px" }) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -46,7 +46,7 @@ export default function RichTextEditor({ value = "", onChange }) {
     ],
     content: value,
     editorProps: {
-      attributes: { class: "richtext min-h-[120px] px-3 py-2" },
+      attributes: { class: "richtext px-3 py-2", style: `min-height: ${minHeight}` },
     },
     onUpdate: ({ editor: ed }) => onChange?.(ed.getHTML()),
   });

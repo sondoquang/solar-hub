@@ -2,7 +2,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from django.db import connection
+
+_PULL_CATEGORIES_LOCK_KEY = "lock:pull_all_categories"
+_PULL_CATEGORIES_LOCK_TTL = 600  # 10 min — expected max run time across all sites
 
 
 def _batch_size() -> int:
@@ -63,7 +67,10 @@ def poll_sites_batch_task(site_ids, status, date_from=None, date_to=None):
         return {"status": status, "polled": 0, "results": []}
 
     def _poll(site):
-        return services.poll_site(site, status, date_from=date_from, date_to=date_to)
+        try:
+            return services.poll_site(site, status, date_from=date_from, date_to=date_to)
+        finally:
+            connection.close()
 
     with ThreadPoolExecutor(max_workers=_batch_size()) as executor:
         results = list(executor.map(_poll, sites))
@@ -136,7 +143,17 @@ def pull_all_categories(site_ids=None):
     ``ORDER_POLL_BATCH_SIZE`` and one ``pull_categories_batch_task`` is dispatched
     per chunk, so a slow/broken site only holds up its own batch. The pull is
     idempotent (upsert on ``(site, woo_category_id)``), so re-running is safe.
+
+    A full-site run (``site_ids=None``) acquires a Redis cache lock for
+    ``_PULL_CATEGORIES_LOCK_TTL`` seconds so rapid re-triggers (user clicking
+    "sync" repeatedly) dispatch only one set of batch tasks. Scoped runs
+    (``site_ids`` set) bypass the lock and can overlap freely.
     """
+    if site_ids is None and not cache.add(
+        _PULL_CATEGORIES_LOCK_KEY, "1", timeout=_PULL_CATEGORIES_LOCK_TTL
+    ):
+        return {"status": "skipped_already_running", "sites": 0, "batches": 0}
+
     from apps.sites.models import Site
 
     qs = Site.objects.filter(is_deleted=False)

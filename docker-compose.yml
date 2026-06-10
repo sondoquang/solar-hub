@@ -32,7 +32,7 @@ services:
   celery_worker:
     build: ./backend
     env_file: ./backend/.env
-    command: celery -A config worker -l info
+    command: celery -A config worker -l info --concurrency=2
     volumes:
       - ./backend:/app
     depends_on:

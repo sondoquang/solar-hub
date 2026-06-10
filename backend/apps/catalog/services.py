@@ -550,29 +550,72 @@ def pull_categories_for_site(site) -> dict:
         )
         return {"site_id": site.id, "pulled": 0, "error": exc.__class__.__name__}
 
-    name_by_id = {c.get("id"): normalize_category_name(c.get("name", "")) for c in cats}
-    now = timezone.now()
-    pulled = 0
+    # Single-pass: build lookup maps for the bulk upsert below.
+    name_by_woo_id: dict = {}   # woo_id → normalized name
+    slug_by_name: dict = {}     # name → slug
+    parent_id_by_name: dict = {}  # name → parent woo_id (0 = root)
     for c in cats:
         name = normalize_category_name(c.get("name", ""))
         woo_id = c.get("id")
         if not name or not woo_id:
             continue
-        parent_id = c.get("parent") or 0
-        category, _ = Category.objects.update_or_create(
-            name=name,
-            defaults={
-                "slug": c.get("slug", "") or "",
-                "parent_name": name_by_id.get(parent_id, "") if parent_id else "",
-            },
-        )
-        CategoryMapping.objects.update_or_create(
-            site=site,
-            woo_category_id=woo_id,
-            defaults={"category": category, "last_synced_at": now},
-        )
-        pulled += 1
+        name_by_woo_id[woo_id] = name
+        slug_by_name[name] = c.get("slug", "") or ""
+        parent_id_by_name[name] = c.get("parent") or 0
 
+    if not name_by_woo_id:
+        SyncLog.objects.create(
+            site=site,
+            operation=CATEGORY_OPERATION,
+            status=SyncLog.Status.SUCCESS,
+            detail={"pulled": 0},
+        )
+        return {"site_id": site.id, "pulled": 0, "error": None}
+
+    # dict.fromkeys preserves insertion order and removes duplicate names.
+    unique_names = dict.fromkeys(name_by_woo_id.values())
+    now = timezone.now()
+
+    from django.db import transaction
+
+    with transaction.atomic():
+        # ON CONFLICT (name) DO UPDATE — atomic at the DB level, race-safe
+        # when multiple threads pull the same category name from different sites.
+        Category.objects.bulk_create(
+            [
+                Category(
+                    name=name,
+                    slug=slug_by_name.get(name, ""),
+                    parent_name=name_by_woo_id.get(parent_id_by_name.get(name, 0), ""),
+                )
+                for name in unique_names
+            ],
+            update_conflicts=True,
+            update_fields=["slug", "parent_name"],
+            unique_fields=["name"],
+        )
+        categories_by_name = {
+            c.name: c
+            for c in Category.objects.filter(name__in=unique_names)
+        }
+        # ON CONFLICT (site_id, woo_category_id) DO UPDATE — idempotent re-pull.
+        CategoryMapping.objects.bulk_create(
+            [
+                CategoryMapping(
+                    site=site,
+                    woo_category_id=woo_id,
+                    category=categories_by_name[name],
+                    last_synced_at=now,
+                )
+                for woo_id, name in name_by_woo_id.items()
+                if name in categories_by_name
+            ],
+            update_conflicts=True,
+            update_fields=["category", "last_synced_at"],
+            unique_fields=["site", "woo_category_id"],
+        )
+
+    pulled = len(name_by_woo_id)
     SyncLog.objects.create(
         site=site,
         operation=CATEGORY_OPERATION,

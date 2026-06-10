@@ -100,6 +100,19 @@ const Label = ({ children, required }) => (
   </label>
 );
 
+// WP-style metabox: bordered card with a labelled header
+function Postbox({ title, action, children }) {
+  return (
+    <div className="rounded border border-slate-200 bg-white">
+      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+        {action}
+      </div>
+      <div className="p-3">{children}</div>
+    </div>
+  );
+}
+
 const EMPTY = {
   type: "simple",
   sku: "",
@@ -175,6 +188,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     handleSubmit,
     reset,
     watch,
+    setValue,
     getValues,
     formState: { errors, isSubmitting },
   } = useForm({
@@ -183,6 +197,10 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   });
 
   const type = watch("type");
+  const watchImages = watch("images");
+  const featuredUrl = watchImages?.[0] ?? "";
+  const [imgError, setImgError] = useState(false);
+
   const attrArray = useFieldArray({ control, name: "attributes" });
   const varArray = useFieldArray({ control, name: "variations" });
 
@@ -207,6 +225,13 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
       onSuccess: () => toast.success("Đã kích hoạt cập nhật danh mục từ các site."),
       onError: () => toast.error("Cập nhật danh mục thất bại."),
     });
+  };
+
+  const handleFeaturedUrlChange = (e) => {
+    const url = e.target.value;
+    const rest = (watchImages ?? []).slice(1);
+    setValue("images", url ? [url, ...rest] : rest);
+    setImgError(false);
   };
 
   // Append the attribute combinations that don't already have a variation row,
@@ -238,7 +263,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     key: "general",
     label: "Chung",
     children: (
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-3">
         <div>
           <Label required={type !== "external"}>Giá bán</Label>
           <Controller
@@ -266,7 +291,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     key: "inventory",
     label: "Tồn kho",
     children: (
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-3">
         <div>
           <Label>Tình trạng kho</Label>
           <Controller
@@ -295,7 +320,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     key: "external",
     label: "Liên kết ngoài",
     children: (
-      <div className="grid gap-2">
+      <div className="grid gap-3">
         <div>
           <Label required>Đường dẫn sản phẩm (URL)</Label>
           <Controller
@@ -561,145 +586,182 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   const dataTabs = tabsByType[type] ?? [generalTab, inventoryTab];
 
   return (
-    <form onSubmit={handleSubmit(submit)} className="grid gap-3 lg:grid-cols-[1fr_280px]">
-      {/* Main column */}
-      <div className="grid content-start gap-3">
-        <div>
-          <Label required>Tên sản phẩm</Label>
-          <Controller
-            name="name"
-            control={control}
-            render={({ field }) => (
-              <Input {...field} size="large" status={errors.name ? "error" : ""} />
-            )}
-          />
-          {errors.name && <p className={errCls}>{errors.name.message}</p>}
-        </div>
-
-        <div className="rounded border border-slate-200 p-2">
-          <div className="mb-2 flex items-center gap-2">
-            <span className="text-sm font-semibold">Dữ liệu sản phẩm</span>
-            <Controller
-              name="type"
-              control={control}
-              render={({ field }) => (
-                <Select {...field} size="small" className="min-w-48" options={TYPE_OPTIONS} />
-              )}
-            />
-          </div>
-          <Tabs items={dataTabs} size="small" />
-        </div>
-
-        <div>
-          <Label>Mô tả</Label>
-          <Controller
-            name="description"
-            control={control}
-            render={({ field }) => (
-              <RichTextEditor value={field.value} onChange={field.onChange} />
-            )}
-          />
-        </div>
-
-        <div>
-          <Label>Mô tả ngắn</Label>
-          <Controller
-            name="short_description"
-            control={control}
-            render={({ field }) => (
-              <RichTextEditor value={field.value} onChange={field.onChange} />
-            )}
-          />
-        </div>
+    <form onSubmit={handleSubmit(submit)} className="flex flex-col gap-4">
+      {/* Row 1: Product name — full width */}
+      <div>
+        <Label required>Tên sản phẩm</Label>
+        <Controller
+          name="name"
+          control={control}
+          render={({ field }) => (
+            <Input {...field} size="large" status={errors.name ? "error" : ""} placeholder="Nhập tên sản phẩm…" />
+          )}
+        />
+        {errors.name && <p className={errCls}>{errors.name.message}</p>}
       </div>
 
-      {/* Sidebar column */}
-      <div className="grid content-start gap-3">
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
-          <div>
-            <Label required>SKU</Label>
-            <Controller
-              name="sku"
-              control={control}
-              render={({ field }) => (
-                <Input {...field} size="large" status={errors.sku ? "error" : ""} />
-              )}
-            />
-            {errors.sku && <p className={errCls}>{errors.sku.message}</p>}
-          </div>
-          <div>
-            <Label>Trạng thái</Label>
-            <Controller
-              name="status"
-              control={control}
-              render={({ field }) => (
-                <Select {...field} size="large" className="w-full" options={STATUS_OPTIONS} />
-              )}
-            />
-          </div>
-        </div>
+      {/* Row 2: Two-column WP layout */}
+      <div className="grid gap-4 xl:grid-cols-[1fr_280px]">
 
-        <div>
-          <div className="mb-1 flex items-center justify-between">
-            <span className="text-sm font-medium">Danh mục</span>
-            <Button
-              type="link"
+        {/* LEFT main column */}
+        <div className="grid content-start gap-4">
+          {/* Mô tả */}
+          <Postbox title="Mô tả">
+            <Controller
+              name="description"
+              control={control}
+              render={({ field }) => (
+                <RichTextEditor value={field.value} onChange={field.onChange} minHeight="200px" />
+              )}
+            />
+          </Postbox>
+
+          {/* Dữ liệu sản phẩm */}
+          <Postbox
+            title="Dữ liệu sản phẩm"
+            action={
+              <Controller
+                name="type"
+                control={control}
+                render={({ field }) => (
+                  <Select {...field} size="small" className="min-w-48" options={TYPE_OPTIONS} />
+                )}
+              />
+            }
+          >
+            <Tabs
+              tabPosition="left"
+              items={dataTabs}
               size="small"
-              className="px-0"
-              loading={syncCategories.isPending}
-              onClick={pullCategories}
-            >
-              Cập nhật từ site
-            </Button>
-          </div>
-          <Controller
-            name="categories"
-            control={control}
-            render={({ field }) => (
-              <Select
-                {...field}
-                mode="tags"
-                size="large"
-                className="w-full"
-                placeholder="Chọn hoặc thêm danh mục"
-                tokenSeparators={[","]}
-                loading={categoriesQuery.isLoading}
-                options={categoryOptions}
-              />
-            )}
-          />
+              className="wp-product-data-tabs"
+            />
+          </Postbox>
+
+          {/* Mô tả ngắn */}
+          <Postbox title="Mô tả ngắn của sản phẩm">
+            <Controller
+              name="short_description"
+              control={control}
+              render={({ field }) => (
+                <RichTextEditor value={field.value} onChange={field.onChange} minHeight="160px" />
+              )}
+            />
+          </Postbox>
         </div>
 
-        <div>
-          <Label>Ảnh (URL)</Label>
-          <Controller
-            name="images"
-            control={control}
-            render={({ field }) => (
-              <Select
-                {...field}
-                mode="tags"
-                size="large"
-                className="w-full"
-                placeholder="Dán URL ảnh, Enter để thêm"
-                tokenSeparators={[",", " "]}
-                open={false}
+        {/* RIGHT sidebar */}
+        <div className="grid content-start gap-4">
+          {/* Publish box */}
+          <Postbox title="Đăng">
+            <div className="grid gap-3">
+              <div>
+                <Label required>SKU</Label>
+                <Controller
+                  name="sku"
+                  control={control}
+                  render={({ field }) => (
+                    <Input {...field} size="large" status={errors.sku ? "error" : ""} />
+                  )}
+                />
+                {errors.sku && <p className={errCls}>{errors.sku.message}</p>}
+              </div>
+              <div>
+                <Label>Trạng thái</Label>
+                <Controller
+                  name="status"
+                  control={control}
+                  render={({ field }) => (
+                    <Select {...field} size="large" className="w-full" options={STATUS_OPTIONS} />
+                  )}
+                />
+              </div>
+              <div className="flex justify-end gap-1.5 border-t border-slate-100 pt-3">
+                {onCancel && (
+                  <Button size="large" onClick={onCancel}>
+                    Hủy
+                  </Button>
+                )}
+                <Button type="primary" htmlType="submit" size="large" loading={busy}>
+                  {busy ? "Đang lưu…" : "Lưu sản phẩm"}
+                </Button>
+              </div>
+            </div>
+          </Postbox>
+
+          {/* Categories */}
+          <Postbox
+            title="Danh mục sản phẩm"
+            action={
+              <Button
+                type="link"
+                size="small"
+                className="px-0"
+                loading={syncCategories.isPending}
+                onClick={pullCategories}
+              >
+                Cập nhật từ site
+              </Button>
+            }
+          >
+            <Controller
+              name="categories"
+              control={control}
+              render={({ field }) => (
+                <Select
+                  {...field}
+                  mode="tags"
+                  size="large"
+                  className="w-full"
+                  placeholder="Chọn hoặc thêm danh mục"
+                  tokenSeparators={[","]}
+                  loading={categoriesQuery.isLoading}
+                  options={categoryOptions}
+                />
+              )}
+            />
+          </Postbox>
+
+          {/* Featured image */}
+          <Postbox title="Ảnh sản phẩm">
+            {featuredUrl && !imgError && (
+              <img
+                src={featuredUrl}
+                alt="Ảnh sản phẩm"
+                className="mb-2 w-full rounded border border-slate-200 object-contain"
+                style={{ maxHeight: 180 }}
+                onError={() => setImgError(true)}
               />
             )}
-          />
-        </div>
-      </div>
+            <Input
+              size="large"
+              placeholder="https://… URL ảnh đại diện"
+              value={featuredUrl}
+              onChange={handleFeaturedUrlChange}
+            />
+            <p className="mt-1 text-xs text-muted">Dán URL ảnh và nhấn Enter để xem trước.</p>
+          </Postbox>
 
-      {/* Footer actions span both columns */}
-      <div className="flex gap-1.5 lg:col-span-2">
-        <Button type="primary" htmlType="submit" size="large" loading={busy}>
-          {busy ? "Đang lưu…" : "Lưu sản phẩm"}
-        </Button>
-        {onCancel && (
-          <Button size="large" onClick={onCancel}>
-            Hủy
-          </Button>
-        )}
+          {/* Gallery */}
+          <Postbox title="Album hình ảnh sản phẩm">
+            <Controller
+              name="images"
+              control={control}
+              render={({ field }) => (
+                <Select
+                  {...field}
+                  mode="tags"
+                  size="large"
+                  className="w-full"
+                  placeholder="Dán URL ảnh phụ, Enter để thêm"
+                  tokenSeparators={[",", " "]}
+                  open={false}
+                />
+              )}
+            />
+            <p className="mt-1 text-xs text-muted">Ảnh đầu tiên là ảnh đại diện.</p>
+          </Postbox>
+        </div>
+
       </div>
     </form>
   );

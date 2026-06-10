@@ -1,4 +1,4 @@
-import { Button, Drawer, Input, Popconfirm, Select } from "antd";
+import { Button, Input, Modal, Popconfirm, Select } from "antd";
 import { Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
@@ -261,13 +261,10 @@ export default function Products() {
   const filterActive = search !== "" || statusFilter !== "all" || stockFilter !== "all";
 
   return (
-    <section>
+    <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
           <h1 className="font-display text-2xl font-bold">Sản phẩm</h1>
-          <p className="mt-1 text-sm text-muted">
-            Catalog gốc tại Hub — đồng bộ đồng loạt xuống các website WooCommerce.
-          </p>
         </div>
         <div className="flex gap-1">
           <Button
@@ -361,12 +358,16 @@ export default function Products() {
         </div>
       )}
 
-      <Drawer
+      <Modal
         open={showForm}
-        onClose={closeForm}
+        onCancel={closeForm}
         destroyOnClose
-        width={920}
+        width="min(1240px, 96vw)"
+        style={{ top: 10 }}
+        styles={{ body: { maxHeight: "calc(100vh - 110px)", overflowY: "auto", padding: "20px 24px" } }}
         title={editing ? "Sửa sản phẩm" : "Thêm sản phẩm"}
+        footer={null}
+        maskClosable={false}
       >
         <ProductRegisterForm
           defaultValues={editing ?? undefined}
@@ -374,7 +375,7 @@ export default function Products() {
           onCancel={closeForm}
           pending={createProduct.isPending || updateProduct.isPending}
         />
-      </Drawer>
+      </Modal>
 
       <ProductSyncStatusModal
         product={syncProduct}

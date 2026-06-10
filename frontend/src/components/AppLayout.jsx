@@ -10,12 +10,13 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
   Settings,
   SunMedium,
   Users,
 } from "lucide-react";
-import { useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { NavLink, Outlet, useLocation, useNavigation } from "react-router-dom";
 
 import { useAuth } from "../lib/AuthContext.jsx";
 import UserMenu from "./UserMenu.jsx";
@@ -165,7 +166,7 @@ function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 space-y-0.5 overflow-y-auto px-1.5 py-1">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto px-4 py-1">
         {MAIN_NAV.map((item) => (
           <NavRow key={item.label} item={item} collapsed={collapsed} />
         ))}
@@ -183,7 +184,7 @@ function Sidebar() {
               aria-expanded={websiteOpen}
               className={[
                 itemBase,
-                "justify-between",
+                "cursor-pointer justify-between",
                 websiteActive
                   ? "bg-amber-50 text-brand"
                   : "text-slate-600 hover:bg-slate-50 hover:text-ink",
@@ -195,7 +196,12 @@ function Sidebar() {
               </span>
               {websiteOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
             </button>
-            {websiteOpen && (
+            <div
+              className={[
+                "overflow-hidden transition-all duration-300 ease-in-out",
+                websiteOpen ? "max-h-40 opacity-100" : "max-h-0 opacity-0",
+              ].join(" ")}
+            >
               <div className="mt-0.5 space-y-0.5 pl-2">
                 {WEBSITE_SUB.map((sub) =>
                   sub.to ? (
@@ -204,7 +210,7 @@ function Sidebar() {
                       to={sub.to}
                       className={({ isActive }) =>
                         [
-                          "flex items-center gap-2.5 rounded px-2 py-3 text-sm transition-colors",
+                          "flex cursor-pointer items-center gap-2.5 rounded px-2 py-3 text-sm transition-colors",
                           isActive
                             ? "bg-amber-50 font-medium text-brand"
                             : "text-slate-500 hover:bg-slate-50 hover:text-ink",
@@ -218,7 +224,7 @@ function Sidebar() {
                     <button
                       key={sub.label}
                       type="button"
-                      className="flex w-full cursor-default items-center gap-2.5 rounded px-2 py-3 text-sm text-slate-500 hover:bg-slate-50"
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded px-2 py-3 text-sm text-slate-500 hover:bg-slate-50"
                       title="Sắp ra mắt"
                     >
                       <span className="h-1.5 w-1.5 rounded-full bg-slate-300" />
@@ -227,7 +233,7 @@ function Sidebar() {
                   ),
                 )}
               </div>
-            )}
+            </div>
           </div>
         )}
 
@@ -241,20 +247,78 @@ function Sidebar() {
   );
 }
 
-function Topbar() {
+// Yellow progress bar that runs left→right while a route is loading.
+function TopProgressBar({ loading }) {
+  const [width, setWidth] = useState(0);
+  const [visible, setVisible] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    const clear = () => clearTimeout(timerRef.current);
+    if (loading) {
+      clear();
+      setVisible(true);
+      setWidth(0);
+      // Double-rAF so the browser paints width:0 before transitioning to 75%.
+      requestAnimationFrame(() => requestAnimationFrame(() => setWidth(75)));
+    } else if (visible) {
+      setWidth(100);
+      timerRef.current = setTimeout(() => {
+        setVisible(false);
+        setWidth(0);
+      }, 400);
+    }
+    return clear;
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!visible) return null;
+
   return (
-    <header className="flex items-center justify-end gap-2.5 px-4 py-2">
-      <button
-        type="button"
-        className="relative rounded-full border-0 p-1 text-slate-500 hover:bg-slate-100 hover:text-ink"
-        aria-label="Thông báo"
-      >
-        <Bell size={20} />
-        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold text-white">
-          3
-        </span>
-      </button>
-      <UserMenu />
+    <div
+      className="absolute inset-x-0 bottom-0 bg-brand"
+      style={{
+        height: "3px",
+        width: `${width}%`,
+        transition: loading ? "width 600ms ease-out" : "width 200ms ease-in",
+      }}
+    />
+  );
+}
+
+function Topbar() {
+  const { state } = useNavigation();
+  const loading = state !== "idle";
+
+  return (
+    <header className="relative flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
+      <TopProgressBar loading={loading} />
+
+      {/* Search */}
+      <div className="w-[560px]">
+        <label className="flex cursor-text items-center gap-2.5 rounded-md bg-slate-100 px-4 py-2 text-sm text-slate-400 transition-all focus-within:bg-white focus-within:ring-2 focus-within:ring-brand/40">
+          <Search size={16} className="shrink-0 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Tìm kiếm (Ctrl + K)"
+            className="w-full bg-transparent outline-none  border-noneplaceholder:text-slate-400"
+          />
+        </label>
+      </div>
+
+      {/* Right actions */}
+      <div className="ml-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          className="relative rounded-full p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink"
+          aria-label="Thông báo"
+        >
+          <Bell size={20} />
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold text-white">
+            3
+          </span>
+        </button>
+        <UserMenu />
+      </div>
     </header>
   );
 }

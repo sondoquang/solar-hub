@@ -265,13 +265,10 @@ export default function Sites() {
   const filterActive = hostingFilter !== "all" || search !== "";
 
   return (
-    <section>
+    <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
           <h1 className="font-display text-2xl font-bold">Quản lý website</h1>
-          <p className="mt-1 text-sm text-muted">
-            Quản lý danh sách website và trạng thái hoạt động
-          </p>
         </div>
         <div className="flex gap-1">
           <Button
