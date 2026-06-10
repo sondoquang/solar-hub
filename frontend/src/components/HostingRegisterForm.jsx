@@ -45,12 +45,19 @@ export default function HostingRegisterForm({ onSubmit, onCancel, pending, defau
   return (
     <form onSubmit={handleSubmit(submit)} className="grid gap-2">
       <div>
-        <label className="mb-1 block text-sm font-medium">Tên hosting<Req /></label>
+        <label className="mb-1 block text-sm font-medium">
+          Tên hosting
+          <Req />
+        </label>
         <Controller
           name="name"
           control={control}
           render={({ field }) => (
-            <Input {...field} size="large" placeholder="VD: TenTen - Server A" status={errors.name ? "error" : ""} />
+            <Input
+              {...field}
+              placeholder="VD: TenTen - Server A"
+              status={errors.name ? "error" : ""}
+            />
           )}
         />
         {errors.name && <p className={errCls}>{errors.name.message}</p>}
@@ -60,7 +67,7 @@ export default function HostingRegisterForm({ onSubmit, onCancel, pending, defau
         <Controller
           name="provider"
           control={control}
-          render={({ field }) => <Input {...field} size="large" placeholder="VD: TenTen" />}
+          render={({ field }) => <Input {...field} placeholder="VD: TenTen" />}
         />
       </div>
       <div>
@@ -68,12 +75,13 @@ export default function HostingRegisterForm({ onSubmit, onCancel, pending, defau
         <Controller
           name="account_username"
           control={control}
-          render={({ field }) => <Input {...field} size="large" placeholder="username hosting" />}
+          render={({ field }) => <Input {...field} placeholder="username hosting" />}
         />
       </div>
       <div>
         <label className="mb-1 block text-sm font-medium">
-          Số domain kiểm tra đồng thời<Req />
+          Số domain kiểm tra đồng thời
+          <Req />
         </label>
         <Controller
           name="check_concurrency"
@@ -81,7 +89,6 @@ export default function HostingRegisterForm({ onSubmit, onCancel, pending, defau
           render={({ field }) => (
             <InputNumber
               {...field}
-              size="large"
               min={1}
               max={50}
               className="w-full"
@@ -103,14 +110,10 @@ export default function HostingRegisterForm({ onSubmit, onCancel, pending, defau
         />
       </div>
       <div className="flex gap-1 pt-1">
-        <Button type="primary" htmlType="submit" size="large" loading={busy}>
+        <Button type="primary" htmlType="submit" loading={busy}>
           {busy ? "Đang lưu…" : "Lưu hosting"}
         </Button>
-        {onCancel && (
-          <Button size="large" onClick={onCancel}>
-            Hủy
-          </Button>
-        )}
+        {onCancel && <Button onClick={onCancel}>Hủy</Button>}
       </div>
     </form>
   );

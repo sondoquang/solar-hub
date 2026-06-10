@@ -5,9 +5,13 @@
 - ``GET  /api/orders/stats/``      — totals/revenue for the current filter.
 - ``POST /api/orders/poll_now/``   — kick the poll fan-out (the "Đồng bộ ngay" button).
 - ``POST /api/orders/{id}/complete/`` — mark one order completed (pushes to WooCommerce).
+- ``POST /api/orders/{id}/cancel/``   — cancel one order (pushes to WooCommerce).
+- ``POST /api/orders/{id}/forward/``  — forward one order to marketing (Hub-internal, one-way).
+- ``POST /api/orders/forward_bulk/``  — forward many selected orders to marketing at once.
 
-Orders are pulled in by the periodic poll (apps/sync/tasks); the only write is
-``complete``, which pushes a status change back to the site and re-syncs the Hub.
+Orders are pulled in by the periodic poll (apps/sync/tasks). ``complete``/``cancel``
+push a status change back to the site and re-sync the Hub; ``forward``/``forward_bulk``
+only flip the Hub-internal marketing flag (no WooCommerce traffic, never reverted).
 """
 
 import logging
@@ -31,7 +35,7 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = OrderSerializer
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["number", "customer_name", "customer_phone", "site__name"]
-    ordering_fields = ["date_created_woo", "total", "status"]
+    ordering_fields = ["date_created_woo", "total", "status", "risk_score"]
     ordering = ["-date_created_woo"]
 
     def get_queryset(self):
@@ -116,6 +120,34 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"task_id": result.id, "status": status})
 
     @action(detail=True, methods=["post"])
+    def forward(self, request, pk=None):
+        """Forward this order to the marketing department (Hub-internal, one-way).
+
+        Idempotent and irreversible — there is no un-forward. No WooCommerce
+        traffic, so no 409/502 paths; always returns the (possibly already
+        forwarded) order.
+        """
+        order = services.forward_order(self.get_object())
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=False, methods=["post"])
+    def forward_bulk(self, request):
+        """Forward many orders to marketing at once ("Chuyển marketing (n)").
+
+        Body: ``{"ids": [1, 2, 3]}``. The ids are intersected with the current
+        filtered queryset, so filters/permissions still apply. Capped at
+        ``services.MAX_FORWARD_ORDERS``; returns how many orders flipped.
+        """
+        ids = request.data.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+            return Response(
+                {"detail": "ids phải là danh sách id (số nguyên)."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        forwarded = services.forward_orders(self.get_queryset(), ids)
+        return Response({"forwarded": forwarded})
+
+    @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
         """Mark this order ``completed`` on its WooCommerce site, then sync the Hub.
 
@@ -138,6 +170,33 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
             )
             return Response(
                 {"detail": "Không thể cập nhật đơn trên WooCommerce."},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        """Cancel this order on its WooCommerce site, then sync the Hub.
+
+        Only non-terminal orders (pending/processing/on-hold) can be cancelled
+        (business rule). Synchronous (a single PUT) so the UI gets the updated
+        order back immediately. Errors are logged by id only (no PII).
+        """
+        order = self.get_object()
+        try:
+            order = services.mark_order_cancelled(order)
+        except services.InvalidStatusTransition as exc:
+            return Response(
+                {"detail": str(exc)}, status=http_status.HTTP_409_CONFLICT
+            )
+        except httpx.HTTPError:
+            logger.error(
+                "cancel order failed order_id=%s site_id=%s",
+                order.id,
+                order.site_id,
+            )
+            return Response(
+                {"detail": "Không thể hủy đơn trên WooCommerce."},
                 status=http_status.HTTP_502_BAD_GATEWAY,
             )
         return Response(self.get_serializer(order).data)

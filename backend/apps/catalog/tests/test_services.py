@@ -25,11 +25,14 @@ class _FakeClient:
     ``list_categories`` returns. Created products/variations get incrementing ids.
     """
 
-    def __init__(self, *, raise_error=False, categories=None):
+    def __init__(self, *, raise_error=False, categories=None, error_skus=None):
         self.calls = []
         self.variation_calls = []
         self.raise_error = raise_error
         self.categories = categories or []
+        # SKUs Woo rejects per-item: returned as {"error": ...} with no id, like
+        # a duplicate-SKU create against /products/batch (HTTP 200 overall).
+        self.error_skus = set(error_skus or [])
         self._next_id = 9000
         self._next_var_id = 8000
 
@@ -40,6 +43,11 @@ class _FakeClient:
             raise httpx.ConnectError("boom")
         created = []
         for item in create:
+            if item["sku"] in self.error_skus:
+                created.append(
+                    {"error": {"code": "product_invalid_sku", "message": "Invalid or duplicated SKU."}}
+                )
+                continue
             created.append({"id": self._next_id, "sku": item["sku"]})
             self._next_id += 1
         updated = [{"id": item["id"], "sku": item["sku"]} for item in update]
@@ -210,6 +218,49 @@ def test_push_swallows_http_error_and_logs(monkeypatch):
     log = SyncLog.objects.get(site=site)
     assert log.status == SyncLog.Status.ERROR
     assert log.error == "ConnectError"
+
+
+@pytest.mark.django_db
+def test_push_per_item_error_does_not_false_succeed(monkeypatch):
+    """A Woo per-item reject (HTTP 200 batch) must NOT count as created nor log a
+    clean success: no mapping, status ERROR, the SKU + code surfaced in detail."""
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1")
+    fake = _FakeClient(error_skus=["SP-1"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["created"] == 0
+    assert result["error"] is None  # batch HTTP call itself succeeded
+    assert not ProductMapping.objects.filter(site=site).exists()
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.ERROR
+    assert log.created_count == 0
+    assert log.detail["failed"] == [
+        {"sku": "SP-1", "op": "create", "code": "product_invalid_sku", "message": "Invalid or duplicated SKU."}
+    ]
+
+
+@pytest.mark.django_db
+def test_push_partial_when_some_items_fail(monkeypatch):
+    """One item lands, one is rejected → PARTIAL: the good one maps, the bad one
+    is recorded in detail."""
+    site = SiteFactory()
+    ok = MasterProductFactory(sku="SP-OK")
+    bad = MasterProductFactory(sku="SP-BAD")
+    fake = _FakeClient(error_skus=["SP-BAD"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[ok, bad])
+
+    assert result["created"] == 1
+    assert ProductMapping.objects.filter(master=ok, site=site).exists()
+    assert not ProductMapping.objects.filter(master=bad, site=site).exists()
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.created_count == 1
+    assert [f["sku"] for f in log.detail["failed"]] == ["SP-BAD"]
 
 
 @pytest.mark.django_db
@@ -428,8 +479,10 @@ def test_pull_categories_upserts_idempotently(monkeypatch):
     result = services.pull_categories_for_site(site)
     assert result["pulled"] == 2
     assert Category.objects.count() == 2
+    pin = Category.objects.get(name="Pin mặt trời")
     inverter = Category.objects.get(name="Inverter")
-    assert inverter.parent_name == "Pin mặt trời"
+    assert inverter.parent_id == pin.id  # woo parent id 10 → "Pin mặt trời"
+    assert pin.parent_id is None  # parent 0 = root
     assert CategoryMapping.objects.filter(site=site).count() == 2
 
     # Re-pull: same data → no duplicates.
@@ -437,6 +490,35 @@ def test_pull_categories_upserts_idempotently(monkeypatch):
     assert Category.objects.count() == 2
     assert CategoryMapping.objects.filter(site=site).count() == 2
     assert SyncLog.objects.filter(site=site, operation="pull_categories").count() == 2
+
+
+@pytest.mark.django_db
+def test_pull_categories_tree_is_last_pull_wins(monkeypatch):
+    """Two sites disagree on the tree: site A nests Inverter under Pin, site B
+    keeps Inverter at the root. The later pull (B) wins, clearing the parent."""
+    s1, s2 = SiteFactory(), SiteFactory()
+
+    _patch_client(
+        monkeypatch,
+        _FakeClient(
+            categories=[
+                {"id": 10, "name": "Pin mặt trời", "parent": 0},
+                {"id": 11, "name": "Inverter", "parent": 10},
+            ]
+        ),
+    )
+    services.pull_categories_for_site(s1)
+    assert Category.objects.get(name="Inverter").parent_id == (
+        Category.objects.get(name="Pin mặt trời").id
+    )
+
+    # Site B exposes Inverter as a root category → parent cleared (last-pull-wins).
+    _patch_client(
+        monkeypatch,
+        _FakeClient(categories=[{"id": 7, "name": "Inverter", "parent": 0}]),
+    )
+    services.pull_categories_for_site(s2)
+    assert Category.objects.get(name="Inverter").parent_id is None
 
 
 @pytest.mark.django_db
@@ -452,6 +534,35 @@ def test_pull_categories_same_name_two_sites_converges(monkeypatch):
 
     assert Category.objects.filter(name="Pin mặt trời").count() == 1
     assert CategoryMapping.objects.filter(category__name="Pin mặt trời").count() == 2
+
+
+@pytest.mark.django_db
+def test_pull_categories_duplicate_name_one_site_collapses(monkeypatch):
+    """Two woo categories on one site that normalize to the same name collapse
+    to a single (category, site) mapping instead of tripping the unique
+    constraint."""
+    site = SiteFactory()
+    fake = _FakeClient(
+        categories=[
+            {"id": 104, "name": "Pin mặt trời"},
+            {"id": 220, "name": " Pin mặt trời "},  # normalizes to the same name
+        ]
+    )
+    _patch_client(monkeypatch, fake)
+
+    result = services.pull_categories_for_site(site)
+
+    assert result["error"] is None
+    assert Category.objects.filter(name="Pin mặt trời").count() == 1
+    mappings = CategoryMapping.objects.filter(site=site)
+    assert mappings.count() == 1
+    # Smallest woo id wins so the choice is stable across re-pulls.
+    assert mappings.get().woo_category_id == 104
+
+    # Re-pull stays idempotent — no duplicate, same winner.
+    services.pull_categories_for_site(site)
+    assert CategoryMapping.objects.filter(site=site).count() == 1
+    assert CategoryMapping.objects.get(site=site).woo_category_id == 104
 
 
 @pytest.mark.django_db

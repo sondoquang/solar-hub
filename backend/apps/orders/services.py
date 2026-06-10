@@ -7,13 +7,14 @@ list/stats queries for the API. All WooCommerce traffic goes through
 
 import datetime
 import logging
+import re
 
 import httpx
 from django.db.models import Count, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from .models import Order
+from .models import GENUINE, SPAM, SUSPICIOUS, Order
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ ALLOWED_POLL_STATUSES = (
 
 # Status an order is pushed to when an admin marks it done.
 COMPLETED_STATUS = "completed"
+
+# Status an order is pushed to when an admin cancels it, and the source statuses
+# from which cancelling is allowed — terminal states (completed/cancelled/
+# refunded/failed) cannot be cancelled.
+CANCELLED_STATUS = "cancelled"
+CANCELLABLE_STATUSES = ("pending", "processing", "on-hold")
 
 
 class InvalidStatusTransition(Exception):
@@ -108,17 +115,298 @@ def normalize_order(site, raw: dict) -> dict:
     }
 
 
+# --- Order classification (genuine / suspicious / spam) ----------------------
+#
+# A rule-based risk score distinguishes a real customer order from a bot / spam
+# / "vào phá chọn đại" one. Rules are hardcoded here (v1) so they unit-test
+# without a DB; ``classify_velocity`` is the one rule that needs the DB. Tune the
+# weights/thresholds below as real spam patterns emerge — re-run the
+# ``reclassify_orders`` management command afterwards to re-score stored orders.
+
+# Label thresholds on the 0–100 score.
+SPAM_THRESHOLD = 70
+SUSPICIOUS_THRESHOLD = 35
+
+# How each rule code contributes to the score.
+RULE_WEIGHTS = {
+    "phone_missing": 40,
+    "phone_invalid": 35,
+    "phone_fake": 35,
+    "email_invalid": 20,
+    "email_disposable": 30,
+    "name_missing": 25,
+    "name_gibberish": 25,
+    "address_missing": 25,
+    "address_short": 15,
+    "velocity_phone": 40,
+    "velocity_email": 35,
+    "velocity_ip": 30,
+}
+
+# Human-readable (Vietnamese) reason per rule code — surfaced in the API/UI.
+REASON_LABELS = {
+    "phone_missing": "Thiếu số điện thoại",
+    "phone_invalid": "SĐT không đúng định dạng Việt Nam",
+    "phone_fake": "SĐT giả (dãy số lặp/liên tiếp)",
+    "email_invalid": "Email sai định dạng",
+    "email_disposable": "Email dùng một lần (disposable)",
+    "name_missing": "Thiếu tên khách",
+    "name_gibberish": "Tên khách vô nghĩa",
+    "address_missing": "Thiếu địa chỉ giao hàng",
+    "address_short": "Địa chỉ giao hàng quá ngắn",
+    "velocity_phone": "Nhiều đơn cùng SĐT trong thời gian ngắn",
+    "velocity_email": "Nhiều đơn cùng email trong thời gian ngắn",
+    "velocity_ip": "Nhiều đơn cùng IP trong thời gian ngắn",
+}
+
+# Vietnamese mobile numbers: 10 digits, leading 0, second digit in {3,5,7,8,9}.
+_VN_PHONE_RE = re.compile(r"^0[35789]\d{8}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_VOWELS = set("aeiouyàáảãạăâèéẹêìíóòôơùúýđ")
+
+# Throwaway-inbox domains; an order using one is rarely a real buyer.
+DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com",
+    "guerrillamail.com",
+    "10minutemail.com",
+    "yopmail.com",
+    "tempmail.com",
+    "temp-mail.org",
+    "trashmail.com",
+    "throwawaymail.com",
+    "getnada.com",
+    "sharklasers.com",
+    "maildrop.cc",
+    "dispostable.com",
+}
+
+# Velocity: this many orders sharing one phone/email/IP within the window looks
+# like a burst, not a customer.
+VELOCITY_WINDOW = datetime.timedelta(hours=24)
+VELOCITY_MIN_ORDERS = 3
+
+
+def _normalize_phone(phone: str) -> str:
+    """Strip a phone down to digits, mapping a +84/84 country code to a 0."""
+    digits = re.sub(r"\D", "", phone or "")
+    if digits.startswith("84") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    return digits
+
+
+def _is_fake_phone(digits: str) -> bool:
+    """All-same digits (0000000000) or a simple run (0123456789 / 9876543210)."""
+    if len(digits) < 7:
+        return False
+    if len(set(digits)) == 1:
+        return True
+    asc = "0123456789"
+    return digits in asc or digits in asc[::-1]
+
+
+def _looks_gibberish(name: str) -> bool:
+    """A name with no vowels or a single repeated letter reads as junk."""
+    letters = [c for c in name.lower() if c.isalpha()]
+    if not letters:
+        return True
+    if len(set(letters)) == 1:  # "aaaa", "xxxx"
+        return True
+    return not any(c in _VOWELS for c in letters)
+
+
+def classify_fields(data: dict) -> list[str]:
+    """Per-order risk signals from the order's own fields — pure, no DB.
+
+    ``data`` is the normalized order dict (or any object exposing the same keys)
+    with ``customer_phone`` / ``customer_email`` / ``customer_name`` /
+    ``shipping_address``. Returns the list of rule codes that fired.
+    """
+    reasons: list[str] = []
+
+    phone_raw = (data.get("customer_phone") or "").strip()
+    if not phone_raw:
+        reasons.append("phone_missing")
+    else:
+        digits = _normalize_phone(phone_raw)
+        if _is_fake_phone(digits):
+            reasons.append("phone_fake")
+        elif not _VN_PHONE_RE.match(digits):
+            reasons.append("phone_invalid")
+
+    email = (data.get("customer_email") or "").strip().lower()
+    if email:
+        if not _EMAIL_RE.match(email):
+            reasons.append("email_invalid")
+        elif email.rsplit("@", 1)[-1] in DISPOSABLE_EMAIL_DOMAINS:
+            reasons.append("email_disposable")
+
+    name = (data.get("customer_name") or "").strip()
+    if len(name) <= 1:
+        reasons.append("name_missing")
+    elif _looks_gibberish(name):
+        reasons.append("name_gibberish")
+
+    address = (data.get("shipping_address") or "").strip()
+    if not address:
+        reasons.append("address_missing")
+    elif len(address) < 10:
+        reasons.append("address_short")
+
+    return reasons
+
+
+def classify_velocity(order: Order) -> list[str]:
+    """Cross-order risk signals: bursts of orders sharing a phone/email/IP.
+
+    Counts other orders (any site) created within ``VELOCITY_WINDOW`` of this
+    one. The current order is already persisted when this runs (called from
+    ``upsert_order`` after ``update_or_create``), so it is excluded by pk.
+    """
+    reasons: list[str] = []
+    created = order.date_created_woo or timezone.now()
+    lo, hi = created - VELOCITY_WINDOW, created + VELOCITY_WINDOW
+    window = Order.objects.filter(
+        date_created_woo__gte=lo, date_created_woo__lte=hi
+    ).exclude(pk=order.pk)
+
+    others_needed = VELOCITY_MIN_ORDERS - 1
+    if order.customer_phone and (
+        window.filter(customer_phone=order.customer_phone).count() >= others_needed
+    ):
+        reasons.append("velocity_phone")
+    if order.customer_email and (
+        window.filter(customer_email=order.customer_email).count() >= others_needed
+    ):
+        reasons.append("velocity_email")
+
+    ip = (order.raw or {}).get("customer_ip_address")
+    if ip and (
+        window.filter(raw__customer_ip_address=ip).count() >= others_needed
+    ):
+        reasons.append("velocity_ip")
+
+    return reasons
+
+
+def _label_for_score(score: int) -> str:
+    if score >= SPAM_THRESHOLD:
+        return SPAM
+    if score >= SUSPICIOUS_THRESHOLD:
+        return SUSPICIOUS
+    return GENUINE
+
+
+def classify_order(order: Order) -> dict:
+    """Score an order and map it to a label. Combines field + velocity rules."""
+    reasons = classify_fields(
+        {
+            "customer_phone": order.customer_phone,
+            "customer_email": order.customer_email,
+            "customer_name": order.customer_name,
+            "shipping_address": order.shipping_address,
+        }
+    )
+    reasons += classify_velocity(order)
+    score = min(100, sum(RULE_WEIGHTS.get(code, 0) for code in reasons))
+    return {
+        "classification": _label_for_score(score),
+        "risk_score": score,
+        "risk_reasons": reasons,
+    }
+
+
+def classify_and_save(order: Order) -> Order:
+    """Compute the classification for ``order`` and persist the four fields."""
+    result = classify_order(order)
+    order.classification = result["classification"]
+    order.risk_score = result["risk_score"]
+    order.risk_reasons = result["risk_reasons"]
+    order.classified_at = timezone.now()
+    order.save(
+        update_fields=[
+            "classification",
+            "risk_score",
+            "risk_reasons",
+            "classified_at",
+            "updated_at",
+        ]
+    )
+    return order
+
+
+def _auto_forward_if_completed(order: Order) -> None:
+    """A completed *genuine* order counts as forwarded to marketing.
+
+    Central place for "completed ⇒ đã chuyển marketing" so it holds no matter
+    how the order reached ``completed``: the periodic poll, a future webhook, or
+    the manual ``complete`` action (all funnel through ``upsert_order``). One-way
+    only — never clears ``forwarded``.
+
+    Orders classified ``suspicious``/``spam`` are held back so an admin can vet
+    them first (manual ``forward`` stays available as an override).
+    """
+    if (
+        order.status == COMPLETED_STATUS
+        and order.classification == GENUINE
+        and not order.forwarded
+    ):
+        order.forwarded = True
+        order.forwarded_at = timezone.now()
+        order.save(update_fields=["forwarded", "forwarded_at", "updated_at"])
+
+
 def upsert_order(site, raw: dict) -> tuple[Order, bool]:
     """Idempotent upsert keyed on ``(site, woo_order_id)``.
 
     Safe to call repeatedly (the poll re-fetches, and a future webhook may race
     the poll): the second call updates the existing row instead of duplicating
-    it.
+    it. ``normalize_order`` never touches ``forwarded``/``forwarded_at``, so a
+    re-sync can only *add* the marketing flag (via the completed rule below),
+    never revert it.
     """
-    return Order.objects.update_or_create(
+    obj, created = Order.objects.update_or_create(
         site=site,
         woo_order_id=raw["id"],
         defaults=normalize_order(site, raw),
+    )
+    # Classify first so the auto-forward gate can read the fresh label.
+    classify_and_save(obj)
+    _auto_forward_if_completed(obj)
+    return obj, created
+
+
+def forward_order(order: Order) -> Order:
+    """Mark an order as forwarded to the marketing department (one-way).
+
+    Idempotent and irreversible: once forwarded, calling again is a no-op and
+    there is no path back to ``forwarded=False``. Hub-internal only — does NOT
+    touch WooCommerce (unlike ``mark_order_completed``).
+    """
+    if order.forwarded:
+        return order
+    order.forwarded = True
+    order.forwarded_at = timezone.now()
+    order.save(update_fields=["forwarded", "forwarded_at", "updated_at"])
+    return order
+
+
+# Cap how many orders one bulk "chuyển marketing" touches, so a careless
+# "select all" on a huge filter cannot tie up the request.
+MAX_FORWARD_ORDERS = 500
+
+
+def forward_orders(qs, ids: list[int]) -> int:
+    """Forward the given (already-permission-filtered) orders to marketing.
+
+    ``ids`` is intersected with ``qs`` so the active filters/permissions still
+    apply. Only orders not yet forwarded are updated; returns how many flipped.
+    One-way, in a single bulk UPDATE (no WooCommerce traffic).
+    """
+    if not ids:
+        return 0
+    return (
+        qs.filter(id__in=ids[:MAX_FORWARD_ORDERS], forwarded=False)
+        .update(forwarded=True, forwarded_at=timezone.now())
     )
 
 
@@ -142,6 +430,32 @@ def mark_order_completed(order: Order) -> Order:
 
     raw = client_for_site(order.site).update_order(
         order.woo_order_id, status=COMPLETED_STATUS
+    )
+    obj, _ = upsert_order(order.site, raw)
+    return obj
+
+
+def mark_order_cancelled(order: Order) -> Order:
+    """Push an order to ``cancelled`` on its WooCommerce site, then sync the Hub.
+
+    Allowed only from a non-terminal status (``CANCELLABLE_STATUSES``): an order
+    already completed/cancelled/refunded/failed can't be cancelled. Writes to
+    WooCommerce first (the order's source of truth lives on the site), then
+    upserts from the returned payload so the Hub row matches the site and the
+    advanced ``date_modified_woo`` keeps the next poll from reverting it.
+
+    Raises ``InvalidStatusTransition`` for a disallowed source status; lets
+    ``httpx.HTTPError`` propagate so the caller can map it to a 502.
+    """
+    from apps.sites.services import client_for_site
+
+    if order.status not in CANCELLABLE_STATUSES:
+        raise InvalidStatusTransition(
+            f"Không thể hủy đơn ở trạng thái '{order.status}'."
+        )
+
+    raw = client_for_site(order.site).update_order(
+        order.woo_order_id, status=CANCELLED_STATUS
     )
     obj, _ = upsert_order(order.site, raw)
     return obj
@@ -261,6 +575,10 @@ def list_orders_qs(qs, params):
     if status:
         qs = qs.filter(status=status)
 
+    classification = params.get("classification")
+    if classification:
+        qs = qs.filter(classification=classification)
+
     forwarded = params.get("forwarded")
     if forwarded in ("true", "false"):
         qs = qs.filter(forwarded=(forwarded == "true"))
@@ -304,9 +622,14 @@ def order_stats(qs) -> dict:
         row["status"]: row["n"]
         for row in qs.order_by().values("status").annotate(n=Count("id"))
     }
+    by_classification = {
+        row["classification"]: row["n"]
+        for row in qs.order_by().values("classification").annotate(n=Count("id"))
+    }
     return {
         "total": agg["order_count"] or 0,
         "revenue": agg["revenue"] or 0,
         "not_forwarded": not_forwarded,
         "by_status": by_status,
+        "by_classification": by_classification,
     }

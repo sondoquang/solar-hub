@@ -1,5 +1,17 @@
 from django.db import models
 
+# Risk classification of a synced order — does it look like a real customer
+# order, or a bot / spam / "vào phá chọn đại" one? Computed by
+# ``apps.orders.services.classify_order`` on every upsert.
+GENUINE = "genuine"
+SUSPICIOUS = "suspicious"
+SPAM = "spam"
+CLASSIFICATION_CHOICES = [
+    (GENUINE, "Hợp lệ"),
+    (SUSPICIOUS, "Nghi ngờ"),
+    (SPAM, "Spam/Bot"),
+]
+
 
 class Order(models.Model):
     """A WooCommerce order normalized into the Hub (single source of truth).
@@ -49,6 +61,17 @@ class Order(models.Model):
     forwarded = models.BooleanField(default=False, db_index=True)  # sent to marketing?
     forwarded_at = models.DateTimeField(null=True, blank=True)
 
+    # Risk classification (genuine / suspicious / spam). Recomputed on each
+    # upsert; a suspicious/spam order is held back from auto-forward (see
+    # ``services._auto_forward_if_completed``). ``risk_reasons`` is the list of
+    # rule codes that fired (e.g. ["phone_invalid", "velocity_phone"]).
+    classification = models.CharField(
+        max_length=20, choices=CLASSIFICATION_CHOICES, default=GENUINE, db_index=True
+    )
+    risk_score = models.IntegerField(default=0)  # 0–100, higher = riskier
+    risk_reasons = models.JSONField(default=list)
+    classified_at = models.DateTimeField(null=True, blank=True)
+
     # Original payload, kept for debugging / reconciliation.
     raw = models.JSONField(default=dict)
 
@@ -68,6 +91,11 @@ class Order(models.Model):
             models.Index(fields=["forwarded", "date_created_woo"]),
             # Per-(site, status) poll watermark: MAX(date_modified_woo).
             models.Index(fields=["site", "status", "date_modified_woo"]),
+            # List-screen filter by classification.
+            models.Index(fields=["classification", "date_created_woo"]),
+            # Velocity lookups: orders sharing a phone / email in a time window.
+            models.Index(fields=["customer_phone", "date_created_woo"]),
+            models.Index(fields=["customer_email", "date_created_woo"]),
         ]
 
     def __str__(self) -> str:

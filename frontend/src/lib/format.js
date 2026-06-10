@@ -33,6 +33,23 @@ export function formatDateTime(value) {
   }).format(d);
 }
 
+// Relative time in Vietnamese for recent events ("Vừa xong", "5 phút trước",
+// "2 giờ trước", "3 ngày trước"); falls back to a short date past ~30 days.
+export function timeAgo(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  const sec = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (sec < 60) return "Vừa xong";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} phút trước`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} giờ trước`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day} ngày trước`;
+  return formatDate(value);
+}
+
 // Response time: sub-second as "256 ms", ≥1s as "1.25 s".
 export function formatResponseTime(ms) {
   const n = Number(ms);

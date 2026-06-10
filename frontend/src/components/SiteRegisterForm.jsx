@@ -10,8 +10,7 @@ const makeSchema = (mode) =>
     name: z.string().min(1, "Bắt buộc"),
     base_url: z.string().url("URL không hợp lệ"),
     consumer_key: z.string().min(1, "Bắt buộc"),
-    consumer_secret:
-      mode === "edit" ? z.string().optional() : z.string().min(1, "Bắt buộc"),
+    consumer_secret: mode === "edit" ? z.string().optional() : z.string().min(1, "Bắt buộc"),
     hosting: z.number().nullable().optional(),
   });
 
@@ -19,7 +18,14 @@ const errCls = "mt-1 text-xs text-danger";
 const Req = () => <span className="ml-0.5 text-danger">*</span>;
 const EMPTY = { name: "", base_url: "", consumer_key: "", consumer_secret: "", hosting: null };
 
-export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "create", defaultValues, hostings = [] }) {
+export default function SiteRegisterForm({
+  onSubmit,
+  onCancel,
+  pending,
+  mode = "create",
+  defaultValues,
+  hostings = [],
+}) {
   const {
     control,
     handleSubmit,
@@ -40,25 +46,28 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
   return (
     <form onSubmit={handleSubmit(submit)} className="grid gap-2">
       <div>
-        <label className="mb-1 block text-sm font-medium">Tên site<Req /></label>
+        <label className="mb-1 block text-sm font-medium">
+          Tên site
+          <Req />
+        </label>
         <Controller
           name="name"
           control={control}
-          render={({ field }) => (
-            <Input {...field} size="large" status={errors.name ? "error" : ""} />
-          )}
+          render={({ field }) => <Input {...field} status={errors.name ? "error" : ""} />}
         />
         {errors.name && <p className={errCls}>{errors.name.message}</p>}
       </div>
       <div>
-        <label className="mb-1 block text-sm font-medium">Base URL<Req /></label>
+        <label className="mb-1 block text-sm font-medium">
+          Base URL
+          <Req />
+        </label>
         <Controller
           name="base_url"
           control={control}
           render={({ field }) => (
             <Input
               {...field}
-              size="large"
               placeholder="https://shop.example.com"
               status={errors.base_url ? "error" : ""}
             />
@@ -67,13 +76,14 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
         {errors.base_url && <p className={errCls}>{errors.base_url.message}</p>}
       </div>
       <div>
-        <label className="mb-1 block text-sm font-medium">Consumer key<Req /></label>
+        <label className="mb-1 block text-sm font-medium">
+          Consumer key
+          <Req />
+        </label>
         <Controller
           name="consumer_key"
           control={control}
-          render={({ field }) => (
-            <Input {...field} size="large" status={errors.consumer_key ? "error" : ""} />
-          )}
+          render={({ field }) => <Input {...field} status={errors.consumer_key ? "error" : ""} />}
         />
         {errors.consumer_key && <p className={errCls}>{errors.consumer_key.message}</p>}
       </div>
@@ -85,7 +95,7 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
           name="consumer_secret"
           control={control}
           render={({ field }) => (
-            <Input.Password {...field} size="large" status={errors.consumer_secret ? "error" : ""} />
+            <Input.Password {...field} status={errors.consumer_secret ? "error" : ""} />
           )}
         />
         {errors.consumer_secret && <p className={errCls}>{errors.consumer_secret.message}</p>}
@@ -98,7 +108,6 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
           render={({ field }) => (
             <Select
               {...field}
-              size="large"
               className="w-full"
               allowClear
               placeholder="Chọn hosting (tùy chọn)"
@@ -109,14 +118,10 @@ export default function SiteRegisterForm({ onSubmit, onCancel, pending, mode = "
         />
       </div>
       <div className="flex gap-1 pt-1">
-        <Button type="primary" htmlType="submit" size="large" loading={busy}>
+        <Button type="primary" htmlType="submit" loading={busy}>
           {busy ? "Đang lưu…" : "Lưu site"}
         </Button>
-        {onCancel && (
-          <Button size="large" onClick={onCancel}>
-            Hủy
-          </Button>
-        )}
+        {onCancel && <Button onClick={onCancel}>Hủy</Button>}
       </div>
     </form>
   );

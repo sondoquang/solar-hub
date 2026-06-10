@@ -41,7 +41,10 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
         <div className="text-sm">
           <p className="font-semibold">Import từ Excel (.xlsx)</p>
           <p className="text-muted">
-            Cột yêu cầu: <span className="font-medium text-ink">name, base_url, consumer_key, consumer_secret</span>
+            Cột yêu cầu:{" "}
+            <span className="font-medium text-ink">
+              name, base_url, consumer_key, consumer_secret
+            </span>
           </p>
         </div>
         <Button type="primary" ghost className="ml-auto" onClick={() => setOpen(true)}>
@@ -49,14 +52,19 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
         </Button>
       </div>
 
-      <Modal open={open} onCancel={close} footer={null} destroyOnHidden title="Import website từ Excel">
+      <Modal
+        open={open}
+        onCancel={close}
+        footer={null}
+        destroyOnHidden
+        title="Import website từ Excel"
+      >
         <div className="grid gap-3">
           <div>
             <label className="mb-1 block text-sm font-medium">Hosting</label>
             <Select
               value={hosting}
               onChange={(v) => setHosting(v ?? null)}
-              size="large"
               className="w-full"
               allowClear
               placeholder="Chọn hosting để gán cho các site import (tùy chọn)"
@@ -99,12 +107,7 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
           </div>
 
           <div className="flex gap-1 pt-1">
-            <Button
-              type="primary"
-              loading={pending}
-              disabled={!file}
-              onClick={handleImport}
-            >
+            <Button type="primary" loading={pending} disabled={!file} onClick={handleImport}>
               {pending ? "Đang import…" : "Bắt đầu import"}
             </Button>
             <Button onClick={close} disabled={pending}>

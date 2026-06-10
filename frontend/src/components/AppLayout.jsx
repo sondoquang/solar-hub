@@ -1,6 +1,5 @@
 import {
   BarChart3,
-  Bell,
   ChevronDown,
   ChevronUp,
   ClipboardList,
@@ -15,11 +14,17 @@ import {
   SunMedium,
   Users,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation, useNavigation } from "react-router-dom";
+import { useIsFetching, useIsMutating } from "@tanstack/react-query";
+import NProgress from "nprogress";
+import "nprogress/nprogress.css";
+import { useEffect, useState } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useAuth } from "../lib/AuthContext.jsx";
+import NotificationBell from "./NotificationBell.jsx";
 import UserMenu from "./UserMenu.jsx";
+
+NProgress.configure({ showSpinner: false, trickleSpeed: 120, minimum: 0.1 });
 
 // Sidebar header. Expanded: full brand logo. Collapsed: compact icon mark.
 function Logo({ collapsed }) {
@@ -62,7 +67,7 @@ const SECONDARY_NAV = [
 ];
 
 const itemBase =
-  "flex w-full items-center gap-3 rounded px-2 py-3 text-sm font-medium transition-colors border-0";
+  "flex w-full items-center gap-3 rounded px-2 py-3 text-base font-medium transition-colors border-0";
 
 function navClass(collapsed) {
   return ({ isActive }) =>
@@ -210,7 +215,7 @@ function Sidebar() {
                       to={sub.to}
                       className={({ isActive }) =>
                         [
-                          "flex cursor-pointer items-center gap-2.5 rounded px-2 py-3 text-sm transition-colors",
+                          "flex cursor-pointer items-center gap-2.5 rounded px-2 py-3 text-base transition-colors",
                           isActive
                             ? "bg-amber-50 font-medium text-brand"
                             : "text-slate-500 hover:bg-slate-50 hover:text-ink",
@@ -224,7 +229,7 @@ function Sidebar() {
                     <button
                       key={sub.label}
                       type="button"
-                      className="flex w-full cursor-pointer items-center gap-2.5 rounded px-2 py-3 text-sm text-slate-500 hover:bg-slate-50"
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded px-2 py-3 text-base text-slate-500 hover:bg-slate-50"
                       title="Sắp ra mắt"
                     >
                       <span className="h-1.5 w-1.5 rounded-full bg-slate-300" />
@@ -247,52 +252,27 @@ function Sidebar() {
   );
 }
 
-// Yellow progress bar that runs left→right while a route is loading.
-function TopProgressBar({ loading }) {
-  const [width, setWidth] = useState(0);
-  const [visible, setVisible] = useState(false);
-  const timerRef = useRef(null);
+// Drives NProgress off React Query's in-flight queries/mutations — the real
+// loading signal here, since routes use React Query (no router loaders).
+function useNProgress() {
+  const fetching = useIsFetching();
+  const mutating = useIsMutating();
+  const active = fetching + mutating > 0;
 
   useEffect(() => {
-    const clear = () => clearTimeout(timerRef.current);
-    if (loading) {
-      clear();
-      setVisible(true);
-      setWidth(0);
-      // Double-rAF so the browser paints width:0 before transitioning to 75%.
-      requestAnimationFrame(() => requestAnimationFrame(() => setWidth(75)));
-    } else if (visible) {
-      setWidth(100);
-      timerRef.current = setTimeout(() => {
-        setVisible(false);
-        setWidth(0);
-      }, 400);
-    }
-    return clear;
-  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (active) NProgress.start();
+    else NProgress.done();
+  }, [active]);
 
-  if (!visible) return null;
-
-  return (
-    <div
-      className="absolute inset-x-0 bottom-0 bg-brand"
-      style={{
-        height: "3px",
-        width: `${width}%`,
-        transition: loading ? "width 600ms ease-out" : "width 200ms ease-in",
-      }}
-    />
-  );
+  // Tidy up if the layout unmounts mid-request (e.g. logout).
+  useEffect(() => () => NProgress.done(), []);
 }
 
 function Topbar() {
-  const { state } = useNavigation();
-  const loading = state !== "idle";
+  useNProgress();
 
   return (
     <header className="relative flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
-      <TopProgressBar loading={loading} />
-
       {/* Search */}
       <div className="w-[560px]">
         <label className="flex cursor-text items-center gap-2.5 rounded-md bg-slate-100 px-4 py-2 text-sm text-slate-400 transition-all focus-within:bg-white focus-within:ring-2 focus-within:ring-brand/40">
@@ -300,23 +280,14 @@ function Topbar() {
           <input
             type="text"
             placeholder="Tìm kiếm (Ctrl + K)"
-            className="w-full bg-transparent outline-none  border-noneplaceholder:text-slate-400"
+            className="w-full bg-transparent outline-none border-0 placeholder:text-slate-400"
           />
         </label>
       </div>
 
       {/* Right actions */}
       <div className="ml-auto flex items-center gap-1.5">
-        <button
-          type="button"
-          className="relative rounded-full p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink"
-          aria-label="Thông báo"
-        >
-          <Bell size={20} />
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold text-white">
-            3
-          </span>
-        </button>
+        <NotificationBell />
         <UserMenu />
       </div>
     </header>

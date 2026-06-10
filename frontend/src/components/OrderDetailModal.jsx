@@ -1,9 +1,9 @@
-import { Button, Modal } from "antd";
+import { Button, Modal, Popconfirm } from "antd";
 import { ChevronLeft, ChevronRight, FileDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
-import { exportOrdersPdf, useCompleteOrder } from "../api/orders.js";
+import { exportOrdersPdf, useCancelOrder, useCompleteOrder } from "../api/orders.js";
 import OrderDetailContent from "./OrderDetailContent.jsx";
 
 // The modal shows orders one at a time; with more than one selected it becomes a
@@ -19,6 +19,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
   // animates in from the matching side.
   const [direction, setDirection] = useState(1);
   const completeOrder = useCompleteOrder();
+  const cancelOrder = useCancelOrder();
   const [exporting, setExporting] = useState(false);
   const lastWheelRef = useRef(0);
 
@@ -71,6 +72,8 @@ export default function OrderDetailModal({ orders, open, onClose }) {
 
   // Only a processing order can be completed (matches the backend rule).
   const canComplete = current?.status === "processing";
+  // Non-terminal orders can be cancelled (matches CANCELLABLE_STATUSES backend).
+  const canCancel = ["pending", "processing", "on-hold"].includes(current?.status);
 
   // Export the order being viewed to a PDF ("view xong xuất file").
   const handleExport = async () => {
@@ -95,6 +98,18 @@ export default function OrderDetailModal({ orders, open, onClose }) {
       else onClose();
     } catch (err) {
       toast.error(err.response?.data?.detail || "Cập nhật thất bại.");
+    }
+  };
+
+  const handleCancel = async () => {
+    try {
+      await cancelOrder.mutateAsync(current.id);
+      toast.success("Đã hủy đơn hàng.");
+      // Move to the next order if there is one, otherwise close.
+      if (safeIndex < count - 1) goNext();
+      else onClose();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Hủy đơn thất bại.");
     }
   };
 
@@ -126,6 +141,21 @@ export default function OrderDetailModal({ orders, open, onClose }) {
       >
         Xuất PDF
       </Button>
+      {canCancel && (
+        <Popconfirm
+          key="cancel"
+          title="Hủy đơn hàng này?"
+          description="Đơn sẽ được hủy trên WooCommerce và không thể hoàn tác."
+          okText="Hủy đơn"
+          cancelText="Không"
+          okButtonProps={{ danger: true, loading: cancelOrder.isPending }}
+          onConfirm={handleCancel}
+        >
+          <Button danger loading={cancelOrder.isPending}>
+            Hủy đơn
+          </Button>
+        </Popconfirm>
+      )}
       {canComplete && (
         <Button
           key="complete"

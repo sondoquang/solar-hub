@@ -1,6 +1,7 @@
 import { Descriptions, Table } from "antd";
 
 import { formatDateTime, formatVND } from "../lib/format.js";
+import ClassificationBadge from "./ClassificationBadge.jsx";
 import OrderStatusBadge from "./OrderStatusBadge.jsx";
 
 // Presentational body of a single order — the Descriptions block + the line
@@ -57,6 +58,21 @@ export default function OrderDetailContent({ order }) {
         <Descriptions.Item label="Hosting">{order.hosting_name || "—"}</Descriptions.Item>
         <Descriptions.Item label="Trạng thái">
           <OrderStatusBadge status={order.status} />
+        </Descriptions.Item>
+        <Descriptions.Item label="Phân loại">
+          <div className="space-y-1">
+            <ClassificationBadge
+              classification={order.classification}
+              score={order.risk_score}
+            />
+            {order.risk_reasons_display?.length > 0 && (
+              <ul className="ml-4 list-disc text-xs text-muted">
+                {order.risk_reasons_display.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         </Descriptions.Item>
         <Descriptions.Item label="Ngày tạo">
           {formatDateTime(order.date_created_woo)}

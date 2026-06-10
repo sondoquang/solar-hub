@@ -264,6 +264,128 @@ def test_mark_order_completed_propagates_network_error(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_mark_order_cancelled_pushes_and_syncs(monkeypatch):
+    from apps.orders.tests.factories import OrderFactory
+
+    site = SiteFactory()
+    order = OrderFactory(site=site, woo_order_id=66, status="processing")
+    capture = {}
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeWriteClient(_woo_order(order_id=66), capture=capture),
+    )
+
+    result = services.mark_order_cancelled(order)
+    assert result.status == "cancelled"
+    assert capture == {"woo_order_id": 66, "status": "cancelled"}
+    result.refresh_from_db()
+    assert result.status == "cancelled"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("status", ["pending", "processing", "on-hold"])
+def test_mark_order_cancelled_allows_non_terminal(monkeypatch, status):
+    from apps.orders.tests.factories import OrderFactory
+
+    order = OrderFactory(status=status)
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeWriteClient(_woo_order(order_id=order.woo_order_id)),
+    )
+    result = services.mark_order_cancelled(order)
+    assert result.status == "cancelled"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("status", ["completed", "cancelled", "refunded", "failed"])
+def test_mark_order_cancelled_rejects_terminal(monkeypatch, status):
+    from apps.orders.tests.factories import OrderFactory
+
+    order = OrderFactory(status=status)
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("WooCommerce must not be called for a bad transition")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    with pytest.raises(services.InvalidStatusTransition):
+        services.mark_order_cancelled(order)
+
+
+@pytest.mark.django_db
+def test_forward_order_is_one_way_and_idempotent():
+    from apps.orders.tests.factories import OrderFactory
+
+    order = OrderFactory(status="processing", forwarded=False)
+    forwarded = services.forward_order(order)
+    assert forwarded.forwarded is True
+    assert forwarded.forwarded_at is not None
+    first_at = forwarded.forwarded_at
+
+    # Second call is a no-op: still forwarded, timestamp unchanged.
+    again = services.forward_order(forwarded)
+    assert again.forwarded is True
+    assert again.forwarded_at == first_at
+    again.refresh_from_db()
+    assert again.forwarded is True
+
+
+@pytest.mark.django_db
+def test_upsert_completed_order_auto_forwards():
+    site = SiteFactory()
+    # A processing order is not forwarded by the sync.
+    order, _ = services.upsert_order(site, _woo_order(order_id=21, status="processing"))
+    assert order.forwarded is False
+    # When it flips to completed, the upsert marks it forwarded to marketing.
+    order, _ = services.upsert_order(site, _woo_order(order_id=21, status="completed"))
+    assert order.forwarded is True
+    assert order.forwarded_at is not None
+
+
+@pytest.mark.django_db
+def test_poll_site_auto_forwards_completed_orders(monkeypatch):
+    site = SiteFactory()
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeClient([_woo_order(order_id=33, status="completed")]),
+    )
+    services.poll_site(site, "completed")
+    order = Order.objects.get(site=site, woo_order_id=33)
+    assert order.forwarded is True
+    assert order.forwarded_at is not None
+
+
+@pytest.mark.django_db
+def test_mark_order_completed_auto_forwards(monkeypatch):
+    from apps.orders.tests.factories import OrderFactory
+
+    site = SiteFactory()
+    order = OrderFactory(site=site, woo_order_id=88, status="processing", forwarded=False)
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeWriteClient(_woo_order(order_id=88)),
+    )
+    result = services.mark_order_completed(order)
+    assert result.status == "completed"
+    assert result.forwarded is True  # completed ⇒ đã chuyển marketing
+
+
+@pytest.mark.django_db
+def test_forward_orders_bulk_respects_queryset_and_skips_forwarded():
+    from apps.orders.tests.factories import OrderFactory
+
+    site = SiteFactory()
+    a = OrderFactory(site=site, status="processing", forwarded=False)
+    b = OrderFactory(site=site, status="processing", forwarded=False)
+    already = OrderFactory(site=site, status="processing", forwarded=True)
+
+    count = services.forward_orders(Order.objects.all(), [a.id, b.id, already.id])
+    assert count == 2  # only the two not-yet-forwarded flip
+    a.refresh_from_db()
+    b.refresh_from_db()
+    assert a.forwarded and b.forwarded
+
+
+@pytest.mark.django_db
 def test_order_stats_totals_and_by_status():
     from apps.orders.tests.factories import OrderFactory
 
@@ -274,3 +396,150 @@ def test_order_stats_totals_and_by_status():
     assert stats["total"] == 5
     assert str(stats["revenue"]) == "400000.00"
     assert stats["by_status"] == {"processing": 3, "completed": 2}
+    assert stats["by_classification"] == {"genuine": 5}
+
+
+# --- Classification (genuine / suspicious / spam) ----------------------------
+
+
+def _clean_fields():
+    return {
+        "customer_phone": "0911222333",
+        "customer_email": "a@example.com",
+        "customer_name": "Nguyễn Văn A",
+        "shipping_address": "12 Lê Lợi, Đà Nẵng",
+    }
+
+
+def test_classify_fields_clean_order_has_no_reasons():
+    assert services.classify_fields(_clean_fields()) == []
+
+
+def test_classify_fields_flags_missing_pii():
+    reasons = services.classify_fields(
+        {"customer_phone": "", "customer_email": "", "customer_name": "", "shipping_address": ""}
+    )
+    assert "phone_missing" in reasons
+    assert "name_missing" in reasons
+    assert "address_missing" in reasons
+
+
+def test_classify_fields_phone_rules():
+    invalid = services.classify_fields({**_clean_fields(), "customer_phone": "12345"})
+    assert "phone_invalid" in invalid
+    fake = services.classify_fields({**_clean_fields(), "customer_phone": "0000000000"})
+    assert "phone_fake" in fake
+    # +84 country code is normalized to a leading 0 and accepted.
+    assert services.classify_fields(
+        {**_clean_fields(), "customer_phone": "+84911222333"}
+    ) == []
+
+
+def test_classify_fields_email_rules():
+    bad = services.classify_fields({**_clean_fields(), "customer_email": "not-an-email"})
+    assert "email_invalid" in bad
+    disposable = services.classify_fields(
+        {**_clean_fields(), "customer_email": "bot@mailinator.com"}
+    )
+    assert "email_disposable" in disposable
+
+
+def test_classify_fields_name_and_address_rules():
+    gibberish = services.classify_fields({**_clean_fields(), "customer_name": "xzqwbk"})
+    assert "name_gibberish" in gibberish
+    short = services.classify_fields({**_clean_fields(), "shipping_address": "abc"})
+    assert "address_short" in short
+
+
+def test_label_for_score_thresholds():
+    assert services._label_for_score(0) == services.GENUINE
+    assert services._label_for_score(services.SUSPICIOUS_THRESHOLD) == services.SUSPICIOUS
+    assert services._label_for_score(services.SPAM_THRESHOLD) == services.SPAM
+
+
+@pytest.mark.django_db
+def test_classify_velocity_detects_phone_burst():
+    from apps.orders.tests.factories import OrderFactory
+
+    site = SiteFactory()
+    a = OrderFactory(site=site, customer_phone="0911222333")
+    OrderFactory(site=site, customer_phone="0911222333")
+    OrderFactory(site=site, customer_phone="0911222333")
+    reasons = services.classify_velocity(a)
+    assert "velocity_phone" in reasons
+
+
+@pytest.mark.django_db
+def test_classify_velocity_ignores_lone_order():
+    from apps.orders.tests.factories import OrderFactory
+
+    order = OrderFactory(customer_phone="0911222333", customer_email="solo@example.com")
+    assert services.classify_velocity(order) == []
+
+
+@pytest.mark.django_db
+def test_upsert_classifies_clean_order_as_genuine():
+    site = SiteFactory()
+    order, _ = services.upsert_order(site, _woo_order(order_id=200))
+    assert order.classification == services.GENUINE
+    assert order.risk_score == 0
+    assert order.classified_at is not None
+
+
+@pytest.mark.django_db
+def test_upsert_classifies_junk_order_as_spam():
+    """A payload with no billing (no phone/name/address) scores as spam."""
+    site = SiteFactory()
+    junk = {
+        "id": 300,
+        "number": "300",
+        "status": "processing",
+        "total": "0",
+        "date_created_gmt": "2026-06-01T03:00:00",
+    }
+    order, _ = services.upsert_order(site, junk)
+    assert order.classification == services.SPAM
+    assert "phone_missing" in order.risk_reasons
+
+
+@pytest.mark.django_db
+def test_completed_spam_order_is_not_auto_forwarded():
+    """The auto-forward rule holds back suspicious/spam orders for manual review."""
+    site = SiteFactory()
+    junk = {
+        "id": 301,
+        "number": "301",
+        "status": "completed",
+        "total": "0",
+        "date_created_gmt": "2026-06-01T03:00:00",
+    }
+    order, _ = services.upsert_order(site, junk)
+    assert order.classification == services.SPAM
+    assert order.forwarded is False  # gated despite being completed
+
+
+@pytest.mark.django_db
+def test_manual_forward_overrides_spam_classification():
+    from apps.orders.tests.factories import OrderFactory
+
+    order = OrderFactory(status="processing", forwarded=False, classification=services.SPAM)
+    services.forward_order(order)
+    assert order.forwarded is True  # manual forward is the admin override path
+
+
+@pytest.mark.django_db
+def test_reclassify_orders_command_rescore_existing(monkeypatch):
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    from apps.orders.tests.factories import OrderFactory
+
+    # An order stored before classification existed (default genuine/0).
+    order = OrderFactory(
+        customer_phone="", customer_name="", shipping_address="", classification=services.GENUINE
+    )
+    call_command("reclassify_orders", stdout=StringIO())
+    order.refresh_from_db()
+    assert order.classification == services.SPAM
+    assert order.risk_score > 0
