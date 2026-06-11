@@ -62,7 +62,7 @@ const WEBSITE_SUB = [
 ];
 
 const SECONDARY_NAV = [
-  { label: "Báo cáo", icon: BarChart3 },
+  { to: "/reports", label: "Báo cáo", icon: BarChart3 },
   { label: "Cài đặt hệ thống", icon: Settings },
 ];
 

@@ -1,4 +1,4 @@
-import { Button, Input, Modal, Popconfirm, Select } from "antd";
+import { Button, Input, Modal, Popconfirm, Select, Tooltip } from "antd";
 import {
   ClipboardCheck,
   ExternalLink,
@@ -7,6 +7,7 @@ import {
   Pencil,
   Play,
   Plus,
+  Star,
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -42,6 +43,8 @@ export default function Sites() {
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [ordering, setOrdering] = useState(null); // null | "name" | "-name"
   const [hostingFilter, setHostingFilter] = useState("all"); // "all" | "none" | hosting id
+  const [statusFilter, setStatusFilter] = useState("all"); // "all" | "up" | "down" | "unknown"
+  const [primaryFilter, setPrimaryFilter] = useState("all"); // "all" | "true" | "false"
   const [searchInput, setSearchInput] = useState(""); // raw text in the input
   const [search, setSearch] = useState(""); // debounced term sent to the backend
   const [page, setPage] = useState(1);
@@ -63,6 +66,8 @@ export default function Sites() {
     page_size: pageSize,
     ordering: ordering ?? undefined,
     hosting: hostingFilter === "all" ? undefined : hostingFilter,
+    status: statusFilter === "all" ? undefined : statusFilter,
+    is_primary: primaryFilter === "all" ? undefined : primaryFilter,
     search: search || undefined,
   });
   const { data: stats, isLoading: statsLoading } = useSiteStats();
@@ -150,6 +155,19 @@ export default function Sites() {
     setShowForm(true);
   };
 
+  // Quick toggle from the list — primary sites ("trang chính") are the ones
+  // checked first every day, so flagging must not require opening the form.
+  const handleTogglePrimary = async (site) => {
+    try {
+      await updateSite.mutateAsync({ id: site.id, is_primary: !site.is_primary });
+      toast.success(
+        site.is_primary ? "Đã bỏ đánh dấu trang chính." : "Đã đánh dấu trang chính."
+      );
+    } catch {
+      toast.error("Cập nhật thất bại.");
+    }
+  };
+
   // antd drives page / page-size / sort changes through onChange. A page-size or
   // sort change resets to page 1; otherwise honour the requested page.
   const handleTableChange = (pagination, _filters, sorter) => {
@@ -168,12 +186,32 @@ export default function Sites() {
       width: 240,
       sorter: true,
       sortOrder: ordering === "name" ? "ascend" : ordering === "-name" ? "descend" : null,
-      render: (name) => (
-        <span className="inline-flex items-center gap-2.5 font-medium">
+      render: (name, site) => (
+        <span className="inline-flex max-w-full items-center gap-1.5 font-medium">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
             <Globe size={15} />
           </span>
           <span className="truncate">{name}</span>
+          <Tooltip
+            title={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
+          >
+            <Button
+              type="text"
+              size="small"
+              aria-label={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
+              onClick={() => handleTogglePrimary(site)}
+              icon={
+                <Star
+                  size={15}
+                  className={
+                    site.is_primary
+                      ? "fill-amber-400 text-amber-400"
+                      : "text-slate-300 hover:text-amber-400"
+                  }
+                />
+              }
+            />
+          </Tooltip>
         </span>
       ),
     },
@@ -262,7 +300,11 @@ export default function Sites() {
     },
   ];
 
-  const filterActive = hostingFilter !== "all" || search !== "";
+  const filterActive =
+    hostingFilter !== "all" ||
+    statusFilter !== "all" ||
+    primaryFilter !== "all" ||
+    search !== "";
 
   return (
     <section className="pt-4">
@@ -302,24 +344,59 @@ export default function Sites() {
         <SiteStats counts={stats ?? {}} loading={statsLoading} />
       </div>
 
-      {hostings.length > 0 && (
-        <div className="mb-2.5 flex items-center gap-2">
-          <span className="text-sm text-muted">Lọc theo hosting:</span>
+      <div className="mb-2.5 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted">Trạng thái:</span>
           <Select
-            value={hostingFilter}
+            value={statusFilter}
             onChange={(v) => {
-              setHostingFilter(v);
+              setStatusFilter(v);
               setPage(1);
             }}
-            className="min-w-52"
+            className="min-w-44"
             options={[
-              { value: "all", label: "Tất cả hosting" },
-              { value: "none", label: "Chưa gán hosting" },
-              ...hostings.map((h) => ({ value: h.id, label: hostingLabel(h) })),
+              { value: "all", label: "Tất cả trạng thái" },
+              { value: "up", label: "Hoạt động" },
+              { value: "down", label: "Không hoạt động" },
+              { value: "unknown", label: "Chưa kiểm tra" },
             ]}
           />
         </div>
-      )}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted">Loại trang:</span>
+          <Select
+            value={primaryFilter}
+            onChange={(v) => {
+              setPrimaryFilter(v);
+              setPage(1);
+            }}
+            className="min-w-40"
+            options={[
+              { value: "all", label: "Tất cả" },
+              { value: "true", label: "Trang chính" },
+              { value: "false", label: "Trang thường" },
+            ]}
+          />
+        </div>
+        {hostings.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted">Hosting:</span>
+            <Select
+              value={hostingFilter}
+              onChange={(v) => {
+                setHostingFilter(v);
+                setPage(1);
+              }}
+              className="min-w-52"
+              options={[
+                { value: "all", label: "Tất cả hosting" },
+                { value: "none", label: "Chưa gán hosting" },
+                ...hostings.map((h) => ({ value: h.id, label: hostingLabel(h) })),
+              ]}
+            />
+          </div>
+        )}
+      </div>
 
       {isError ? (
         <ErrorState message="Không tải được danh sách site" onRetry={refetch} />
@@ -362,7 +439,7 @@ export default function Sites() {
                   title={filterActive ? "Không có website phù hợp" : "Chưa có website"}
                   hint={
                     filterActive
-                      ? "Thử đổi từ khóa tìm kiếm hoặc bộ lọc hosting."
+                      ? "Thử đổi từ khóa tìm kiếm hoặc các bộ lọc trạng thái / loại trang / hosting."
                       : "Bấm “Thêm website” hoặc import Excel."
                   }
                 />

@@ -1,3 +1,4 @@
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from celery import shared_task
@@ -136,13 +137,17 @@ def push_products_batch_task(site_ids, master_ids=None):
 
 
 @shared_task
-def pull_all_categories(site_ids=None):
+def pull_all_categories(site_ids=None, run_id=None):
     """Pull product categories from sites into the Hub, in concurrent batches.
 
     Mirrors ``poll_all_orders``: live sites are chunked into batches of
     ``ORDER_POLL_BATCH_SIZE`` and one ``pull_categories_batch_task`` is dispatched
     per chunk, so a slow/broken site only holds up its own batch. The pull is
     idempotent (upsert on ``(site, woo_category_id)``), so re-running is safe.
+
+    ``run_id`` groups every per-site ``SyncLog`` row of this fan-out (one user
+    click = one run, the unit of the category-run report). The view generates
+    it so the API can return it; generated here when absent (shell/beat calls).
 
     A full-site run (``site_ids=None``) acquires a Redis cache lock for
     ``_PULL_CATEGORIES_LOCK_TTL`` seconds so rapid re-triggers (user clicking
@@ -156,6 +161,9 @@ def pull_all_categories(site_ids=None):
 
     from apps.sites.models import Site
 
+    if run_id is None:
+        run_id = str(uuid.uuid4())
+
     qs = Site.objects.filter(is_deleted=False)
     if site_ids is not None:
         qs = qs.filter(id__in=site_ids)
@@ -164,12 +172,12 @@ def pull_all_categories(site_ids=None):
     size = _batch_size()
     batches = [ids[i : i + size] for i in range(0, len(ids), size)]
     for chunk in batches:
-        pull_categories_batch_task.delay(chunk)
-    return {"sites": len(ids), "batches": len(batches)}
+        pull_categories_batch_task.delay(chunk, run_id=run_id)
+    return {"sites": len(ids), "batches": len(batches), "run_id": run_id}
 
 
 @shared_task
-def pull_categories_batch_task(site_ids):
+def pull_categories_batch_task(site_ids, run_id=None):
     """Pull categories for a batch of sites, ``ORDER_POLL_BATCH_SIZE`` at a time.
 
     Mirrors poll_sites_batch_task: a ThreadPoolExecutor caps how many sites hit
@@ -186,7 +194,7 @@ def pull_categories_batch_task(site_ids):
 
     def _pull(site):
         try:
-            return services.pull_categories_for_site(site)
+            return services.pull_categories_for_site(site, run_id=run_id)
         finally:
             connection.close()
 

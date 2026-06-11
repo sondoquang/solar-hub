@@ -81,6 +81,7 @@ class SiteSerializer(serializers.ModelSerializer):
             "hosting",
             "hosting_name",
             "status",
+            "is_primary",
             "last_checked_at",
             "created_at",
             "updated_at",

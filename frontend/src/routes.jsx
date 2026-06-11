@@ -13,6 +13,7 @@ const Products = lazy(() => import("./pages/Products.jsx"));
 const Sites = lazy(() => import("./pages/Sites.jsx"));
 const Hostings = lazy(() => import("./pages/Hostings.jsx"));
 const HealthChecks = lazy(() => import("./pages/HealthChecks.jsx"));
+const Reports = lazy(() => import("./pages/Reports.jsx"));
 const Login = lazy(() => import("./pages/Login.jsx"));
 
 // Each lazy menu page shows a layout-shaped skeleton while its chunk loads,
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
           { path: "sites", element: wrap(Sites, <PageSkeleton stats={4} />) },
           { path: "hostings", element: wrap(Hostings, <PageSkeleton stats={0} />) },
           { path: "health-checks", element: wrap(HealthChecks, <PageSkeleton stats={4} />) },
+          { path: "reports", element: wrap(Reports, <PageSkeleton stats={0} />) },
         ],
       },
       { path: "/login", element: wrap(Login, <Loading />) },

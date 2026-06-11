@@ -359,15 +359,17 @@ def _collect_batch_failures(sent: list, returned: list, op: str) -> list:
 
     WooCommerce returns HTTP 200 for the batch even when individual items are
     rejected (e.g. a duplicate SKU): each reject comes back as
-    ``{"error": {"code", "message"}}`` with no ``id``, in request order. Without
-    this the caller counts the reject as "created" and logs a false success while
-    no ``ProductMapping`` is saved. Correlate by position to recover the SKU (the
-    error item itself may omit it). Only the SKU + Woo error code/message are
-    kept — product data, no PII.
+    ``{"error": {"code", "message"}}``, in request order. Create rejects carry
+    no ``id``; **update/delete rejects DO echo the requested ``id``** (e.g.
+    ``woocommerce_rest_product_invalid_id`` when the product was deleted on the
+    site outside the Hub) — so the success test is "id and no error", never
+    just "has id". Correlate by position to recover the SKU (the error item
+    itself may omit it). Only the SKU + Woo error code/message are kept —
+    product data, no PII.
     """
     failures = []
     for sent_item, got in zip(sent, returned):
-        if got.get("id"):
+        if got.get("id") and not got.get("error"):
             continue
         err = got.get("error") or {}
         failures.append(
@@ -425,6 +427,11 @@ def push_products_to_site(site, *, masters=None) -> dict:
     created = updated = deleted = 0
     failures: list = []
     variations = {}
+    # Updates rejected because the woo id no longer exists (product deleted on
+    # the site outside the Hub, e.g. via wp-admin): the mapping is stale. Heal
+    # in this same run — drop the mapping and re-push the item as a create.
+    stale_creates: list = []
+    stale_woo_ids: list = []
     try:
         for index, chunk in enumerate(_chunked(work, limit)):
             if index and throttle:
@@ -436,16 +443,46 @@ def push_products_to_site(site, *, masters=None) -> dict:
             resp_create = resp.get("create") or []
             resp_update = resp.get("update") or []
             _save_mappings(site, resp_create + resp_update)
-            # Woo's batch returns HTTP 200 even when items fail, so count only
-            # the items that actually got an id (a mapping) and collect the
-            # rejects — otherwise a duplicate-SKU reject reads as a false success.
-            created += sum(1 for it in resp_create if it.get("id"))
-            updated += sum(1 for it in resp_update if it.get("id"))
-            deleted += len(resp.get("delete") or [])
+            # Woo's batch returns HTTP 200 even when items fail (and update
+            # rejects still echo the requested id), so success = id AND no
+            # per-item error — otherwise a reject reads as a false success.
+            created += sum(1 for it in resp_create if it.get("id") and not it.get("error"))
+            updated += sum(1 for it in resp_update if it.get("id") and not it.get("error"))
+            deleted += sum(1 for it in (resp.get("delete") or []) if not it.get("error"))
             failures += _collect_batch_failures(c, resp_create, "create")
-            failures += _collect_batch_failures(u, resp_update, "update")
+            for sent_item, got in zip(u, resp_update):
+                if (got.get("error") or {}).get("code") == "woocommerce_rest_product_invalid_id":
+                    stale_woo_ids.append(sent_item["id"])
+                    stale_creates.append({k: v for k, v in sent_item.items() if k != "id"})
+            # Stale-id updates are retried below as creates — only the other
+            # update rejects are real failures.
+            failures += [
+                f
+                for f in _collect_batch_failures(u, resp_update, "update")
+                if f["code"] != "woocommerce_rest_product_invalid_id"
+            ]
 
-        # Variations ride on the parent push (parent ids now mapped above).
+        if stale_creates:
+            logger.warning(
+                "push_products site_id=%s: %s stale mapping(s), re-creating",
+                site.id,
+                len(stale_creates),
+            )
+            ProductVariationMapping.objects.filter(
+                site=site, woo_parent_id__in=stale_woo_ids
+            ).delete()
+            ProductMapping.objects.filter(site=site, woo_product_id__in=stale_woo_ids).delete()
+            for chunk in _chunked(stale_creates, limit):
+                if throttle:
+                    time.sleep(throttle)
+                resp = client.batch_products(create=chunk)
+                resp_create = resp.get("create") or []
+                _save_mappings(site, resp_create)
+                created += sum(1 for it in resp_create if it.get("id") and not it.get("error"))
+                failures += _collect_batch_failures(chunk, resp_create, "create")
+
+        # Variations ride on the parent push (parent ids now mapped above —
+        # including parents just re-created from stale mappings).
         variable_masters = [
             m for m in masters if m.type == MasterProduct.Type.VARIABLE and not m.is_deleted
         ]
@@ -497,6 +534,9 @@ def push_products_to_site(site, *, masters=None) -> dict:
             "variations": variations,
             "grouped_unresolved": grouped_unresolved,
             "failed": failures,
+            # Products re-created because their mapping pointed at a woo id
+            # that no longer exists (deleted on the site outside the Hub).
+            "recreated_stale": len(stale_creates),
         },
     )
     return {
@@ -547,7 +587,9 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
 
     Powers the per-product "đã đồng bộ domain nào / chưa" panel: ``synced`` is
     True when a ``ProductMapping`` exists for that site, with the ``last_synced_at``
-    timestamp and the site's ``woo_product_id``.
+    timestamp and the site's ``woo_product_id``. ``site_status`` (up/down/unknown),
+    ``site_url`` and ``is_primary`` let the panel filter (status / domain search /
+    trang chính) before pushing.
     """
     from apps.sites.models import Site
 
@@ -559,6 +601,9 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
             {
                 "site_id": site.id,
                 "site_name": site.name,
+                "site_url": site.base_url,
+                "site_status": site.status,
+                "is_primary": site.is_primary,
                 "synced": mapping is not None,
                 "woo_product_id": mapping.woo_product_id if mapping else None,
                 "last_synced_at": mapping.last_synced_at if mapping else None,
@@ -570,7 +615,39 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
 # --- Category pull (two-way sync: pull existing categories from each site) ----
 
 
-def pull_categories_for_site(site) -> dict:
+def _site_snapshot(site) -> dict:
+    """SyncLog.detail keys naming the site at pull time, so the category-run
+    report survives a later site delete (``SyncLog.site`` is SET_NULL)."""
+    hosting = site.hosting
+    return {
+        "site_name": site.name,
+        "site_url": site.base_url,
+        "hosting": (hosting.provider or hosting.name) if hosting else "",
+    }
+
+
+def _category_snapshot(raw_name_by_woo_id, name_by_woo_id, categories_by_name) -> list[dict]:
+    """One ``detail["categories"]`` entry per Woo category pulled: the raw Woo
+    name plus the Hub ``Category`` it converged to. Duplicates that collapse
+    onto one Hub category each keep their own entry — the report's point is
+    "what does the site have, and where did each land"."""
+    snapshot = []
+    for woo_id, name in name_by_woo_id.items():
+        cat = categories_by_name.get(name)
+        if cat is None:
+            continue
+        snapshot.append(
+            {
+                "woo_id": woo_id,
+                "woo_name": raw_name_by_woo_id.get(woo_id, ""),
+                "hub_id": cat.id,
+                "hub_name": cat.name,
+            }
+        )
+    return snapshot
+
+
+def pull_categories_for_site(site, run_id=None) -> dict:
     """Pull one site's product categories into the Hub catalog.
 
     Mirrors ``apps.orders.services.poll_site``: builds the client, fetches every
@@ -578,7 +655,9 @@ def pull_categories_for_site(site) -> dict:
     across sites converge to one row) and ``CategoryMapping`` (by
     ``(site, woo_category_id)``). Network errors are caught and returned (never
     raised) so one bad site does not abort the fan-out; a ``SyncLog`` row records
-    the outcome. Logs by ``site_id`` only.
+    the outcome — stamped with ``run_id`` and carrying the site + per-category
+    snapshot in ``detail`` so the run is reportable later. Logs by ``site_id``
+    only.
     """
     from apps.sites.services import client_for_site
 
@@ -590,13 +669,15 @@ def pull_categories_for_site(site) -> dict:
             site=site,
             operation=CATEGORY_OPERATION,
             status=SyncLog.Status.ERROR,
+            run_id=run_id,
             error=exc.__class__.__name__,
-            detail={},
+            detail=_site_snapshot(site),
         )
         return {"site_id": site.id, "pulled": 0, "error": exc.__class__.__name__}
 
     # Single-pass: build lookup maps for the bulk upsert below.
     name_by_woo_id: dict = {}   # woo_id → normalized name
+    raw_name_by_woo_id: dict = {}  # woo_id → raw Woo name (report snapshot)
     slug_by_name: dict = {}     # name → slug
     parent_id_by_name: dict = {}  # name → parent woo_id (0 = root)
     for c in cats:
@@ -605,6 +686,7 @@ def pull_categories_for_site(site) -> dict:
         if not name or not woo_id:
             continue
         name_by_woo_id[woo_id] = name
+        raw_name_by_woo_id[woo_id] = c.get("name", "")
         slug_by_name[name] = c.get("slug", "") or ""
         parent_id_by_name[name] = c.get("parent") or 0
 
@@ -613,7 +695,8 @@ def pull_categories_for_site(site) -> dict:
             site=site,
             operation=CATEGORY_OPERATION,
             status=SyncLog.Status.SUCCESS,
-            detail={"pulled": 0},
+            run_id=run_id,
+            detail={"pulled": 0, **_site_snapshot(site)},
         )
         return {"site_id": site.id, "pulled": 0, "error": None}
 
@@ -691,6 +774,14 @@ def pull_categories_for_site(site) -> dict:
         site=site,
         operation=CATEGORY_OPERATION,
         status=SyncLog.Status.SUCCESS,
-        detail={"pulled": pulled, "mapped": len(woo_id_by_category)},
+        run_id=run_id,
+        detail={
+            "pulled": pulled,
+            "mapped": len(woo_id_by_category),
+            **_site_snapshot(site),
+            "categories": _category_snapshot(
+                raw_name_by_woo_id, name_by_woo_id, categories_by_name
+            ),
+        },
     )
     return {"site_id": site.id, "pulled": pulled, "error": None}

@@ -29,8 +29,10 @@ class SiteViewSet(viewsets.ModelViewSet):
     # current one. SearchFilter does a case-insensitive contains over name/URL.
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name", "base_url"]
-    ordering_fields = ["name", "created_at", "status", "last_checked_at"]
-    ordering = ["-created_at"]
+    ordering_fields = ["name", "created_at", "status", "last_checked_at", "is_primary"]
+    # Primary sites ("trang chính") float to the top so they are the first
+    # thing the operator sees on the daily check.
+    ordering = ["-is_primary", "-created_at"]
 
     def get_queryset(self):
         qs = Site.objects.filter(is_deleted=False)
@@ -39,6 +41,12 @@ class SiteViewSet(viewsets.ModelViewSet):
             qs = qs.filter(hosting__isnull=True)
         elif hosting:
             qs = qs.filter(hosting_id=hosting)
+        site_status = self.request.query_params.get("status")
+        if site_status in Site.Status.values:
+            qs = qs.filter(status=site_status)
+        is_primary = self.request.query_params.get("is_primary")
+        if is_primary in ("true", "false"):
+            qs = qs.filter(is_primary=is_primary == "true")
         return qs
 
     @action(detail=False, methods=["get"])
@@ -62,6 +70,7 @@ class SiteViewSet(viewsets.ModelViewSet):
             consumer_key=data["consumer_key"],
             consumer_secret=data["consumer_secret"],
             hosting=data.get("hosting"),
+            is_primary=data.get("is_primary", False),
         )
         serializer.instance = site
 

@@ -32,5 +32,14 @@ export const theme = {
       optionActiveBg: "rgba(245, 165, 36, 0.08)",
       optionSelectedBg: "rgba(245, 165, 36, 0.15)",
     },
+    // Brand amber is too washed-out for a small on/off track — use the app's
+    // blue accent so the "on" state is unmistakable. The default off-track
+    // (near-white gray) disappears on white modals, so tint it light blue too.
+    Switch: {
+      colorPrimary: "#2563eb", // blue-600 — on
+      colorPrimaryHover: "#1d4ed8", // blue-700 — on hover
+      colorTextQuaternary: "#93c5fd", // blue-300 — off track
+      colorTextTertiary: "#60a5fa", // blue-400 — off hover
+    },
   },
 };

@@ -100,6 +100,17 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 # --- Media (user uploads: site-note image attachments) ------------------
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+# Python 3.12's mimetypes lacks webp → dev server would serve uploaded .webp
+# product images as application/octet-stream (WordPress sideload is pickier
+# about that than browsers are).
+import mimetypes  # noqa: E402
+
+mimetypes.add_type("image/webp", ".webp")
+# Public base URL of the Hub for media links pushed to WooCommerce sites
+# (e.g. "https://hub.example.com"). The sites must be able to DOWNLOAD product
+# images from this address — request-host fallback (localhost in dev) only
+# works when the Woo site runs on the same machine. Empty = use request host.
+MEDIA_PUBLIC_BASE_URL = env.str("MEDIA_PUBLIC_BASE_URL", default="").rstrip("/")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -143,6 +154,17 @@ CELERY_BROKER_URL = env("REDIS_URL", default="redis://redis:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=CELERY_BROKER_URL)
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
+
+# --- Task routing: sync do người dùng bấm không bao giờ xếp sau job nền định kỳ.
+# Hai queue, mỗi queue một worker riêng (docker-compose.yml):
+#  - "interactive": push sản phẩm / pull category on-demand từ UI/Admin.
+#  - "periodic" (default): beat (poll đơn, health check) + task chưa route.
+# Task con (batch) đi theo queue của task cha vì route theo tên.
+CELERY_TASK_DEFAULT_QUEUE = "periodic"
+CELERY_TASK_ROUTES = {
+    "apps.sync.tasks.push_*": {"queue": "interactive"},
+    "apps.sync.tasks.pull_*": {"queue": "interactive"},
+}
 
 # How often Celery Beat polls orders across all sites (seconds).
 ORDER_POLL_INTERVAL_SECONDS = env.int("ORDER_POLL_INTERVAL_SECONDS", default=480)

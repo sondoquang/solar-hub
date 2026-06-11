@@ -1,12 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button, Empty, Input, InputNumber, Select, Switch, Table, Tabs, TreeSelect } from "antd";
-import { Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ImagePlus, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import toast from "react-hot-toast";
 import { z } from "zod";
 
 import { useProductCategories, useProductSearch, useSyncCategories } from "../api/products.js";
+import MediaLibraryModal from "./MediaLibraryModal.jsx";
 import RichTextEditor from "./RichTextEditor.jsx";
 
 export const STATUS_OPTIONS = [
@@ -157,6 +158,7 @@ const toForm = (d) => ({
 
 const priceProps = {
   className: "w-full",
+  size: "large",
   min: 0,
   formatter: (v) => (v == null ? "" : `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ".")),
   parser: (v) => (v ? Number(v.replace(/\./g, "")) : null),
@@ -193,7 +195,9 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   const type = watch("type");
   const watchImages = watch("images");
   const featuredUrl = watchImages?.[0] ?? "";
-  const [imgError, setImgError] = useState(false);
+  const albumUrls = (watchImages ?? []).slice(1);
+  // Which slot the media picker fills: "featured" | "album" | {variation: i}.
+  const [picker, setPicker] = useState(null);
 
   const attrArray = useFieldArray({ control, name: "attributes" });
   const varArray = useFieldArray({ control, name: "variations" });
@@ -239,11 +243,26 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     });
   };
 
-  const handleFeaturedUrlChange = (e) => {
-    const url = e.target.value;
-    const rest = (watchImages ?? []).slice(1);
-    setValue("images", url ? [url, ...rest] : rest);
-    setImgError(false);
+  // `images[0]` is the featured slot, the rest is the album (Woo semantics).
+  const handlePicked = (urls) => {
+    const imgs = getValues("images") ?? [];
+    if (picker === "featured") {
+      setValue("images", [urls[0], ...imgs.slice(1)]);
+    } else if (picker === "album") {
+      // Append after the featured slot; with no featured yet the first picked
+      // image becomes the featured (ảnh đầu tiên là ảnh đại diện).
+      setValue("images", [...imgs, ...urls]);
+    } else if (picker && typeof picker === "object") {
+      setValue(`variations.${picker.variation}.image`, urls[0]);
+    }
+  };
+
+  const removeImageAt = (index) => {
+    const imgs = getValues("images") ?? [];
+    setValue(
+      "images",
+      imgs.filter((_, i) => i !== index),
+    );
   };
 
   // Append the attribute combinations that don't already have a variation row,
@@ -313,7 +332,9 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           <Controller
             name="stock_status"
             control={control}
-            render={({ field }) => <Select {...field} className="w-full" options={STOCK_OPTIONS} />}
+            render={({ field }) => (
+              <Select {...field} size="large" className="w-full" options={STOCK_OPTIONS} />
+            )}
           />
         </div>
         <div>
@@ -321,7 +342,9 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           <Controller
             name="weight"
             control={control}
-            render={({ field }) => <InputNumber {...field} className="w-full" min={0} step={0.1} />}
+            render={({ field }) => (
+              <InputNumber {...field} size="large" className="w-full" min={0} step={0.1} />
+            )}
           />
         </div>
       </div>
@@ -341,6 +364,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
             render={({ field }) => (
               <Input
                 {...field}
+                size="large"
                 status={errors.external_url ? "error" : ""}
                 placeholder="https://…"
               />
@@ -353,7 +377,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           <Controller
             name="button_text"
             control={control}
-            render={({ field }) => <Input {...field} placeholder="Mua ngay" />}
+            render={({ field }) => <Input {...field} size="large" placeholder="Mua ngay" />}
           />
         </div>
       </div>
@@ -373,6 +397,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
             <Select
               {...field}
               mode="multiple"
+              size="large"
               className="w-full"
               placeholder="Tìm và chọn sản phẩm…"
               filterOption={false}
@@ -410,7 +435,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
                 <Controller
                   name={`attributes.${i}.name`}
                   control={control}
-                  render={({ field }) => <Input {...field} placeholder="VD: Màu" />}
+                  render={({ field }) => <Input {...field} size="large" placeholder="VD: Màu" />}
                 />
               </div>
               <div>
@@ -422,6 +447,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
                     <Select
                       {...field}
                       mode="tags"
+                      size="large"
                       className="w-full"
                       placeholder="Nhập giá trị, Enter để thêm"
                       tokenSeparators={[","]}
@@ -540,13 +566,33 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     },
     {
       key: "image",
-      title: "Ảnh (URL)",
-      width: 160,
+      title: "Ảnh",
+      width: 110,
       render: (_v, _r, i) => (
         <Controller
           name={`variations.${i}.image`}
           control={control}
-          render={({ field }) => <Input {...field} size="small" placeholder="https://…" />}
+          render={({ field }) =>
+            field.value ? (
+              <div className="group relative h-10 w-10 overflow-hidden rounded border border-slate-200">
+                <img src={field.value} alt="Ảnh biến thể" className="h-full w-full object-cover" />
+                <button
+                  type="button"
+                  title="Xóa ảnh"
+                  onClick={() => field.onChange("")}
+                  className="absolute inset-0 hidden items-center justify-center bg-white/70 text-danger group-hover:flex"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <Button
+                size="small"
+                icon={<ImagePlus size={13} />}
+                onClick={() => setPicker({ variation: i })}
+              />
+            )
+          }
         />
       ),
     },
@@ -628,6 +674,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
               render={({ field }) => (
                 <Input
                   {...field}
+                  size="large"
                   status={errors.name ? "error" : ""}
                   placeholder="Nhập tên sản phẩm…"
                 />
@@ -641,7 +688,9 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
               <Controller
                 name="sku"
                 control={control}
-                render={({ field }) => <Input {...field} status={errors.sku ? "error" : ""} />}
+                render={({ field }) => (
+                  <Input {...field} size="large" status={errors.sku ? "error" : ""} />
+                )}
               />
               {errors.sku && <p className={errCls}>{errors.sku.message}</p>}
             </div>
@@ -651,7 +700,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
                 name="status"
                 control={control}
                 render={({ field }) => (
-                  <Select {...field} className="w-full" options={STATUS_OPTIONS} />
+                  <Select {...field} size="large" className="w-full" options={STATUS_OPTIONS} />
                 )}
               />
             </div>
@@ -697,6 +746,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
             <TreeSelect
               {...field}
               multiple
+              size="large"
               treeDefaultExpandAll
               showSearch
               treeNodeFilterProp="title"
@@ -714,42 +764,80 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
         />
       </Postbox>
 
-      {/* Ảnh sản phẩm */}
+      {/* Ảnh sản phẩm (ảnh đại diện) */}
       <Postbox title="Ảnh sản phẩm">
-        {featuredUrl && !imgError && (
-          <img
-            src={featuredUrl}
-            alt="Ảnh sản phẩm"
-            className="mb-2 w-full rounded border border-slate-200 object-contain"
-            style={{ maxHeight: 220 }}
-            onError={() => setImgError(true)}
-          />
+        {featuredUrl ? (
+          <div className="grid gap-2">
+            <img
+              src={featuredUrl}
+              alt="Ảnh sản phẩm"
+              className="w-full rounded border border-slate-200 object-contain"
+              style={{ maxHeight: 220 }}
+            />
+            <div className="flex gap-2">
+              <Button icon={<ImagePlus size={14} />} onClick={() => setPicker("featured")}>
+                Thay ảnh
+              </Button>
+              <Button danger icon={<Trash2 size={14} />} onClick={() => removeImageAt(0)}>
+                Xóa ảnh
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button
+            type="dashed"
+            block
+            icon={<ImagePlus size={15} />}
+            onClick={() => setPicker("featured")}
+          >
+            Đặt ảnh sản phẩm (tải lên hoặc chọn từ thư viện)
+          </Button>
         )}
-        <Input
-          placeholder="https://… URL ảnh đại diện"
-          value={featuredUrl}
-          onChange={handleFeaturedUrlChange}
-        />
-        <p className="mt-1 text-xs text-muted">Dán URL ảnh và nhấn Enter để xem trước.</p>
       </Postbox>
 
-      {/* Album hình ảnh */}
-      <Postbox title="Album hình ảnh sản phẩm">
-        <Controller
-          name="images"
-          control={control}
-          render={({ field }) => (
-            <Select
-              {...field}
-              mode="tags"
-              className="w-full"
-              placeholder="Dán URL ảnh phụ, Enter để thêm"
-              tokenSeparators={[",", " "]}
-              open={false}
-            />
-          )}
-        />
-        <p className="mt-1 text-xs text-muted">Ảnh đầu tiên là ảnh đại diện.</p>
+      {/* Album hình ảnh (ảnh phụ) */}
+      <Postbox
+        title="Album hình ảnh sản phẩm"
+        action={
+          <Button
+            type="link"
+            size="small"
+            className="px-0"
+            icon={<Plus size={14} />}
+            onClick={() => setPicker("album")}
+          >
+            Thêm ảnh vào album
+          </Button>
+        }
+      >
+        {albumUrls.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="Chưa có ảnh phụ — bấm “Thêm ảnh vào album”"
+          />
+        ) : (
+          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+            {albumUrls.map((url, i) => (
+              <div
+                key={`${url}-${i}`}
+                className="group relative aspect-square overflow-hidden rounded border border-slate-200"
+              >
+                <img src={url} alt={`Ảnh phụ ${i + 1}`} className="h-full w-full object-cover" />
+                <button
+                  type="button"
+                  title="Xóa khỏi album"
+                  onClick={() => removeImageAt(i + 1)}
+                  className="absolute right-1 top-1 hidden rounded-full bg-white/90 p-0.5 text-danger shadow group-hover:block"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-muted">
+          Ảnh phụ hiển thị trong gallery của sản phẩm trên từng site.
+        </p>
       </Postbox>
 
       {/* Mô tả */}
@@ -758,7 +846,12 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           name="description"
           control={control}
           render={({ field }) => (
-            <RichTextEditor value={field.value} onChange={field.onChange} minHeight="200px" />
+            <RichTextEditor
+              value={field.value}
+              onChange={field.onChange}
+              minHeight="200px"
+              enableImage
+            />
           )}
         />
       </Postbox>
@@ -781,6 +874,21 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           {busy ? "Đang lưu…" : "Lưu sản phẩm"}
         </Button>
       </div>
+
+      {/* Media picker (ảnh đại diện / album / ảnh biến thể) */}
+      <MediaLibraryModal
+        open={picker !== null}
+        multiple={picker === "album"}
+        title={
+          picker === "album"
+            ? "Thêm ảnh vào album sản phẩm"
+            : picker === "featured"
+              ? "Đặt ảnh sản phẩm"
+              : "Chọn ảnh biến thể"
+        }
+        onClose={() => setPicker(null)}
+        onSelect={handlePicked}
+      />
     </form>
   );
 }

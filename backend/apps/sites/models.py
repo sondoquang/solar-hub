@@ -55,6 +55,11 @@ class Site(models.Model):
         default=Status.UNKNOWN,
         db_index=True,
     )
+    # "Trang chính" — the company's primary sites that must be watched first
+    # each day: they sort to the top of the list by default and are
+    # health-checked before the other sites of their hosting (see
+    # services.check_hosting).
+    is_primary = models.BooleanField(default=False, db_index=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
     hosting = models.ForeignKey(
         "Hosting",

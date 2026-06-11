@@ -4,6 +4,7 @@
 - ``GET/PATCH/DELETE /api/products/{id}/`` — retrieve / update / soft-delete.
 - ``GET  /api/products/stats/``      — totals (mapped/unmapped) for the filter.
 - ``POST /api/products/sync_now/``   — push the catalog to sites (the "Đồng bộ ngay").
+- ``GET/POST/DELETE /api/products/media/`` — product media library (upload ảnh).
 
 Products are edited here (single source of truth); the push to each WooCommerce
 site is heavy + per-site, so it runs in Celery (``apps/sync/tasks``), never in
@@ -11,17 +12,20 @@ the request cycle.
 """
 
 from django.utils import timezone
+from rest_framework import mixins
 from rest_framework import status as http_status
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from . import services
-from .models import Category, MasterProduct
+from .models import Category, MasterProduct, ProductImage
 from .serializers import (
     CategorySerializer,
     MasterProductSerializer,
+    ProductImageSerializer,
     ProductSyncStatusSerializer,
 )
 
@@ -89,6 +93,39 @@ class MasterProductViewSet(viewsets.ModelViewSet):
         return Response(ProductSyncStatusSerializer(rows, many=True).data)
 
 
+class ProductImageViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Product media library (kiểu WP Media Library).
+
+    - ``GET    /api/products/media/``      — newest-first list (search ``?search=``).
+    - ``POST   /api/products/media/``      — multipart upload, field ``image``.
+    - ``DELETE /api/products/media/{id}/`` — remove file + row (hard delete: the
+      library row carries no sync state; URLs already referenced by products
+      keep working only while the file exists, so deleting is an admin choice).
+
+    The response's absolute ``url`` is what gets stored in
+    ``MasterProduct.images`` / embedded in description HTML — the catalog model
+    stays URL-based and the Woo push payload is unchanged.
+    """
+
+    queryset = ProductImage.objects.all()
+    serializer_class = ProductImageSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ["original_name"]
+    ordering_fields = ["uploaded_at"]
+    ordering = ["-uploaded_at"]
+
+    def perform_destroy(self, instance):
+        # Remove the file from MEDIA_ROOT too, not just the DB row.
+        instance.image.delete(save=False)
+        instance.delete()
+
+
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     """Read-only category catalog for the form picker, plus a manual pull trigger.
 
@@ -109,7 +146,14 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["post"])
     def pull_now(self, request):
-        """Trigger an async category pull from sites (validation only here)."""
+        """Trigger an async category pull from sites (validation only here).
+
+        Generates the ``run_id`` here so the response carries it — every
+        per-site ``SyncLog`` row of this fan-out is stamped with it and the
+        category-run report (``/api/sync/category-runs/``) groups by it.
+        """
+        import uuid
+
         from apps.sync.tasks import pull_all_categories
 
         sites = request.data.get("sites")
@@ -121,5 +165,6 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        result = pull_all_categories.delay(site_ids=sites or None)
-        return Response({"task_id": result.id})
+        run_id = str(uuid.uuid4())
+        result = pull_all_categories.delay(site_ids=sites or None, run_id=run_id)
+        return Response({"task_id": result.id, "run_id": run_id})

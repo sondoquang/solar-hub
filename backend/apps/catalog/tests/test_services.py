@@ -1,3 +1,5 @@
+import uuid
+
 import httpx
 import pytest
 
@@ -25,7 +27,7 @@ class _FakeClient:
     ``list_categories`` returns. Created products/variations get incrementing ids.
     """
 
-    def __init__(self, *, raise_error=False, categories=None, error_skus=None):
+    def __init__(self, *, raise_error=False, categories=None, error_skus=None, stale_woo_ids=None):
         self.calls = []
         self.variation_calls = []
         self.raise_error = raise_error
@@ -33,6 +35,10 @@ class _FakeClient:
         # SKUs Woo rejects per-item: returned as {"error": ...} with no id, like
         # a duplicate-SKU create against /products/batch (HTTP 200 overall).
         self.error_skus = set(error_skus or [])
+        # Woo ids that no longer exist on the site (product deleted outside the
+        # Hub): updates against them are rejected like Woo does — the error
+        # item still ECHOES the requested id.
+        self.stale_woo_ids = set(stale_woo_ids or [])
         self._next_id = 9000
         self._next_var_id = 8000
 
@@ -50,7 +56,20 @@ class _FakeClient:
                 continue
             created.append({"id": self._next_id, "sku": item["sku"]})
             self._next_id += 1
-        updated = [{"id": item["id"], "sku": item["sku"]} for item in update]
+        updated = []
+        for item in update:
+            if item["id"] in self.stale_woo_ids:
+                updated.append(
+                    {
+                        "id": item["id"],
+                        "error": {
+                            "code": "woocommerce_rest_product_invalid_id",
+                            "message": "Invalid ID.",
+                        },
+                    }
+                )
+                continue
+            updated.append({"id": item["id"], "sku": item["sku"]})
         deleted = [{"id": woo_id} for woo_id in delete]
         return {"create": created, "update": updated, "delete": deleted}
 
@@ -579,12 +598,74 @@ def test_pull_categories_swallows_http_error(monkeypatch):
     assert log.status == SyncLog.Status.ERROR
 
 
+@pytest.mark.django_db
+def test_pull_categories_snapshots_run_into_synclog(monkeypatch):
+    """detail carries the report snapshot — site/hosting names, the raw Woo
+    name of every category and the Hub Category it converged to — and the row
+    is stamped with the run_id."""
+    from apps.sites.tests.factories import HostingFactory
+
+    site = SiteFactory(hosting=HostingFactory(provider="TenTen"))
+    fake = _FakeClient(
+        categories=[
+            {"id": 104, "name": "Pin mặt trời"},
+            {"id": 220, "name": " Pin  mặt trời "},  # collapses onto the same Hub row
+            {"id": 300, "name": "Inverter"},
+        ]
+    )
+    _patch_client(monkeypatch, fake)
+
+    run_id = str(uuid.uuid4())
+    services.pull_categories_for_site(site, run_id=run_id)
+
+    log = SyncLog.objects.get(site=site, operation="pull_categories")
+    assert str(log.run_id) == run_id
+    detail = log.detail
+    assert detail["site_name"] == site.name
+    assert detail["site_url"] == site.base_url
+    assert detail["hosting"] == "TenTen"
+    assert detail["pulled"] == 3
+    assert detail["mapped"] == 2  # the duplicate pair maps once
+
+    by_woo = {c["woo_id"]: c for c in detail["categories"]}
+    assert set(by_woo) == {104, 220, 300}
+    # Raw Woo names preserved (the report shows what the SITE has)...
+    assert by_woo[220]["woo_name"] == " Pin  mặt trời "
+    # ...while both duplicates point at the one Hub category they merged into.
+    pin = Category.objects.get(name="Pin mặt trời")
+    assert by_woo[104]["hub_id"] == by_woo[220]["hub_id"] == pin.id
+    assert by_woo[300]["hub_name"] == "Inverter"
+
+
+@pytest.mark.django_db
+def test_pull_categories_error_and_empty_rows_carry_run_id(monkeypatch):
+    """A failed or empty site still shows up in its run (run_id + site snapshot
+    on the SyncLog row); without a run_id the column stays NULL."""
+    site = SiteFactory()  # no hosting
+    run_id = str(uuid.uuid4())
+
+    _patch_client(monkeypatch, _FakeClient(raise_error=True))
+    services.pull_categories_for_site(site, run_id=run_id)
+    error_log = SyncLog.objects.get(site=site, status=SyncLog.Status.ERROR)
+    assert str(error_log.run_id) == run_id
+    assert error_log.detail["site_name"] == site.name
+    assert error_log.detail["hosting"] == ""
+
+    _patch_client(monkeypatch, _FakeClient(categories=[]))
+    services.pull_categories_for_site(site)  # no run_id → legacy-style row
+    empty_log = SyncLog.objects.get(site=site, status=SyncLog.Status.SUCCESS)
+    assert empty_log.run_id is None
+    assert empty_log.detail["pulled"] == 0
+
+
 # --- product_sync_status -----------------------------------------------------
 
 
 @pytest.mark.django_db
 def test_product_sync_status_lists_all_sites(monkeypatch):
-    synced_site = SiteFactory(name="A-Site")
+    synced_site = SiteFactory(
+        name="A-Site", base_url="https://a-site.example.com", is_primary=True
+    )
     SiteFactory(name="B-Site")  # active, not synced
     master = MasterProductFactory(sku="SP-1")
     ProductMappingFactory(master=master, site=synced_site, woo_product_id=321)
@@ -594,5 +675,42 @@ def test_product_sync_status_lists_all_sites(monkeypatch):
     by_name = {r["site_name"]: r for r in rows}
     assert by_name["A-Site"]["synced"] is True
     assert by_name["A-Site"]["woo_product_id"] == 321
+    assert by_name["A-Site"]["site_url"] == "https://a-site.example.com"
+    assert by_name["A-Site"]["is_primary"] is True
     assert by_name["B-Site"]["synced"] is False
     assert by_name["B-Site"]["woo_product_id"] is None
+    assert by_name["B-Site"]["is_primary"] is False
+
+
+# --- stale mapping self-heal (product deleted on the site outside the Hub) ----
+
+
+@pytest.mark.django_db
+def test_push_recreates_product_when_mapping_is_stale(monkeypatch, settings):
+    """An update against a woo id that was deleted on the site (wp-admin) comes
+    back as ``woocommerce_rest_product_invalid_id`` WITH the id echoed — it must
+    not count as success; the mapping is dropped and the product re-created in
+    the same run."""
+    from apps.catalog.models import ProductMapping
+
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    m = MasterProductFactory(sku="SP-1")
+    ProductMappingFactory(master=m, site=site, woo_product_id=555)
+    fake = _FakeClient(stale_woo_ids={555})
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site)
+
+    assert result["error"] is None
+    assert result["created"] == 1 and result["updated"] == 0
+    mapping = ProductMapping.objects.get(master=m, site=site)
+    assert mapping.woo_product_id != 555  # fresh id from the re-create
+    # Call 1: the rejected update; call 2: the healing create.
+    assert fake.calls[0]["update"][0]["id"] == 555
+    assert fake.calls[1]["create"][0]["sku"] == "SP-1"
+    log = SyncLog.objects.latest("id")
+    assert log.status == SyncLog.Status.SUCCESS
+    assert log.detail["recreated_stale"] == 1
+    assert log.detail["failed"] == []
+    assert log.created_count == 1 and log.updated_count == 0

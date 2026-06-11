@@ -12,10 +12,11 @@ class SyncLogAdmin(admin.ModelAdmin):
         "created_count",
         "updated_count",
         "deleted_count",
+        "run_id",
         "created_at",
     )
     list_filter = ("operation", "status", "site")
-    search_fields = ("site__name", "error")
+    search_fields = ("site__name", "error", "run_id")
     date_hierarchy = "created_at"
     readonly_fields = tuple(f.name for f in SyncLog._meta.fields)
 

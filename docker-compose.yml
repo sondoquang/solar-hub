@@ -29,10 +29,24 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  celery_worker:
+  # Hai worker, mỗi worker một queue (CELERY_TASK_ROUTES trong settings.py):
+  # task sync do người dùng bấm (interactive) không bao giờ xếp sau job nền (periodic).
+  celery_worker_interactive:
     build: ./backend
     env_file: ./backend/.env
-    command: celery -A config worker -l info --concurrency=2
+    command: celery -A config worker -l info -Q interactive --concurrency=2
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  celery_worker_periodic:
+    build: ./backend
+    env_file: ./backend/.env
+    command: celery -A config worker -l info -Q periodic --concurrency=2
     volumes:
       - ./backend:/app
     depends_on:

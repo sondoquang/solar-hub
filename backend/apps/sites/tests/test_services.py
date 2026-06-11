@@ -6,7 +6,7 @@ from apps.sites import services
 from apps.sites.crypto import decrypt_secret
 from apps.sites.models import Site
 
-from .factories import SiteFactory
+from .factories import HostingFactory, SiteFactory
 
 
 @pytest.mark.django_db
@@ -43,3 +43,19 @@ def test_test_connection_failure(monkeypatch):
     site.refresh_from_db()
     assert result["ok"] is False
     assert site.status == Site.Status.DOWN
+
+
+@pytest.mark.django_db
+def test_check_hosting_checks_primary_sites_first(monkeypatch):
+    # concurrency=1 → sequential, so the check order is the submission order.
+    hosting = HostingFactory(check_concurrency=1)
+    normal = SiteFactory(hosting=hosting)
+    primary = SiteFactory(hosting=hosting, is_primary=True)
+    checked = []
+    monkeypatch.setattr(
+        services,
+        "test_connection",
+        lambda site, **kwargs: checked.append(site.id) or {"ok": True},
+    )
+    services.check_hosting(hosting.id, check_type="manual")
+    assert checked == [primary.id, normal.id]
