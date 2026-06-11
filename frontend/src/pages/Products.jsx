@@ -362,7 +362,7 @@ export default function Products() {
         open={showForm}
         onCancel={closeForm}
         destroyOnClose
-        width="min(760px, 96vw)"
+        width="90vw"
         style={{ top: 10 }}
         styles={{ body: { maxHeight: "calc(100vh - 110px)", overflowY: "auto", padding: "20px 24px" } }}
         title={editing ? "Sửa sản phẩm" : "Thêm sản phẩm"}

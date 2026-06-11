@@ -8,6 +8,11 @@ class SyncLog(models.Model):
     which site, what operation, the outcome, and the create/update/delete counts.
     ``error`` holds the exception class name only — never the WooCommerce payload
     or any PII/secret. ``site`` is SET_NULL on delete so logs outlive the site.
+
+    ``run_id`` groups the per-site rows of one fan-out (one user click of
+    "sync categories" = one run across all sites). Nullable because rows
+    written before the field existed — and operations that don't fan out —
+    have no run; the category-run report simply excludes those.
     """
 
     class Status(models.TextChoices):
@@ -28,6 +33,7 @@ class SyncLog(models.Model):
     created_count = models.IntegerField(default=0)
     updated_count = models.IntegerField(default=0)
     deleted_count = models.IntegerField(default=0)
+    run_id = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
     error = models.TextField(blank=True)  # exception class name only (no PII)
     detail = models.JSONField(default=dict)  # short summary (skus, message)
     created_at = models.DateTimeField(auto_now_add=True)

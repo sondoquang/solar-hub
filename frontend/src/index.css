@@ -179,6 +179,15 @@ button:not(.ant-btn) {
   background: transparent;
   padding: 0;
 }
+.richtext img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.3em;
+  margin: 0.4em 0;
+}
+.richtext img.ProseMirror-selectednode {
+  outline: 2px solid var(--color-brand);
+}
 
 /* WP-style left-nav tabs in "Dữ liệu sản phẩm" postbox */
 .wp-product-data-tabs .ant-tabs-nav {

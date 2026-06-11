@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Button, Input, Select } from "antd";
+import { Button, Input, Select, Switch } from "antd";
 import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -12,11 +12,19 @@ const makeSchema = (mode) =>
     consumer_key: z.string().min(1, "Bắt buộc"),
     consumer_secret: mode === "edit" ? z.string().optional() : z.string().min(1, "Bắt buộc"),
     hosting: z.number().nullable().optional(),
+    is_primary: z.boolean().optional(),
   });
 
 const errCls = "mt-1 text-xs text-danger";
 const Req = () => <span className="ml-0.5 text-danger">*</span>;
-const EMPTY = { name: "", base_url: "", consumer_key: "", consumer_secret: "", hosting: null };
+const EMPTY = {
+  name: "",
+  base_url: "",
+  consumer_key: "",
+  consumer_secret: "",
+  hosting: null,
+  is_primary: false,
+};
 
 export default function SiteRegisterForm({
   onSubmit,
@@ -116,6 +124,17 @@ export default function SiteRegisterForm({
             />
           )}
         />
+      </div>
+      <div className="flex items-center gap-2">
+        <Controller
+          name="is_primary"
+          control={control}
+          render={({ field }) => (
+            <Switch size="small" checked={!!field.value} onChange={field.onChange} />
+          )}
+        />
+        <span className="text-sm font-medium">Trang chính</span>
+        <span className="text-xs text-muted">(ưu tiên kiểm tra trước mỗi ngày)</span>
       </div>
       <div className="flex gap-1 pt-1">
         <Button type="primary" htmlType="submit" loading={busy}>

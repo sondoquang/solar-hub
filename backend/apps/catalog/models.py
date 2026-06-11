@@ -79,6 +79,27 @@ class MasterProduct(models.Model):
         return f"{self.sku} — {self.name}"
 
 
+class ProductImage(models.Model):
+    """Hub-side media library for product images (kiểu WP Media Library).
+
+    Files are uploaded once to the Hub (MEDIA_ROOT) and referenced by URL from
+    ``MasterProduct.images`` / the description HTML — the push to WooCommerce
+    stays URL-based (``[{"src": url}]``), each site downloads the file itself.
+    Rows are intentionally not tied to a product: like WordPress, the library
+    is shared so an image can be reused across products.
+    """
+
+    image = models.ImageField(upload_to="products/%Y/%m/")
+    original_name = models.CharField(max_length=255, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+
+    def __str__(self) -> str:
+        return self.original_name or f"Image #{self.pk}"
+
+
 class ProductMapping(models.Model):
     """Maps one ``MasterProduct`` to its ``woo_product_id`` on one ``Site``.
 

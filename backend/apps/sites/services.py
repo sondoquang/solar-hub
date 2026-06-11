@@ -37,7 +37,13 @@ MAX_CHECK_CONCURRENCY = 50
 
 
 def create_site(
-    *, name: str, base_url: str, consumer_key: str, consumer_secret: str, hosting=None
+    *,
+    name: str,
+    base_url: str,
+    consumer_key: str,
+    consumer_secret: str,
+    hosting=None,
+    is_primary: bool = False,
 ) -> Site:
     return Site.objects.create(
         name=name,
@@ -45,6 +51,7 @@ def create_site(
         consumer_key=consumer_key,
         consumer_secret_enc=encrypt_secret(consumer_secret),
         hosting=hosting,
+        is_primary=is_primary,
     )
 
 
@@ -210,7 +217,9 @@ def check_hosting(
     qs = Site.objects.filter(hosting_id=hosting_id, is_deleted=False)
     if check_type == "periodic":
         qs = qs.filter(_due_filter())
-    sites = list(qs)
+    # Primary sites ("trang chính") are submitted to the pool first so each
+    # round checks them before the rest of the hosting's sites.
+    sites = list(qs.order_by("-is_primary", "id"))
     if not sites:
         return []
 

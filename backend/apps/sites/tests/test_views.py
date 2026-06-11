@@ -75,6 +75,46 @@ def test_list_search_matches_name_and_url(client):
 
 
 @pytest.mark.django_db
+def test_list_filters_by_status(client):
+    SiteFactory(status=Site.Status.UP)
+    down = SiteFactory(status=Site.Status.DOWN)
+    resp = client.get("/api/sites/", {"status": "down"})
+    assert [row["id"] for row in resp.data["results"]] == [down.id]
+    # Junk value is ignored, not an error.
+    resp = client.get("/api/sites/", {"status": "bogus"})
+    assert resp.data["count"] == 2
+
+
+@pytest.mark.django_db
+def test_list_filters_by_is_primary(client):
+    primary = SiteFactory(is_primary=True)
+    normal = SiteFactory()
+    resp = client.get("/api/sites/", {"is_primary": "true"})
+    assert [row["id"] for row in resp.data["results"]] == [primary.id]
+    resp = client.get("/api/sites/", {"is_primary": "false"})
+    assert [row["id"] for row in resp.data["results"]] == [normal.id]
+
+
+@pytest.mark.django_db
+def test_list_puts_primary_sites_first(client):
+    SiteFactory()  # newer sites normally come first (-created_at)…
+    primary = SiteFactory(is_primary=True)
+    SiteFactory()
+    resp = client.get("/api/sites/")
+    assert resp.data["results"][0]["id"] == primary.id
+
+
+@pytest.mark.django_db
+def test_patch_toggles_is_primary(client):
+    site = SiteFactory()
+    resp = client.patch(f"/api/sites/{site.id}/", {"is_primary": True}, format="json")
+    assert resp.status_code == 200
+    assert resp.data["is_primary"] is True
+    site.refresh_from_db()
+    assert site.is_primary is True
+
+
+@pytest.mark.django_db
 def test_stats_returns_global_counts(client):
     SiteFactory(status=Site.Status.UP)
     SiteFactory(status=Site.Status.UP)

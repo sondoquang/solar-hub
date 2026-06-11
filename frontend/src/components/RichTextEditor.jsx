@@ -1,4 +1,5 @@
 import { Button, Tooltip } from "antd";
+import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -7,6 +8,7 @@ import {
   Bold,
   Heading2,
   Heading3,
+  Image as ImageIcon,
   Italic,
   Link as LinkIcon,
   List,
@@ -16,11 +18,15 @@ import {
   Underline as UnderlineIcon,
   Eraser,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+
+import MediaLibraryModal from "./MediaLibraryModal.jsx";
 
 // "Like Word" rich-text editor (TipTap). Produces HTML that the backend
-// sanitizes before saving. Images are NOT handled here — they are separate
-// attachments (see SiteNotesModal), so there is no image button.
+// sanitizes before saving. With `enableImage`, an image button opens the
+// media library (upload/pick) and appends the chosen images at the END of the
+// document with an empty paragraph after — so the flow is: write → insert
+// image (appears right below) → keep writing → insert again, like WP.
 
 function ToolbarButton({ title, active, disabled, onClick, children }) {
   return (
@@ -37,12 +43,19 @@ function ToolbarButton({ title, active, disabled, onClick, children }) {
   );
 }
 
-export default function RichTextEditor({ value = "", onChange, minHeight = "120px" }) {
+export default function RichTextEditor({
+  value = "",
+  onChange,
+  minHeight = "120px",
+  enableImage = false,
+}) {
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const editor = useEditor({
     extensions: [
       StarterKit,
       Underline,
       Link.configure({ openOnClick: false, autolink: true }),
+      ...(enableImage ? [Image] : []),
     ],
     content: value,
     editorProps: {
@@ -71,6 +84,20 @@ export default function RichTextEditor({ value = "", onChange, minHeight = "120p
       return;
     }
     editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+  };
+
+  // Append each picked image at the bottom of the document, then leave an
+  // empty paragraph with the cursor in it so the user just keeps typing.
+  const insertImages = (urls) => {
+    editor
+      .chain()
+      .focus("end")
+      .insertContent([
+        ...urls.map((src) => ({ type: "image", attrs: { src } })),
+        { type: "paragraph" },
+      ])
+      .focus("end")
+      .run();
   };
 
   return (
@@ -149,6 +176,11 @@ export default function RichTextEditor({ value = "", onChange, minHeight = "120p
         >
           <LinkIcon size={15} />
         </ToolbarButton>
+        {enableImage && (
+          <ToolbarButton title="Chèn ảnh (upload/thư viện)" onClick={() => setImagePickerOpen(true)}>
+            <ImageIcon size={15} />
+          </ToolbarButton>
+        )}
         <ToolbarButton
           title="Xóa định dạng"
           onClick={() =>
@@ -159,6 +191,15 @@ export default function RichTextEditor({ value = "", onChange, minHeight = "120p
         </ToolbarButton>
       </div>
       <EditorContent editor={editor} />
+      {enableImage && (
+        <MediaLibraryModal
+          open={imagePickerOpen}
+          multiple
+          title="Chèn ảnh vào mô tả"
+          onClose={() => setImagePickerOpen(false)}
+          onSelect={insertImages}
+        />
+      )}
     </div>
   );
 }

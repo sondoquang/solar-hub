@@ -16,11 +16,12 @@ def test_pull_all_categories_chunks_into_batches(monkeypatch):
     monkeypatch.setattr(
         tasks.pull_categories_batch_task,
         "delay",
-        lambda chunk: dispatched.append(chunk),
+        lambda chunk, run_id=None: dispatched.append(chunk),
     )
 
     result = tasks.pull_all_categories()
-    assert result == {"sites": 5, "batches": 3}
+    assert result["sites"] == 5 and result["batches"] == 3
+    assert result["run_id"]  # auto-generated when not passed in
     assert [len(c) for c in dispatched] == [2, 2, 1]
     assert sorted(i for c in dispatched for i in c) == ids
 
@@ -37,12 +38,31 @@ def test_pull_all_categories_filters_to_selected_sites(monkeypatch):
     monkeypatch.setattr(
         tasks.pull_categories_batch_task,
         "delay",
-        lambda chunk: dispatched.append(chunk),
+        lambda chunk, run_id=None: dispatched.append(chunk),
     )
 
     result = tasks.pull_all_categories(site_ids=[keep.id])
-    assert result == {"sites": 1, "batches": 1}
+    assert result["sites"] == 1 and result["batches"] == 1
     assert dispatched == [[keep.id]]
+
+
+@pytest.mark.django_db
+def test_pull_all_categories_threads_run_id_to_batches(monkeypatch):
+    """The run_id from the view reaches every dispatched batch unchanged."""
+    from apps.sites.tests.factories import SiteFactory
+
+    [SiteFactory() for _ in range(3)]
+    monkeypatch.setattr(tasks, "_batch_size", lambda: 2)
+    seen_run_ids = []
+    monkeypatch.setattr(
+        tasks.pull_categories_batch_task,
+        "delay",
+        lambda chunk, run_id=None: seen_run_ids.append(run_id),
+    )
+
+    result = tasks.pull_all_categories(run_id="run-abc")
+    assert result["run_id"] == "run-abc"
+    assert seen_run_ids == ["run-abc", "run-abc"]
 
 
 @pytest.mark.django_db
@@ -52,7 +72,9 @@ def test_pull_all_categories_skips_if_already_running(monkeypatch):
 
     SiteFactory()
     monkeypatch.setattr(tasks, "_batch_size", lambda: 8)
-    monkeypatch.setattr(tasks.pull_categories_batch_task, "delay", lambda chunk: None)
+    monkeypatch.setattr(
+        tasks.pull_categories_batch_task, "delay", lambda chunk, run_id=None: None
+    )
 
     result1 = tasks.pull_all_categories()
     assert result1["sites"] == 1
@@ -69,12 +91,12 @@ def test_pull_categories_batch_task_pulls_each_site(monkeypatch):
     s1, s2 = SiteFactory(), SiteFactory()
     calls = []
 
-    def _fake_pull(site):
-        calls.append(site.id)
+    def _fake_pull(site, run_id=None):
+        calls.append((site.id, run_id))
         return {"site_id": site.id, "pulled": 1}
 
     monkeypatch.setattr("apps.catalog.services.pull_categories_for_site", _fake_pull)
 
-    result = tasks.pull_categories_batch_task([s1.id, s2.id])
+    result = tasks.pull_categories_batch_task([s1.id, s2.id], run_id="run-abc")
     assert result["pulled"] == 2
-    assert sorted(calls) == sorted([s1.id, s2.id])
+    assert sorted(calls) == sorted([(s1.id, "run-abc"), (s2.id, "run-abc")])
