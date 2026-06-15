@@ -30,7 +30,11 @@ class RunSiteSerializer(serializers.Serializer):
 
 
 class CategoryRunListSerializer(serializers.Serializer):
-    """One row of the runs table."""
+    """One row of the runs table.
+
+    ``duration_seconds`` is the run's wall-clock span, ``triggered_by`` the
+    clicking admin (null for periodic/legacy runs), ``site_label`` the single
+    site's name for one-site runs (null otherwise → the UI shows "N site")."""
 
     run_id = serializers.CharField()
     started_at = serializers.DateTimeField()
@@ -39,6 +43,9 @@ class CategoryRunListSerializer(serializers.Serializer):
     total_mapped = serializers.IntegerField()
     error_count = serializers.IntegerField()
     status = serializers.CharField()
+    duration_seconds = serializers.IntegerField()
+    triggered_by = serializers.CharField(allow_null=True)
+    site_label = serializers.CharField(allow_null=True, allow_blank=True)
 
 
 class CategoryRunDetailSerializer(CategoryRunListSerializer):

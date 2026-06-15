@@ -1,9 +1,11 @@
-import { Button, Input, Modal, Select, Table, Tag } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Input, Modal, Select, Table, Tag } from "antd";
 import { Star } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
 import { useProductSyncStatus, useSyncProducts } from "../api/products.js";
+import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
 import { formatDate } from "../lib/format.js";
 import StatusDot from "./StatusDot.jsx";
 
@@ -25,6 +27,24 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
   const id = product?.id;
   const { data: rows = [], isLoading } = useProductSyncStatus(id, { enabled: open });
   const sync = useSyncProducts();
+  const qc = useQueryClient();
+
+  // "Đang đồng bộ… X/Y site" banner for the per-product push, so the user sees
+  // it run to completion before closing; refresh this product's sync state at
+  // the end so the đã/chưa-đồng-bộ tags update.
+  const pushRun = useSyncRunProgress(SYNC_OPS.products, {
+    onFinish: ({ finished, timedOut, expected, errorCount }) => {
+      if (timedOut) {
+        toast("Đồng bộ chạy lâu hơn dự kiến — kiểm tra lại sau.", { icon: "⏳" });
+      } else if (errorCount) {
+        toast(`Đồng bộ xong, ${errorCount}/${expected} site lỗi.`, { icon: "⚠️" });
+      } else if (finished) {
+        toast.success(`Đã đồng bộ xuống ${expected} site.`);
+      }
+      qc.invalidateQueries({ queryKey: ["products", "sync_status", id] });
+    },
+  });
+
   const [selected, setSelected] = useState([]);
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "up" | "down" | "unknown"
   const [primaryFilter, setPrimaryFilter] = useState("all"); // "all" | "true" | "false"
@@ -84,9 +104,10 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     sync.mutate(
       { sites: selected, products: [id] },
       {
-        onSuccess: () => {
+        onSuccess: (res) => {
           toast.success("Đã kích hoạt đồng bộ xuống các site đã chọn.");
           setSelected([]);
+          pushRun.start({ runId: res.run_id, expected: res.expected });
         },
         onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
       }
@@ -132,11 +153,18 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     },
     {
       key: "woo",
-      title: "Woo ID",
-      width: 100,
+      title: "ID trên site",
+      width: 110,
       align: "right",
+      // woo_product_id is the generic per-site remote id (WooCommerce or Sapo
+      // product id) — the API field name is kept for compatibility.
       render: (_v, r) => (
-        <span className="tabular-nums text-muted">{r.woo_product_id ?? "—"}</span>
+        <span className="tabular-nums text-muted">
+          {r.woo_product_id ?? "—"}
+          {r.platform === "sapo" && r.woo_product_id != null && (
+            <span className="ml-1 text-xs text-muted">(Sapo)</span>
+          )}
+        </span>
       ),
     },
     {
@@ -195,6 +223,14 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
           <p className="mb-2 truncate text-sm text-muted">
             {product.name} — <span className="font-mono">{product.sku}</span>
           </p>
+          {pushRun.activeRun && (
+            <Alert
+              type="info"
+              showIcon
+              className="mb-2"
+              message={`Đang đồng bộ… ${pushRun.doneSites}/${pushRun.activeRun.expected} site hoàn tất.`}
+            />
+          )}
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Input
               size="small"

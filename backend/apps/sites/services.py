@@ -1,7 +1,8 @@
-"""Service layer for the sites app: view → service → model/WooClient.
+"""Service layer for the sites app: view → service → model/platform client.
 
 Handles secret encryption and the on-demand connection test. Views/serializers
-stay thin; all WooCommerce traffic goes through ``WooClient``.
+stay thin; all remote traffic goes through the platform client built by
+``client_for_site`` (``WooClient`` or ``SapoClient``).
 """
 
 import logging
@@ -19,6 +20,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.integrations.sapo import SapoClient
 from apps.integrations.woocommerce import WooClient
 
 from .crypto import decrypt_secret, encrypt_secret
@@ -44,6 +46,7 @@ def create_site(
     consumer_secret: str,
     hosting=None,
     is_primary: bool = False,
+    platform: str = Site.Platform.WOOCOMMERCE,
 ) -> Site:
     return Site.objects.create(
         name=name,
@@ -52,6 +55,7 @@ def create_site(
         consumer_secret_enc=encrypt_secret(consumer_secret),
         hosting=hosting,
         is_primary=is_primary,
+        platform=platform,
     )
 
 
@@ -70,12 +74,36 @@ def update_site(site: Site, *, consumer_secret: str | None = None, **fields) -> 
     return site
 
 
-def client_for_site(site: Site) -> WooClient:
-    """Build a WooClient with the decrypted secret (in memory only)."""
+def client_for_site(site: Site):
+    """Build the platform client with the decrypted secret (in memory only).
+
+    Dispatches on ``Site.platform``: WooCommerce sites get a ``WooClient``,
+    Sapo Web sites a ``SapoClient`` (same method surface — see
+    apps/integrations/sapo.py)."""
+    secret = decrypt_secret(site.consumer_secret_enc)
+    if site.platform == Site.Platform.SAPO:
+        # Talk to the canonical ``*.mysapo.net`` host directly once discovered
+        # (health-check persists it as ``sapo_store_host``). The storefront domain
+        # only redirects the order LIST to the canonical host — per-order admin
+        # paths (``/orders/{id}.json``, ``.../cancel.json``, ``.../transactions.json``)
+        # bounce to a logout/login flow there and lose auth (→ 502). Fall back to
+        # ``base_url`` + redirect-following for a site not yet health-checked.
+        base_url = (
+            f"https://{site.sapo_store_host}" if site.sapo_store_host else site.base_url
+        )
+        return SapoClient(
+            base_url=base_url,
+            api_key=site.consumer_key,
+            api_secret=secret,
+            status_timeout=settings.SITE_HEALTHCHECK_TIMEOUT_SECONDS,
+            throttle_seconds=settings.SAPO_THROTTLE_SECONDS,
+            max_429_retries=settings.SAPO_MAX_429_RETRIES,
+            retry_after_default=settings.SAPO_RETRY_AFTER_DEFAULT_SECONDS,
+        )
     return WooClient(
         base_url=site.base_url,
         consumer_key=site.consumer_key,
-        consumer_secret=decrypt_secret(site.consumer_secret_enc),
+        consumer_secret=secret,
         status_timeout=settings.SITE_HEALTHCHECK_TIMEOUT_SECONDS,
     )
 
@@ -90,12 +118,30 @@ def test_connection(site: Site, *, check_type: str = "manual", performed_by=None
     """
     ok = False
     detail = ""
+    resolved_host = None
     started = time.monotonic()
     try:
-        client_for_site(site).system_status()
+        client = client_for_site(site)
+        client.system_status()
         ok = True
         detail = "Kết nối thành công."
+        # SapoClient records the canonical store host it landed on (after the
+        # *.mysapo.net redirect); persist it so the order poll can dedupe
+        # storefront domains sharing one store. WooClient has no such attribute.
+        resolved_host = getattr(client, "resolved_host", None)
+    except httpx.HTTPStatusError as exc:
+        # The site answered with a non-2xx — capture status + a body snippet so
+        # the cause is visible in the UI (HealthCheckDetailModal / test toast),
+        # not just the exception class. Body is sliced on the decoded str
+        # (UTF-8 safe); prefix + 180 chars stays under detail's 255 limit.
+        status = exc.response.status_code
+        body = (exc.response.text or "")[:180]
+        detail = f"Lỗi HTTP {status}: {body}"
+        logger.error(
+            "test_connection failed site_id=%s status=%s body=%s", site.id, status, body
+        )
     except httpx.HTTPError as exc:
+        # Connect/timeout errors have no response to read.
         detail = f"Lỗi kết nối: {exc.__class__.__name__}"
         logger.error("test_connection failed site_id=%s: %s", site.id, exc)
     except Exception as exc:  # noqa: BLE001 — surface as down, but log the cause
@@ -105,7 +151,11 @@ def test_connection(site: Site, *, check_type: str = "manual", performed_by=None
 
     site.status = Site.Status.UP if ok else Site.Status.DOWN
     site.last_checked_at = timezone.now()
-    site.save(update_fields=["status", "last_checked_at", "updated_at"])
+    update_fields = ["status", "last_checked_at", "updated_at"]
+    if resolved_host and site.sapo_store_host != resolved_host:
+        site.sapo_store_host = resolved_host
+        update_fields.append("sapo_store_host")
+    site.save(update_fields=update_fields)
 
     # Lazy import: apps.monitoring.tasks imports apps.sites, so importing
     # monitoring at module load would be circular.
@@ -240,7 +290,8 @@ def import_sites_from_xlsx(file, hosting=None) -> dict:
     """Parse an uploaded .xlsx and bulk-create sites, optionally assigning every
     created site to ``hosting``.
 
-    Expected header row: name, base_url, consumer_key, consumer_secret.
+    Expected header row: name, base_url, consumer_key, consumer_secret, plus an
+    optional ``platform`` column (woocommerce | sapo; defaults to woocommerce).
     Returns ``{"created": int, "errors": [{"row": int, "error": str}]}``.
     Rows missing required data or whose base_url already exists are skipped
     with an error entry (so partial imports surface clearly).
@@ -277,7 +328,19 @@ def import_sites_from_xlsx(file, hosting=None) -> dict:
         if Site.objects.filter(base_url=data["base_url"], is_deleted=False).exists():
             errors.append({"row": idx, "error": f"base_url đã tồn tại: {data['base_url']}"})
             continue
-        create_site(**data, hosting=hosting)
+
+        platform = Site.Platform.WOOCOMMERCE
+        if "platform" in cols:
+            i = cols["platform"]
+            raw = row[i] if i < len(row) else None
+            value = str(raw).strip().lower() if raw is not None else ""
+            if value:
+                if value not in Site.Platform.values:
+                    errors.append({"row": idx, "error": f"platform không hợp lệ: {value}"})
+                    continue
+                platform = value
+
+        create_site(**data, hosting=hosting, platform=platform)
         created += 1
 
     return {"created": created, "errors": errors}

@@ -47,8 +47,9 @@ class MasterProduct(models.Model):
     weight = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     # List of image URLs: ["https://...", ...] (pushed as [{"src": url}]).
     images = models.JSONField(default=list)
-    # List of category names: ["Pin mặt trời", ...] (pushed as [{"name": n}] or, when
-    # the name is mapped to a site's woo_category_id via CategoryMapping, [{"id": n}]).
+    # List of category names: ["Pin mặt trời", ...]. Pushed as [{"id": n}] via the
+    # site's CategoryMapping — Woo ignores name-only refs, so the push creates any
+    # unmapped category on the site first (services._ensure_site_categories).
     categories = models.JSONField(default=list)
 
     # --- Type-specific data (all defaulted → simple products are unaffected) -----
@@ -198,6 +199,9 @@ class CategoryMapping(models.Model):
         db_index=True,
     )
     woo_category_id = models.BigIntegerField()
+    # Tên RAW trên site (chưa normalize) — để màn hình mapping đối chiếu được
+    # "tên trên site" vs "tên Hub". Refresh mỗi lần pull (mapping rebuild wholesale).
+    woo_name = models.CharField(max_length=255, blank=True, default="")
     last_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

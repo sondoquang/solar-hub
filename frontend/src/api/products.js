@@ -20,7 +20,15 @@ import { api } from "./client.js";
 //       body: { sites?: number[], products?: number[] }
 //   GET    /products/{id}/sync_status/        -> getProductSyncStatus (per-domain)
 //   GET    /products/categories/              -> getProductCategories (picker)
+//   GET    /products/categories/overview/     -> getCategoryOverview (stat cards)
+//   GET    /products/categories/matrix/       -> getCategoryMatrix (Hub × sites pivot)
+//       params: ?search, ?ordering, ?page, ?page_size  (response carries `sites`)
+//   GET    /products/categories/{id}/sites/   -> getCategorySiteLinks (per-category)
+//   GET    /products/categories/mappings/     -> getCategoryMappings (per-site mapping)
+//       params: ?site (bắt buộc), ?search, ?ordering, ?page, ?page_size
 //   POST   /products/categories/pull_now/     -> pullProductCategories (Woo → Hub)
+//       body: { sites?: number[] }  (bỏ trống = pull TẤT CẢ site)
+//   POST   /products/categories/clear_all/    -> clearCategorySync (reset catalog)
 
 const clean = (params = {}) =>
   Object.fromEntries(
@@ -51,15 +59,47 @@ export const syncProducts = (body = {}) =>
 export const getProductSyncStatus = (id) =>
   api.get(`/products/${id}/sync_status/`).then((r) => r.data);
 
-// Known categories for the form picker (a big page so the whole list comes back).
-export const getProductCategories = () =>
-  api
-    .get("/products/categories/", { params: { page_size: 1000 } })
-    .then((r) => r.data.results ?? r.data);
+// Known categories for the form picker. The picker needs the FULL catalog
+// (the TreeSelect filters client-side), so walk every page — a single request
+// silently truncates once the catalog outgrows the server's page-size cap.
+export const getProductCategories = async () => {
+  const all = [];
+  for (let page = 1; ; page += 1) {
+    const { data } = await api.get("/products/categories/", {
+      params: { page, page_size: 1000 },
+    });
+    all.push(...(data.results ?? data));
+    if (!data.next) break;
+  }
+  return all;
+};
 
 // Trigger the async pull of categories from the sites (Woo → Hub).
-export const pullProductCategories = () =>
-  api.post("/products/categories/pull_now/", {}).then((r) => r.data);
+// body.sites scopes the pull to those site ids; empty body = all sites.
+export const pullProductCategories = (body = {}) =>
+  api.post("/products/categories/pull_now/", clean(body)).then((r) => r.data);
+
+// Reset the category catalog (soft-delete + clear mappings/history); keeps any
+// category a live product still uses. Returns the cleared/kept counts.
+export const clearCategorySync = () =>
+  api.post("/products/categories/clear_all/").then((r) => r.data);
+
+// Per-site category mapping rows (site → Hub) for the "Danh mục" page.
+export const getCategoryMappings = (params = {}) =>
+  api.get("/products/categories/mappings/", { params: clean(params) }).then((r) => r.data);
+
+// Stat-card counts for the Tổng quan + Cây danh mục Hub tabs (independent of paging).
+export const getCategoryOverview = () =>
+  api.get("/products/categories/overview/").then((r) => r.data);
+
+// Cross-site matrix: paginated Hub categories with per-site `cells`, plus the
+// `sites` column headers — the Tổng quan tab renders one column per site.
+export const getCategoryMatrix = (params = {}) =>
+  api.get("/products/categories/matrix/", { params: clean(params) }).then((r) => r.data);
+
+// One Hub category's link state on every live site (tree-tab detail panel).
+export const getCategorySiteLinks = (id) =>
+  api.get(`/products/categories/${id}/sites/`).then((r) => r.data);
 
 const KEY = ["products"];
 const CAT_KEY = [...KEY, "categories"];
@@ -111,6 +151,46 @@ export function useProductCategories() {
   });
 }
 
+// Per-site mapping table: params (site/search/ordering/page) live in the key
+// so every change re-fetches server-side. Disabled until a site is picked.
+export function useCategoryMappings(params = {}) {
+  return useQuery({
+    queryKey: [...CAT_KEY, "mappings", params],
+    queryFn: () => getCategoryMappings(params),
+    enabled: params.site != null,
+    placeholderData: keepPreviousData,
+  });
+}
+
+// Dashboard stat cards — small, frequently shown; the pull mutation invalidates
+// CAT_KEY (which this lives under) so the cards refresh after a sync settles.
+export function useCategoryOverview() {
+  return useQuery({
+    queryKey: [...CAT_KEY, "overview"],
+    queryFn: getCategoryOverview,
+  });
+}
+
+// Cross-site matrix: params (search/ordering/page) live in the key so every
+// change re-fetches server-side; keepPreviousData avoids a flash on paging.
+export function useCategoryMatrix(params = {}) {
+  return useQuery({
+    queryKey: [...CAT_KEY, "matrix", params],
+    queryFn: () => getCategoryMatrix(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+// Per-category site links for the tree-tab detail panel; disabled until a node
+// is selected.
+export function useCategorySiteLinks(id, { enabled = true } = {}) {
+  return useQuery({
+    queryKey: [...CAT_KEY, "site-links", id],
+    queryFn: () => getCategorySiteLinks(id),
+    enabled: enabled && id != null,
+  });
+}
+
 export function useProductSyncStatus(id, { enabled = true } = {}) {
   return useQuery({
     queryKey: [...KEY, "sync_status", id],
@@ -141,7 +221,21 @@ export const useSyncProducts = () => useInvalidatingMutation(syncProducts);
 export function useSyncCategories() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: pullProductCategories,
+    mutationFn: (body) => pullProductCategories(body),
     onSettled: () => qc.invalidateQueries({ queryKey: CAT_KEY }),
+  });
+}
+
+// Clearing the catalog is synchronous (pure DB on the backend); on success
+// refresh both the category caches and the sync-report history (the run table
+// is emptied by the clear).
+export function useClearCategorySync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: clearCategorySync,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: CAT_KEY });
+      qc.invalidateQueries({ queryKey: ["sync-reports"] });
+    },
   });
 }

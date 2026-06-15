@@ -21,7 +21,15 @@ def _push_batch_size() -> int:
 
 
 @shared_task
-def poll_all_orders(status=None, site_ids=None, date_from=None, date_to=None):
+def poll_all_orders(
+    status=None,
+    site_ids=None,
+    date_from=None,
+    date_to=None,
+    run_id=None,
+    triggered_by_id=None,
+    platform=None,
+):
     """Poll orders of ONE ``status`` across sites, split into concurrent batches.
 
     Periodic (Celery Beat, every ~3 min) it runs with the default status
@@ -34,31 +42,44 @@ def poll_all_orders(status=None, site_ids=None, date_from=None, date_to=None):
     ``poll_sites_batch_task`` is dispatched per chunk, so a slow/broken site
     only holds up its own batch. The upsert is idempotent, so overlap with a
     future webhook is safe.
+
+    ``run_id`` (set by the "Đồng bộ ngay" view) groups this fan-out's per-site
+    ``SyncLog`` rows so the progress banner can poll completion; it is None for
+    the periodic beat, which then writes no SyncLog rows (a row every ~3 min per
+    site would bloat the audit table for no report). ``triggered_by_id`` is the
+    admin who clicked sync, threaded onto each row.
     """
-    from apps.orders.services import POLL_STATUS
-    from apps.sites.models import Site
+    from apps.orders.services import POLL_STATUS, sites_for_order_poll
 
     status = status or POLL_STATUS
 
-    qs = Site.objects.filter(is_deleted=False)
-    if site_ids is not None:
-        qs = qs.filter(id__in=site_ids)
-    ids = list(qs.values_list("id", flat=True))
+    # WooCommerce sites are polled individually; Sapo sites are gated by
+    # SAPO_ORDER_POLL_ENABLED and deduplicated by store (several storefront
+    # domains can share one Sapo backend). ``platform`` (set by the per-platform
+    # "Đồng bộ ngay" screens) restricts the run to one platform. See
+    # sites_for_order_poll.
+    ids = sites_for_order_poll(site_ids, platform=platform)
 
     size = _batch_size()
     batches = [ids[i : i + size] for i in range(0, len(ids), size)]
     for chunk in batches:
-        poll_sites_batch_task.delay(chunk, status, date_from, date_to)
-    return {"status": status, "sites": len(ids), "batches": len(batches)}
+        poll_sites_batch_task.delay(
+            chunk, status, date_from, date_to, run_id=run_id, triggered_by_id=triggered_by_id
+        )
+    return {"status": status, "sites": len(ids), "batches": len(batches), "run_id": run_id}
 
 
 @shared_task
-def poll_sites_batch_task(site_ids, status, date_from=None, date_to=None):
+def poll_sites_batch_task(
+    site_ids, status, date_from=None, date_to=None, run_id=None, triggered_by_id=None
+):
     """Poll one status for a batch of sites, ``ORDER_POLL_BATCH_SIZE`` at a time.
 
     Mirrors apps/sites/services.check_hosting: a ThreadPoolExecutor caps how
     many sites hit the network at once. ``poll_site`` swallows network errors
     into its result (never raises), so one bad site does not abort the batch.
+    ``run_id``/``triggered_by_id`` are threaded to ``poll_site`` so each site's
+    outcome is logged for the progress banner (manual runs only).
     """
     from apps.orders import services
     from apps.sites.models import Site
@@ -69,7 +90,14 @@ def poll_sites_batch_task(site_ids, status, date_from=None, date_to=None):
 
     def _poll(site):
         try:
-            return services.poll_site(site, status, date_from=date_from, date_to=date_to)
+            return services.poll_site(
+                site,
+                status,
+                date_from=date_from,
+                date_to=date_to,
+                run_id=run_id,
+                triggered_by_id=triggered_by_id,
+            )
         finally:
             connection.close()
 
@@ -79,7 +107,7 @@ def poll_sites_batch_task(site_ids, status, date_from=None, date_to=None):
 
 
 @shared_task
-def push_all_products(site_ids=None, master_ids=None):
+def push_all_products(site_ids=None, master_ids=None, run_id=None, triggered_by_id=None):
     """Push the catalog to sites, split into concurrent batches ("Sync all").
 
     The "Đồng bộ ngay" UI (or admin action) triggers this. ``site_ids`` scopes
@@ -88,6 +116,10 @@ def push_all_products(site_ids=None, master_ids=None):
     batches of ``PRODUCT_PUSH_BATCH_SIZE`` and one ``push_products_batch_task`` is
     dispatched per chunk, so a slow/broken site only holds up its own batch. The
     push is idempotent (upsert on ``(master, site)``), so re-running is safe.
+
+    ``run_id`` (set by the "Đồng bộ ngay" view) groups this fan-out's per-site
+    ``SyncLog`` rows so the progress banner can poll completion; ``triggered_by_id``
+    is the admin who clicked sync. Both are threaded onto each row.
     """
     from apps.sites.models import Site
 
@@ -99,12 +131,14 @@ def push_all_products(site_ids=None, master_ids=None):
     size = _push_batch_size()
     batches = [ids[i : i + size] for i in range(0, len(ids), size)]
     for chunk in batches:
-        push_products_batch_task.delay(chunk, master_ids)
-    return {"sites": len(ids), "batches": len(batches)}
+        push_products_batch_task.delay(
+            chunk, master_ids, run_id=run_id, triggered_by_id=triggered_by_id
+        )
+    return {"sites": len(ids), "batches": len(batches), "run_id": run_id}
 
 
 @shared_task
-def push_products_batch_task(site_ids, master_ids=None):
+def push_products_batch_task(site_ids, master_ids=None, run_id=None, triggered_by_id=None):
     """Push the catalog to a batch of sites, ``PRODUCT_PUSH_BATCH_SIZE`` at a time.
 
     Mirrors poll_sites_batch_task / apps/sites/services.check_hosting: a
@@ -112,6 +146,8 @@ def push_products_batch_task(site_ids, master_ids=None):
     worker closes its DB connection on the way out (threads get their own
     connection). ``push_products_to_site`` swallows network errors into its
     result (never raises), so one bad site does not abort the batch.
+    ``run_id``/``triggered_by_id`` are threaded onto each site's ``SyncLog`` row
+    for the progress banner.
     """
     from apps.catalog import services
     from apps.catalog.models import MasterProduct
@@ -127,7 +163,9 @@ def push_products_batch_task(site_ids, master_ids=None):
 
     def _push(site):
         try:
-            return services.push_products_to_site(site, masters=masters)
+            return services.push_products_to_site(
+                site, masters=masters, run_id=run_id, triggered_by_id=triggered_by_id
+            )
         finally:
             connection.close()
 
@@ -137,7 +175,7 @@ def push_products_batch_task(site_ids, master_ids=None):
 
 
 @shared_task
-def pull_all_categories(site_ids=None, run_id=None):
+def pull_all_categories(site_ids=None, run_id=None, triggered_by_id=None):
     """Pull product categories from sites into the Hub, in concurrent batches.
 
     Mirrors ``poll_all_orders``: live sites are chunked into batches of
@@ -148,6 +186,8 @@ def pull_all_categories(site_ids=None, run_id=None):
     ``run_id`` groups every per-site ``SyncLog`` row of this fan-out (one user
     click = one run, the unit of the category-run report). The view generates
     it so the API can return it; generated here when absent (shell/beat calls).
+    ``triggered_by_id`` is the admin who clicked sync (threaded onto each
+    SyncLog for the "Người chạy" column); null for periodic/beat runs.
 
     A full-site run (``site_ids=None``) acquires a Redis cache lock for
     ``_PULL_CATEGORIES_LOCK_TTL`` seconds so rapid re-triggers (user clicking
@@ -172,12 +212,12 @@ def pull_all_categories(site_ids=None, run_id=None):
     size = _batch_size()
     batches = [ids[i : i + size] for i in range(0, len(ids), size)]
     for chunk in batches:
-        pull_categories_batch_task.delay(chunk, run_id=run_id)
+        pull_categories_batch_task.delay(chunk, run_id=run_id, triggered_by_id=triggered_by_id)
     return {"sites": len(ids), "batches": len(batches), "run_id": run_id}
 
 
 @shared_task
-def pull_categories_batch_task(site_ids, run_id=None):
+def pull_categories_batch_task(site_ids, run_id=None, triggered_by_id=None):
     """Pull categories for a batch of sites, ``ORDER_POLL_BATCH_SIZE`` at a time.
 
     Mirrors poll_sites_batch_task: a ThreadPoolExecutor caps how many sites hit
@@ -194,7 +234,9 @@ def pull_categories_batch_task(site_ids, run_id=None):
 
     def _pull(site):
         try:
-            return services.pull_categories_for_site(site, run_id=run_id)
+            return services.pull_categories_for_site(
+                site, run_id=run_id, triggered_by_id=triggered_by_id
+            )
         finally:
             connection.close()
 

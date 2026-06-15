@@ -16,11 +16,13 @@ def test_push_all_products_chunks_into_batches(monkeypatch):
     monkeypatch.setattr(
         tasks.push_products_batch_task,
         "delay",
-        lambda chunk, master_ids: dispatched.append((chunk, master_ids)),
+        lambda chunk, master_ids, run_id=None, triggered_by_id=None: dispatched.append(
+            (chunk, master_ids)
+        ),
     )
 
     result = tasks.push_all_products(master_ids=[7, 8])
-    assert result == {"sites": 5, "batches": 3}
+    assert result == {"sites": 5, "batches": 3, "run_id": None}
     assert [len(c) for c, _ in dispatched] == [2, 2, 1]
     assert sorted(i for c, _ in dispatched for i in c) == ids
     assert all(m == [7, 8] for _, m in dispatched)
@@ -38,11 +40,13 @@ def test_push_all_products_filters_to_selected_sites(monkeypatch):
     monkeypatch.setattr(
         tasks.push_products_batch_task,
         "delay",
-        lambda chunk, master_ids: dispatched.append((chunk, master_ids)),
+        lambda chunk, master_ids, run_id=None, triggered_by_id=None: dispatched.append(
+            (chunk, master_ids)
+        ),
     )
 
     result = tasks.push_all_products(site_ids=[keep.id])
-    assert result == {"sites": 1, "batches": 1}
+    assert result == {"sites": 1, "batches": 1, "run_id": None}
     assert dispatched == [([keep.id], None)]
 
 
@@ -53,7 +57,7 @@ def test_push_products_batch_task_pushes_each_site(monkeypatch):
     s1, s2 = SiteFactory(), SiteFactory()
     calls = []
 
-    def _fake_push(site, masters=None):
+    def _fake_push(site, masters=None, run_id=None, triggered_by_id=None):
         calls.append((site.id, masters))
         return {"site_id": site.id, "created": 1}
 

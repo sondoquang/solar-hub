@@ -3,9 +3,9 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { api } from "./client.js";
 
 // Endpoints (Hub backend only):
-//   GET    /sites/                      -> getSites / useSites (server-side paginated: ?page, ?page_size, ?ordering, ?hosting, ?status, ?is_primary, ?search)
+//   GET    /sites/                      -> getSites / useSites (server-side paginated: ?page, ?page_size, ?ordering, ?hosting, ?status, ?platform, ?is_primary, ?search)
 //   GET    /sites/stats/                -> getSiteStats / useSiteStats (global up/down/unknown counts)
-//   POST   /sites/                      -> createSite / useCreateSite
+//   POST   /sites/                      -> createSite / useCreateSite (payload includes platform: woocommerce | sapo)
 //   PATCH  /sites/{id}/                 -> updateSite / useUpdateSite
 //   DELETE /sites/{id}/                 -> deleteSite / useDeleteSite
 //   POST   /sites/{id}/test_connection/ -> testConnection / useTestConnection
@@ -36,6 +36,19 @@ export const importSitesExcel = ({ file, hosting } = {}) => {
   return api.post("/sites/import_excel/", form).then((r) => r.data);
 };
 
+// Whole fleet in one list (site pickers / sync modals): walks every page —
+// the server caps page_size at 100 and production has ~100+ sites.
+export const getAllSites = async () => {
+  const all = [];
+  let page = 1;
+  for (;;) {
+    const data = await getSites({ page, page_size: 100 });
+    all.push(...(data.results ?? []));
+    if (!data.next) return all;
+    page += 1;
+  }
+};
+
 const SITES_KEY = ["sites"];
 
 // Server-side pagination/sort/filter: the query key carries the params so
@@ -46,6 +59,16 @@ export function useSites(params = {}) {
     queryKey: [...SITES_KEY, "list", params],
     queryFn: () => getSites(params),
     placeholderData: keepPreviousData,
+  });
+}
+
+// Flat list of every site (no pagination) for pickers; cached 1 phút.
+export function useAllSites({ enabled = true } = {}) {
+  return useQuery({
+    queryKey: [...SITES_KEY, "all"],
+    queryFn: getAllSites,
+    enabled,
+    staleTime: 60_000,
   });
 }
 

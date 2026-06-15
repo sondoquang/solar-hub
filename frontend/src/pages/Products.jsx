@@ -1,4 +1,5 @@
-import { Button, Input, Modal, Popconfirm, Select } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Input, Modal, Popconfirm, Select } from "antd";
 import { Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
@@ -11,6 +12,7 @@ import {
   useSyncProducts,
   useUpdateProduct,
 } from "../api/products.js";
+import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
@@ -71,8 +73,25 @@ export default function Products() {
 
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
+  const savePending = createProduct.isPending || updateProduct.isPending;
   const deleteProduct = useDeleteProduct();
   const sync = useSyncProducts();
+  const qc = useQueryClient();
+
+  // "Đang đồng bộ sản phẩm… X/Y site" banner: poll the push run until every
+  // targeted site reports, then refetch so mappings/last_synced_at refresh.
+  const productRun = useSyncRunProgress(SYNC_OPS.products, {
+    onFinish: ({ finished, timedOut, expected, errorCount }) => {
+      if (timedOut) {
+        toast("Đồng bộ chạy lâu hơn dự kiến — kiểm tra lại sau.", { icon: "⏳" });
+      } else if (errorCount) {
+        toast(`Đồng bộ xong, ${errorCount}/${expected} site lỗi.`, { icon: "⚠️" });
+      } else if (finished) {
+        toast.success(`Đã đồng bộ sản phẩm xuống ${expected} site.`);
+      }
+      qc.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
 
   const rows = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -114,7 +133,10 @@ export default function Products() {
     sync.mutate(
       {},
       {
-        onSuccess: () => toast.success("Đã kích hoạt đồng bộ sản phẩm xuống các site."),
+        onSuccess: (res) => {
+          toast.success("Đã kích hoạt đồng bộ sản phẩm xuống các site.");
+          productRun.start({ runId: res.run_id, expected: res.expected });
+        },
         onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
       }
     );
@@ -287,6 +309,15 @@ export default function Products() {
         </div>
       </div>
 
+      {productRun.activeRun && (
+        <Alert
+          type="info"
+          showIcon
+          className="mb-3"
+          message={`Đang đồng bộ sản phẩm… ${productRun.doneSites}/${productRun.activeRun.expected} site hoàn tất.`}
+        />
+      )}
+
       <div className="mb-3">
         <ProductStats stats={stats ?? {}} loading={statsLoading} />
       </div>
@@ -364,16 +395,27 @@ export default function Products() {
         destroyOnClose
         width="90vw"
         style={{ top: 10 }}
-        styles={{ body: { maxHeight: "calc(100vh - 110px)", overflowY: "auto", padding: "20px 24px" } }}
+        styles={{ body: { maxHeight: "calc(100vh - 170px)", overflowY: "auto", padding: "20px 24px" } }}
         title={editing ? "Sửa sản phẩm" : "Thêm sản phẩm"}
-        footer={null}
         maskClosable={false}
+        footer={
+          <>
+            <Button onClick={closeForm}>Hủy</Button>
+            <Button
+              type="primary"
+              htmlType="submit"
+              form="product-register-form"
+              loading={savePending}
+            >
+              {savePending ? "Đang lưu…" : "Lưu sản phẩm"}
+            </Button>
+          </>
+        }
       >
         <ProductRegisterForm
+          formId="product-register-form"
           defaultValues={editing ?? undefined}
           onSubmit={handleSubmit}
-          onCancel={closeForm}
-          pending={createProduct.isPending || updateProduct.isPending}
         />
       </Modal>
 

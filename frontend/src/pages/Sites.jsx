@@ -1,4 +1,4 @@
-import { Button, Input, Modal, Popconfirm, Select, Tooltip } from "antd";
+import { Button, Input, Modal, Popconfirm, Select, Tag, Tooltip } from "antd";
 import {
   ClipboardCheck,
   ExternalLink,
@@ -44,6 +44,7 @@ export default function Sites() {
   const [ordering, setOrdering] = useState(null); // null | "name" | "-name"
   const [hostingFilter, setHostingFilter] = useState("all"); // "all" | "none" | hosting id
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "up" | "down" | "unknown"
+  const [platformFilter, setPlatformFilter] = useState("all"); // "all" | "woocommerce" | "sapo"
   const [primaryFilter, setPrimaryFilter] = useState("all"); // "all" | "true" | "false"
   const [searchInput, setSearchInput] = useState(""); // raw text in the input
   const [search, setSearch] = useState(""); // debounced term sent to the backend
@@ -67,6 +68,7 @@ export default function Sites() {
     ordering: ordering ?? undefined,
     hosting: hostingFilter === "all" ? undefined : hostingFilter,
     status: statusFilter === "all" ? undefined : statusFilter,
+    platform: platformFilter === "all" ? undefined : platformFilter,
     is_primary: primaryFilter === "all" ? undefined : primaryFilter,
     search: search || undefined,
   });
@@ -192,6 +194,12 @@ export default function Sites() {
             <Globe size={15} />
           </span>
           <span className="truncate">{name}</span>
+          <Tag
+            color={site.platform === "sapo" ? "green" : "purple"}
+            className="!mr-0 shrink-0"
+          >
+            {site.platform === "sapo" ? "Sapo" : "Woo"}
+          </Tag>
           <Tooltip
             title={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
           >
@@ -303,6 +311,7 @@ export default function Sites() {
   const filterActive =
     hostingFilter !== "all" ||
     statusFilter !== "all" ||
+    platformFilter !== "all" ||
     primaryFilter !== "all" ||
     search !== "";
 
@@ -359,6 +368,22 @@ export default function Sites() {
               { value: "up", label: "Hoạt động" },
               { value: "down", label: "Không hoạt động" },
               { value: "unknown", label: "Chưa kiểm tra" },
+            ]}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted">Nền tảng:</span>
+          <Select
+            value={platformFilter}
+            onChange={(v) => {
+              setPlatformFilter(v);
+              setPage(1);
+            }}
+            className="min-w-40"
+            options={[
+              { value: "all", label: "Tất cả nền tảng" },
+              { value: "woocommerce", label: "WooCommerce" },
+              { value: "sapo", label: "Sapo Web" },
             ]}
           />
         </div>
@@ -439,7 +464,7 @@ export default function Sites() {
                   title={filterActive ? "Không có website phù hợp" : "Chưa có website"}
                   hint={
                     filterActive
-                      ? "Thử đổi từ khóa tìm kiếm hoặc các bộ lọc trạng thái / loại trang / hosting."
+                      ? "Thử đổi từ khóa tìm kiếm hoặc các bộ lọc trạng thái / nền tảng / loại trang / hosting."
                       : "Bấm “Thêm website” hoặc import Excel."
                   }
                 />

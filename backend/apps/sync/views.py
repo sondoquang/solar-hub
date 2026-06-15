@@ -1,11 +1,15 @@
-"""Sync report API — read-only view over category-pull runs.
+"""Sync report API — read-only views over fan-out runs.
 
 - ``GET /api/sync/category-runs/``               — paginated run list (newest first).
 - ``GET /api/sync/category-runs/{run_id}/``      — per-site detail incl. category snapshots.
 - ``GET /api/sync/category-runs/{run_id}/export/`` — the run as an .xlsx report.
+- ``GET /api/sync/run-progress/{run_id}/?operation=`` — live "X/Y sites done"
+  for a freshly-triggered run (orders / products / categories), polled by the
+  progress banner until it completes.
 
-Rows are written by ``apps.catalog.services.pull_categories_for_site``; this
-app only reads them. Runs predating the ``run_id`` field never appear here.
+Rows are written by the per-site services (``pull_categories_for_site``,
+``push_products_to_site``, ``poll_site``); this app only reads them. Runs
+predating the ``run_id`` field never appear here.
 """
 
 from django.http import HttpResponse
@@ -38,10 +42,17 @@ class CategorySyncRunViewSet(viewsets.ViewSet):
     def list(self, request):
         paginator = StandardPagination()
         page = paginator.paginate_queryset(
-            services.category_runs_queryset(), request, view=self
+            services.category_runs_queryset(request.query_params), request, view=self
         )
         data = CategoryRunListSerializer(services.summarize_runs(page), many=True).data
         return paginator.get_paginated_response(data)
+
+    @action(detail=False, methods=["get"])
+    def stats(self, request):
+        """Stat-card counts (total / success / partial / error + last run) over a
+        window (default 30 days). Honours the same site/date/search filters as
+        the list so the cards track the active filter."""
+        return Response(services.category_run_stats(request.query_params))
 
     def retrieve(self, request, pk=None):
         detail = self._detail_or_404(pk)
@@ -56,3 +67,18 @@ class CategorySyncRunViewSet(viewsets.ViewSet):
         filename = services.run_export_filename(detail)
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+
+class RunProgressViewSet(viewsets.ViewSet):
+    """Live progress of a fan-out run for the polling banner — ``done``/``expected``
+    where ``expected`` is the site count the trigger endpoint returned. Generic
+    over ``operation`` (orders / products / categories); unknown operations 404."""
+
+    # Constrain the lookup to a UUID so arbitrary strings 404 at the router.
+    lookup_value_regex = r"[0-9a-fA-F-]{36}"
+
+    def retrieve(self, request, pk=None):
+        operation = request.query_params.get("operation")
+        if operation not in services.PROGRESS_OPERATIONS:
+            raise NotFound("Loại đồng bộ không hợp lệ.")
+        return Response(services.run_progress(pk, operation))

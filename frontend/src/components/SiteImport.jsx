@@ -6,7 +6,8 @@ import { hostingLabel } from "../api/hostings.js";
 
 // Bulk import from .xlsx. The file is parsed on the backend (SSOT). The user
 // first picks a target hosting (optional) and a file in a modal, then imports.
-// Expected columns: name, base_url, consumer_key, consumer_secret.
+// Expected columns: name, base_url, consumer_key, consumer_secret, plus an
+// optional platform column (woocommerce | sapo; defaults to woocommerce).
 export default function SiteImport({ onImport, pending, hostings = [] }) {
   const [open, setOpen] = useState(false);
   const [hosting, setHosting] = useState(null);
@@ -44,7 +45,9 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
             Cột yêu cầu:{" "}
             <span className="font-medium text-ink">
               name, base_url, consumer_key, consumer_secret
-            </span>
+            </span>{" "}
+            — tùy chọn: <span className="font-medium text-ink">platform</span>{" "}
+            (woocommerce | sapo)
           </p>
         </div>
         <Button type="primary" ghost className="ml-auto" onClick={() => setOpen(true)}>

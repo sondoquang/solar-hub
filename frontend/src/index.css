@@ -21,15 +21,29 @@ body {
   background: var(--color-surface);
 }
 
-/* NProgress top loading bar — recolor from its default blue to solar amber. */
+/* NProgress loading bar — recolored to solar amber. It mounts inside the
+   topbar (its `parent`), so nprogress.css switches the bar to position:absolute
+   relative to that header: left:0 lands at the sidebar's right edge and the
+   width spans the content column. Pin it to the header's bottom edge instead of
+   the default top so it reads as a thin underline beneath the search bar. */
 #nprogress .bar {
   height: 3px;
   background: var(--color-brand);
-}
-#nprogress .peg {
+  /* Round both ends so the leading/trailing edges read as a polished pill. */
+  border-radius: 9999px;
+  /* Glow softly while loading, without the bar's own backdrop bleeding upward. */
   box-shadow:
-    0 0 10px var(--color-brand),
-    0 0 5px var(--color-brand);
+    0 0 10px color-mix(in srgb, var(--color-brand) 70%, transparent),
+    0 0 4px color-mix(in srgb, var(--color-brand) 50%, transparent);
+}
+#app-topbar #nprogress .bar {
+  top: auto;
+  bottom: 0;
+}
+/* The peg is NProgress's diagonal trailing streak — it bleeds above the bar as a
+   smudge. We carry the glow on the bar itself, so hide the peg entirely. */
+#nprogress .peg {
+  display: none;
 }
 
 /* Reset only NATIVE buttons (nav/layout chrome). Exclude antd's `.ant-btn` —

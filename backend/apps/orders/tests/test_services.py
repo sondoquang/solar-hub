@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from apps.integrations import sapo
 from apps.orders import services
 from apps.orders.models import Order
 from apps.sites.tests.factories import SiteFactory
@@ -50,8 +51,125 @@ def test_normalize_order_maps_fields():
     assert data["date_modified_woo"].day == 2
 
 
+def test_normalize_order_consumes_sapo_mapped_payload():
+    """Cross-module contract: a Sapo order mapped to the Woo shape by
+    ``SapoClient._sapo_order_to_woo`` must be fully consumable here, so the poll
+    and spam classifier work on Sapo sites with no Sapo-specific branch."""
+    site = SiteFactory.build()
+    raw = sapo._sapo_order_to_woo(
+        {
+            "id": 9001,
+            "name": "#SP-9001",
+            "status": "open",
+            "currency": "VND",
+            "total_price": "500000.00",
+            "created_on": "2026-06-01T03:00:00Z",
+            "modified_on": "2026-06-02T05:00:00Z",
+            "email": "khach@example.com",
+            "note": "Gọi trước khi giao",
+            "customer": {"first_name": "Văn", "last_name": "An", "phone": "0911222333"},
+            "billing_address": {"address1": "12 Lê Lợi", "province": "Đà Nẵng"},
+            "line_items": [
+                {"sku": "PIN-100", "title": "Pin 100W", "quantity": 2, "price": "150000"}
+            ],
+        }
+    )
+    data = services.normalize_order(site, raw)
+    assert data["status"] == "processing"  # open → processing
+    assert data["customer_name"] == "Văn An"
+    assert data["customer_phone"] == "0911222333"
+    assert data["customer_email"] == "khach@example.com"
+    assert "Lê Lợi" in data["shipping_address"]
+    assert data["customer_note"] == "Gọi trước khi giao"
+    assert data["line_items"] == [
+        {"sku": "PIN-100", "name": "Pin 100W", "quantity": 2, "total": "300000.0"}
+    ]
+    assert data["date_created_woo"].year == 2026
+    assert data["date_modified_woo"].day == 2
+
+
 @pytest.mark.django_db
-def test_upsert_order_is_idempotent():
+def test_sites_for_order_poll_excludes_sapo_when_disabled(settings):
+    from apps.sites.models import Site
+
+    settings.SAPO_ORDER_POLL_ENABLED = False
+    woo = SiteFactory()
+    SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    assert services.sites_for_order_poll() == [woo.id]
+
+
+@pytest.mark.django_db
+def test_sites_for_order_poll_dedupes_sapo_by_store_host(settings):
+    """Several Sapo storefront domains resolving to one mysapo host = one store
+    (even with different API keys) → only the lowest-id site is polled."""
+    from apps.sites.models import Site
+
+    settings.SAPO_ORDER_POLL_ENABLED = True
+    woo = SiteFactory()
+    # store A: two domains, DIFFERENT keys, same resolved host → polled once.
+    a1 = SiteFactory(
+        platform=Site.Platform.SAPO, consumer_key="k1", sapo_store_host="a.mysapo.net"
+    )
+    SiteFactory(
+        platform=Site.Platform.SAPO, consumer_key="k2", sapo_store_host="a.mysapo.net"
+    )
+    # store B: a distinct host → its own representative.
+    b1 = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="b.mysapo.net")
+
+    result = services.sites_for_order_poll()
+    assert woo.id in result
+    assert a1.id in result  # lowest-id of store A
+    assert b1.id in result
+    assert len([i for i in result if i in {a1.id, b1.id}]) == 2
+    assert len(result) == 3
+
+
+@pytest.mark.django_db
+def test_sites_for_order_poll_platform_woocommerce_excludes_sapo(settings):
+    """``platform="woocommerce"`` polls only Woo sites even when the Sapo gate is
+    on — the WooCommerce "Đồng bộ ngay" screen must never cross-pull Sapo."""
+    from apps.sites.models import Site
+
+    settings.SAPO_ORDER_POLL_ENABLED = True
+    woo = SiteFactory()
+    SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    assert services.sites_for_order_poll(platform="woocommerce") == [woo.id]
+
+
+@pytest.mark.django_db
+def test_sites_for_order_poll_platform_sapo_excludes_woo(settings):
+    """``platform="sapo"`` polls only Sapo sites (still gated + deduped)."""
+    from apps.sites.models import Site
+
+    settings.SAPO_ORDER_POLL_ENABLED = True
+    SiteFactory()  # woo — must not appear
+    sapo = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    assert services.sites_for_order_poll(platform="sapo") == [sapo.id]
+
+
+@pytest.mark.django_db
+def test_sites_for_order_poll_platform_sapo_respects_gate(settings):
+    """``platform="sapo"`` while the gate is off yields nothing (the pause switch
+    still wins over an explicit platform scope)."""
+    from apps.sites.models import Site
+
+    settings.SAPO_ORDER_POLL_ENABLED = False
+    SiteFactory()
+    SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    assert services.sites_for_order_poll(platform="sapo") == []
+
+
+@pytest.mark.django_db
+def test_sites_for_order_poll_unresolved_host_not_merged(settings):
+    """Sapo sites with no resolved host yet must each be polled (never merged on
+    a shared empty host) so orders aren't silently dropped before health-check."""
+    from apps.sites.models import Site
+
+    settings.SAPO_ORDER_POLL_ENABLED = True
+    s1 = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="")
+    s2 = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="")
+    result = services.sites_for_order_poll()
+    assert s1.id in result and s2.id in result
     site = SiteFactory()
     order1, created1 = services.upsert_order(site, _woo_order(order_id=55))
     order2, created2 = services.upsert_order(
@@ -77,12 +195,14 @@ class _FakeClient:
         after=None,
         before=None,
         modified_after=None,
+        financial_status=None,
     ):
         if self._capture is not None:
             self._capture["status"] = status
             self._capture["after"] = after
             self._capture["before"] = before
             self._capture["modified_after"] = modified_after
+            self._capture["financial_status"] = financial_status
         return self._orders
 
 
@@ -194,6 +314,60 @@ def test_poll_site_swallows_network_error(monkeypatch):
     assert result["error"] == "ConnectError"
     assert result["fetched"] == 0
     assert Order.objects.filter(site=site).count() == 0
+
+
+@pytest.mark.django_db
+def test_poll_site_logs_only_when_run_id_set(monkeypatch):
+    """The periodic poll (run_id=None) writes no SyncLog — a row every ~3 min per
+    site would bloat the audit table — but a manual run (run_id set) records each
+    site's outcome for the progress banner."""
+    import uuid
+
+    from apps.sync.models import SyncLog
+
+    site = SiteFactory()
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeClient([_woo_order(order_id=1)]),
+    )
+
+    # Periodic poll: no run_id → no audit row.
+    services.poll_site(site, "processing")
+    assert not SyncLog.objects.filter(operation=services.POLL_OPERATION).exists()
+
+    # Manual run: one SUCCESS row stamped with the run.
+    run_id = uuid.uuid4()
+    services.poll_site(site, "processing", run_id=run_id, triggered_by_id=None)
+    log = SyncLog.objects.get(operation=services.POLL_OPERATION, run_id=run_id)
+    assert log.status == SyncLog.Status.SUCCESS
+    assert log.started_at is not None
+    assert log.detail["status_polled"] == "processing"
+
+
+@pytest.mark.django_db
+def test_poll_site_logs_error_row_for_tracked_run(monkeypatch):
+    """A failed site in a tracked run still writes a row (ERROR) so the banner
+    counts it as finished and the run can complete."""
+    import uuid
+
+    from apps.sync.models import SyncLog
+
+    site = SiteFactory()
+
+    def _boom(s):
+        class _C:
+            def list_orders(self, **kw):
+                raise httpx.ConnectError("down")
+
+        return _C()
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    run_id = uuid.uuid4()
+    services.poll_site(site, "processing", run_id=run_id)
+
+    log = SyncLog.objects.get(operation=services.POLL_OPERATION, run_id=run_id)
+    assert log.status == SyncLog.Status.ERROR
+    assert log.error == "ConnectError"
 
 
 class _FakeWriteClient:
@@ -309,6 +483,154 @@ def test_mark_order_cancelled_rejects_terminal(monkeypatch, status):
     monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
     with pytest.raises(services.InvalidStatusTransition):
         services.mark_order_cancelled(order)
+
+
+# --- Payment status (Sapo) ---------------------------------------------------
+
+
+def test_normalize_order_maps_financial_status_to_payment_status():
+    site = SiteFactory.build()
+    raw = sapo._sapo_order_to_woo(
+        {"id": 1, "status": "open", "financial_status": "pending", "total_price": "1"}
+    )
+    assert services.normalize_order(site, raw)["payment_status"] == "pending"
+
+
+def test_normalize_order_payment_status_blank_for_woo():
+    # A WooCommerce payload has no financial_status → payment_status stays "".
+    site = SiteFactory.build()
+    assert services.normalize_order(site, _woo_order())["payment_status"] == ""
+
+
+@pytest.mark.django_db
+def test_poll_site_filters_unpaid_for_sapo(monkeypatch):
+    from apps.sites.models import Site
+
+    site = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    capture = {}
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeClient([], capture=capture),
+    )
+    services.poll_site(site, "processing")
+    assert capture["financial_status"] == "unpaid"
+
+
+@pytest.mark.django_db
+def test_poll_site_no_payment_filter_for_woo(monkeypatch):
+    site = SiteFactory()  # platform defaults to WooCommerce
+    capture = {}
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakeClient([], capture=capture),
+    )
+    services.poll_site(site, "processing")
+    assert capture["financial_status"] is None
+
+
+class _FakePaidClient:
+    """A SapoClient stand-in for mark_order_paid: records the call and returns
+    the order Woo-shaped with financial_status=paid."""
+
+    def __init__(self, raw, *, capture=None):
+        self._raw = raw
+        self._capture = capture
+
+    def mark_order_paid(self, woo_order_id, *, amount):
+        if self._capture is not None:
+            self._capture["woo_order_id"] = woo_order_id
+            self._capture["amount"] = amount
+        return {**self._raw, "financial_status": "paid"}
+
+
+@pytest.mark.django_db
+def test_mark_order_paid_records_transaction_and_syncs(monkeypatch):
+    from apps.orders.tests.factories import OrderFactory
+    from apps.sites.models import Site
+
+    site = SiteFactory(platform=Site.Platform.SAPO)
+    order = OrderFactory(
+        site=site, woo_order_id=44, status="processing",
+        payment_status="pending", total="409.94",
+    )
+    capture = {}
+    raw = sapo._sapo_order_to_woo(
+        {"id": 44, "status": "open", "total_price": "409.94", "financial_status": "paid"}
+    )
+    monkeypatch.setattr(
+        "apps.sites.services.client_for_site",
+        lambda s: _FakePaidClient(raw, capture=capture),
+    )
+
+    result = services.mark_order_paid(order)
+    assert result.payment_status == "paid"
+    # Amount sent to Sapo is the order total as a string.
+    assert capture == {"woo_order_id": 44, "amount": "409.94"}
+    result.refresh_from_db()
+    assert result.payment_status == "paid"
+
+
+@pytest.mark.django_db
+def test_mark_order_paid_rejects_non_sapo(monkeypatch):
+    from apps.orders.tests.factories import OrderFactory
+
+    order = OrderFactory(payment_status="pending")  # WooCommerce site
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("client must not be built for a non-Sapo order")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    with pytest.raises(services.InvalidStatusTransition):
+        services.mark_order_paid(order)
+
+
+@pytest.mark.django_db
+def test_mark_order_paid_rejects_cancelled(monkeypatch):
+    from apps.orders.tests.factories import OrderFactory
+    from apps.sites.models import Site
+
+    site = SiteFactory(platform=Site.Platform.SAPO)
+    order = OrderFactory(site=site, status="cancelled", payment_status="pending")
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("client must not be built for a cancelled order")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    with pytest.raises(services.InvalidStatusTransition):
+        services.mark_order_paid(order)
+
+
+@pytest.mark.django_db
+def test_mark_order_paid_rejects_already_paid(monkeypatch):
+    from apps.orders.tests.factories import OrderFactory
+    from apps.sites.models import Site
+
+    site = SiteFactory(platform=Site.Platform.SAPO)
+    order = OrderFactory(site=site, status="processing", payment_status="paid")
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("client must not be built for an already-paid order")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    with pytest.raises(services.InvalidStatusTransition):
+        services.mark_order_paid(order)
+
+
+@pytest.mark.django_db
+def test_list_orders_qs_filters_by_platform_and_payment_status():
+    from apps.orders.tests.factories import OrderFactory
+    from apps.sites.models import Site
+
+    woo = SiteFactory()
+    sapo_site = SiteFactory(platform=Site.Platform.SAPO)
+    OrderFactory(site=woo, payment_status="")
+    unpaid = OrderFactory(site=sapo_site, payment_status="pending")
+    OrderFactory(site=sapo_site, payment_status="paid")
+
+    qs = services.list_orders_qs(
+        Order.objects.all(), {"platform": "sapo", "payment_status": "unpaid"}
+    )
+    assert list(qs.values_list("id", flat=True)) == [unpaid.id]
 
 
 @pytest.mark.django_db

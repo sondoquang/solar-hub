@@ -50,6 +50,19 @@ export function timeAgo(value) {
   return formatDate(value);
 }
 
+// Wall-clock duration in seconds → "mm:ss" (under an hour) or "hh:mm:ss".
+// Used by the category sync-history "Thời gian" column.
+export function formatDuration(seconds) {
+  const n = Number(seconds);
+  if (seconds == null || Number.isNaN(n) || n < 0) return "—";
+  const total = Math.round(n);
+  const s = total % 60;
+  const m = Math.floor(total / 60) % 60;
+  const h = Math.floor(total / 3600);
+  const pad = (x) => String(x).padStart(2, "0");
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
 // Response time: sub-second as "256 ms", ≥1s as "1.25 s".
 export function formatResponseTime(ms) {
   const n = Number(ms);

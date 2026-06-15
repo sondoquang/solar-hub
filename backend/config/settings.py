@@ -179,6 +179,20 @@ PRODUCT_PUSH_BATCH_SIZE = env.int("PRODUCT_PUSH_BATCH_SIZE", default=8)
 PRODUCT_BATCH_ITEM_LIMIT = env.int("PRODUCT_BATCH_ITEM_LIMIT", default=100)
 PRODUCT_PUSH_THROTTLE_SECONDS = env.float("PRODUCT_PUSH_THROTTLE_SECONDS", default=0.5)
 
+# Sapo Web has no batch endpoints — one "batch" becomes many sequential
+# requests, so SapoClient paces itself (THROTTLE between requests) and retries
+# HTTP 429 honoring Retry-After (RETRY_AFTER_DEFAULT when the header is absent).
+SAPO_THROTTLE_SECONDS = env.float("SAPO_THROTTLE_SECONDS", default=0.5)
+SAPO_MAX_429_RETRIES = env.int("SAPO_MAX_429_RETRIES", default=5)
+SAPO_RETRY_AFTER_DEFAULT_SECONDS = env.float("SAPO_RETRY_AFTER_DEFAULT_SECONDS", default=2.0)
+
+# Sapo order polling is OFF by default: several Sapo Site records can be storefront
+# domains of ONE Sapo backend store (same consumer_key → same store), and polling
+# each would pull the same orders once per site, inflating order/revenue counts.
+# When enabled, ``apps.orders.services.sites_for_order_poll`` dedupes Sapo sites by
+# store so each store is polled once. Keep OFF until the dedup + cleanup is done.
+SAPO_ORDER_POLL_ENABLED = env.bool("SAPO_ORDER_POLL_ENABLED", default=False)
+
 # Site health-check (periodic, apps.monitoring.tasks.check_all_sites):
 #  - TIMEOUT: per-call timeout (s) for the system_status round-trip.
 #  - OK / FAIL INTERVAL: re-check cadence. A site that passed its last check is

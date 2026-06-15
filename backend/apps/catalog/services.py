@@ -11,7 +11,7 @@ import time
 
 import httpx
 from django.conf import settings
-from django.db.models import Count, Exists, OuterRef
+from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
 from apps.sync.models import SyncLog
@@ -63,8 +63,14 @@ def normalize_category_name(value: str) -> str:
 
 def _category_refs(names, category_id_by_name: dict) -> list[dict]:
     """Map category names to Woo refs: ``{"id": woo_id}`` when the name is mapped
-    on this site, else ``{"name": name}`` so Woo creates it (the next category
-    pull then captures its id)."""
+    on this site, else ``{"name": name}``.
+
+    Woo's REST products endpoint only honours ``id`` refs — a name-only ref is
+    silently IGNORED (it does NOT create the category; only the CSV importer
+    does). The push therefore pre-creates unmapped categories on the site
+    (``_ensure_site_categories``) before payloads are built; a name-only ref
+    survives here only when that create failed, and the gap is reported in the
+    SyncLog instead of silently dropping the category."""
     refs = []
     for name in names or []:
         woo_id = category_id_by_name.get(normalize_category_name(name))
@@ -95,7 +101,9 @@ def build_product_payload(
 
     Prices/weight are sent as strings (Woo's API expects strings). Categories
     resolve to ``{"id"}`` when mapped on the site (via ``category_id_by_name``),
-    else ``{"name"}`` so Woo creates them; images as ``[{"src"}]``. Branches on
+    else ``{"name"}`` — which Woo ignores, so the push creates missing
+    categories on the site first (see ``_ensure_site_categories``); images as
+    ``[{"src"}]``. Branches on
     ``type``: ``external`` adds the affiliate link, ``grouped`` the resolved child
     ids, ``variable`` the attribute definitions (variations are pushed separately,
     not in this payload). Kept site-agnostic via the injected maps so it can be
@@ -114,10 +122,10 @@ def build_product_payload(
         "categories": _category_refs(master.categories, category_id_by_name),
         "images": [{"src": url} for url in (master.images or [])],
     }
-    if master.sale_price is not None:
-        payload["sale_price"] = str(master.sale_price)
-    if master.weight is not None:
-        payload["weight"] = str(master.weight)
+    # Always send these (empty string clears the value in Woo); omitting them
+    # would leave a stale sale_price/weight on the site after an update.
+    payload["sale_price"] = "" if master.sale_price is None else str(master.sale_price)
+    payload["weight"] = "" if master.weight is None else str(master.weight)
 
     if master.type == MasterProduct.Type.EXTERNAL:
         payload["external_url"] = master.external_url
@@ -146,10 +154,12 @@ def build_variation_payload(variation: dict) -> dict:
             for name, option in (variation.get("attributes") or {}).items()
         ],
     }
-    if variation.get("sale_price") is not None:
-        payload["sale_price"] = str(variation["sale_price"])
-    if variation.get("weight") is not None:
-        payload["weight"] = str(variation["weight"])
+    # Always send these (empty string clears the value in Woo) so removing a
+    # sale price/weight on the master propagates to already-synced variations.
+    payload["sale_price"] = (
+        "" if variation.get("sale_price") is None else str(variation["sale_price"])
+    )
+    payload["weight"] = "" if variation.get("weight") is None else str(variation["weight"])
     if variation.get("image"):
         payload["image"] = {"src": variation["image"]}
     return payload
@@ -172,6 +182,136 @@ def _category_id_map(site) -> dict:
         normalize_category_name(cm.category.name): cm.woo_category_id
         for cm in CategoryMapping.objects.filter(site=site).select_related("category")
     }
+
+
+def _save_category_mapping(site, category, woo_id, woo_name, now) -> None:
+    """Upsert one ``CategoryMapping`` from a push-side create/link.
+
+    Idempotent on ``(category, site)``. If another Hub category already claims
+    this ``woo_category_id`` on the site, the existing row is left alone — the
+    id is still used for this run's payloads, and the next category pull
+    reconciles the rows wholesale.
+    """
+    if (
+        CategoryMapping.objects.filter(site=site, woo_category_id=woo_id)
+        .exclude(category=category)
+        .exists()
+    ):
+        return
+    CategoryMapping.objects.update_or_create(
+        category=category,
+        site=site,
+        defaults={
+            "woo_category_id": woo_id,
+            "woo_name": (woo_name or "")[:255],
+            "last_synced_at": now,
+        },
+    )
+
+
+def _ensure_site_categories(site, client, masters, category_id_by_name: dict) -> dict:
+    """Create on the site every category a live master references that has no
+    ``CategoryMapping`` yet — BEFORE product payloads are built.
+
+    Woo's REST products endpoint only honours ``{"id"}`` category refs;
+    ``{"name"}`` refs are silently ignored (no auto-create). Without this step a
+    product assigned an unmapped category keeps its OLD categories on the site
+    while the batch still reports success. Unmapped Hub ancestors are created
+    too, parents first in waves, so the site's tree matches the Hub's; a
+    ``term_exists`` reject means the site already has the term (never pulled) —
+    its ``error.data.resource_id`` is mapped instead of creating a duplicate.
+
+    Mutates ``category_id_by_name`` in place with the new ids, persists the
+    ``CategoryMapping`` rows, and returns a report for the SyncLog:
+    ``{"created": [names], "linked": [names], "failed": [{name, code,
+    message}]}``. Network errors propagate to the caller (logged per-site
+    there, like the product batch itself).
+    """
+    report: dict = {"created": [], "linked": [], "failed": []}
+    missing: list[str] = []
+    for master in masters:
+        if master.is_deleted:
+            continue
+        for raw in master.categories or []:
+            name = normalize_category_name(raw)
+            if name and name not in category_id_by_name and name not in missing:
+                missing.append(name)
+    if not missing:
+        return report
+
+    # Hub rows for the missing names (a product can carry a hand-typed name no
+    # pull has seen yet), plus any unmapped ancestors so a child is created
+    # under the right parent instead of as a root.
+    pending: dict = {}
+    for name in missing:
+        category, _ = Category.objects.get_or_create(name=name)
+        pending[name] = category
+    queue = list(pending.values())
+    while queue:
+        parent = queue.pop().parent
+        if (
+            parent is not None
+            and not parent.is_deleted
+            and parent.name not in pending
+            and parent.name not in category_id_by_name
+        ):
+            pending[parent.name] = parent
+            queue.append(parent)
+
+    limit = _item_limit()
+    throttle = _throttle_seconds()
+    now = timezone.now()
+    call_index = 0
+    while pending:
+        # One wave = everything whose parent is already resolvable. A parent
+        # whose own create failed has left ``pending``, so its children are
+        # then created as roots (better than not existing at all; the next
+        # pull restores the tree once someone fixes the site).
+        wave = [c for c in pending.values() if c.parent is None or c.parent.name not in pending]
+        if not wave:  # defensive: a parent cycle would spin forever
+            report["failed"] += [
+                {"name": name, "code": "hub_parent_cycle", "message": ""} for name in pending
+            ]
+            break
+        for chunk in _chunked(wave, limit):
+            if call_index and throttle:
+                time.sleep(throttle)
+            call_index += 1
+            sent = []
+            for category in chunk:
+                item = {"name": category.name}
+                parent_woo_id = category.parent and category_id_by_name.get(category.parent.name)
+                if parent_woo_id:
+                    item["parent"] = parent_woo_id
+                sent.append(item)
+            resp = client.batch_categories(create=sent)
+            for category, got in zip(chunk, resp.get("create") or [], strict=False):
+                err = got.get("error") or {}
+                woo_id = None
+                if got.get("id") and not err:
+                    woo_id = got["id"]
+                    report["created"].append(category.name)
+                elif err.get("code") == "term_exists" and (err.get("data") or {}).get(
+                    "resource_id"
+                ):
+                    woo_id = err["data"]["resource_id"]
+                    report["linked"].append(category.name)
+                else:
+                    report["failed"].append(
+                        {
+                            "name": category.name,
+                            "code": err.get("code", ""),
+                            "message": err.get("message", ""),
+                        }
+                    )
+                if woo_id:
+                    category_id_by_name[category.name] = woo_id
+                    _save_category_mapping(
+                        site, category, woo_id, got.get("name") or category.name, now
+                    )
+        for category in wave:
+            pending.pop(category.name, None)
+    return report
 
 
 def _resolve_grouped_ids(site, master: MasterProduct) -> tuple[list, list]:
@@ -368,7 +508,7 @@ def _collect_batch_failures(sent: list, returned: list, op: str) -> list:
     product data, no PII.
     """
     failures = []
-    for sent_item, got in zip(sent, returned):
+    for sent_item, got in zip(sent, returned, strict=False):
         if got.get("id") and not got.get("error"):
             continue
         err = got.get("error") or {}
@@ -383,27 +523,78 @@ def _collect_batch_failures(sent: list, returned: list, op: str) -> list:
     return failures
 
 
-def push_products_to_site(site, *, masters=None) -> dict:
+def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=None) -> dict:
     """Push products to one WooCommerce site; the core of the "Sync all".
 
-    Plans create/update/delete from the site's mappings, sends them in batches of
+    First ensures every referenced category exists on the site
+    (``_ensure_site_categories`` — Woo ignores name-only category refs, so an
+    unmapped category would otherwise silently never change on the site). Then
+    plans create/update/delete from the site's mappings, sends them in batches of
     at most ``PRODUCT_BATCH_ITEM_LIMIT`` (throttled between chunks), then saves the
     returned ``woo_product_id`` back onto ``ProductMapping`` and drops mappings for
     deleted products. Network errors are caught and returned (never raised) so one
     bad site does not abort the fan-out; a ``SyncLog`` row records the outcome.
     Logs by ``site_id`` only — never the payload (PII/secrets stay out of logs).
+
+    ``run_id``/``triggered_by_id`` (set by the "Đồng bộ ngay" view) are stamped
+    onto every ``SyncLog`` row this call writes so the progress banner can group
+    the run and poll completion; ``started`` is captured up front so
+    ``created_at - started_at`` is this site's push duration. When ``run_id`` is
+    set, even the no-op (nothing to push) case writes a SUCCESS row so every
+    targeted site reports and the banner's ``done`` count reaches ``expected``.
     """
     from apps.sites.services import client_for_site
+
+    started = timezone.now()
+    # Stamped onto every SyncLog this call writes (any branch) so the run report
+    # and progress banner have the who/duration regardless of outcome.
+    audit = {"run_id": run_id, "triggered_by_id": triggered_by_id, "started_at": started}
 
     if masters is None:
         masters = list(MasterProduct.objects.all())
     else:
         masters = list(masters)
 
+    client = client_for_site(site)
     category_id_by_name = _category_id_map(site)
+    try:
+        category_report = _ensure_site_categories(site, client, masters, category_id_by_name)
+    except httpx.HTTPError as exc:
+        logger.error(
+            "push_products ensure_categories failed site_id=%s: %s",
+            site.id,
+            exc.__class__.__name__,
+        )
+        SyncLog.objects.create(
+            site=site,
+            operation=OPERATION,
+            status=SyncLog.Status.ERROR,
+            error=exc.__class__.__name__,
+            detail={"stage": "ensure_categories"},
+            **audit,
+        )
+        return {
+            "site_id": site.id,
+            "created": 0,
+            "updated": 0,
+            "deleted": 0,
+            "error": exc.__class__.__name__,
+        }
+
     create, update, delete, grouped_unresolved = _plan_site_push(site, masters, category_id_by_name)
     total = len(create) + len(update) + len(delete)
     if total == 0:
+        # Nothing to push (site already in sync). A periodic/admin push logs
+        # nothing here, but a tracked run must record this site so the progress
+        # banner sees it finish — write a no-op SUCCESS row only when grouped.
+        if run_id:
+            SyncLog.objects.create(
+                site=site,
+                operation=OPERATION,
+                status=SyncLog.Status.SUCCESS,
+                detail={"planned": 0, "categories": category_report},
+                **audit,
+            )
         return {
             "site_id": site.id,
             "created": 0,
@@ -412,7 +603,6 @@ def push_products_to_site(site, *, masters=None) -> dict:
             "error": None,
         }
 
-    client = client_for_site(site)
     limit = _item_limit()
     throttle = _throttle_seconds()
 
@@ -450,7 +640,7 @@ def push_products_to_site(site, *, masters=None) -> dict:
             updated += sum(1 for it in resp_update if it.get("id") and not it.get("error"))
             deleted += sum(1 for it in (resp.get("delete") or []) if not it.get("error"))
             failures += _collect_batch_failures(c, resp_create, "create")
-            for sent_item, got in zip(u, resp_update):
+            for sent_item, got in zip(u, resp_update, strict=False):
                 if (got.get("error") or {}).get("code") == "woocommerce_rest_product_invalid_id":
                     stale_woo_ids.append(sent_item["id"])
                     stale_creates.append({k: v for k, v in sent_item.items() if k != "id"})
@@ -498,7 +688,8 @@ def push_products_to_site(site, *, masters=None) -> dict:
             updated_count=updated,
             deleted_count=deleted,
             error=exc.__class__.__name__,
-            detail={"planned": total},
+            detail={"planned": total, "categories": category_report},
+            **audit,
         )
         return {
             "site_id": site.id,
@@ -517,9 +708,11 @@ def push_products_to_site(site, *, masters=None) -> dict:
     # ERROR if the whole batch was rejected. ``failed`` lists the rejected SKUs
     # + Woo's error code so the cause (e.g. duplicate SKU) is visible.
     if failures:
-        status = (
-            SyncLog.Status.PARTIAL if (created or updated or deleted) else SyncLog.Status.ERROR
-        )
+        status = SyncLog.Status.PARTIAL if (created or updated or deleted) else SyncLog.Status.ERROR
+    elif category_report["failed"]:
+        # Products landed but some categories could not be created on the site —
+        # those refs went out by name, which Woo ignores, so the run is flagged.
+        status = SyncLog.Status.PARTIAL
     else:
         status = SyncLog.Status.SUCCESS
     SyncLog.objects.create(
@@ -534,10 +727,14 @@ def push_products_to_site(site, *, masters=None) -> dict:
             "variations": variations,
             "grouped_unresolved": grouped_unresolved,
             "failed": failures,
+            # Categories created/linked on the site before this push (Woo
+            # ignores name-only refs, so unmapped ones must be created first).
+            "categories": category_report,
             # Products re-created because their mapping pointed at a woo id
             # that no longer exists (deleted on the site outside the Hub).
             "recreated_stale": len(stale_creates),
         },
+        **audit,
     )
     return {
         "site_id": site.id,
@@ -603,6 +800,7 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
                 "site_name": site.name,
                 "site_url": site.base_url,
                 "site_status": site.status,
+                "platform": site.platform,
                 "is_primary": site.is_primary,
                 "synced": mapping is not None,
                 "woo_product_id": mapping.woo_product_id if mapping else None,
@@ -647,7 +845,206 @@ def _category_snapshot(raw_name_by_woo_id, name_by_woo_id, categories_by_name) -
     return snapshot
 
 
-def pull_categories_for_site(site, run_id=None) -> dict:
+_MAPPING_ORDERINGS = {"woo_category_id", "woo_name", "category__name", "last_synced_at"}
+
+
+def list_category_mappings_qs(site_id: int, params):
+    """Queryset cho màn "site này có categories nào → map về Hub category nào".
+
+    Search khớp tên trên site (raw), tên Hub, hoặc đúng woo_category_id khi
+    nhập số. Ordering chỉ nhận field trong whitelist; tie-break theo ``id`` để
+    pagination ổn định.
+    """
+    qs = CategoryMapping.objects.filter(site_id=site_id, category__is_deleted=False).select_related(
+        "category", "category__parent"
+    )
+    search = (params.get("search") or "").strip()
+    if search:
+        q = Q(woo_name__icontains=search) | Q(category__name__icontains=search)
+        if search.isdigit():
+            q |= Q(woo_category_id=int(search))
+        qs = qs.filter(q)
+    ordering = params.get("ordering") or "category__name"
+    if ordering.lstrip("-") not in _MAPPING_ORDERINGS:
+        ordering = "category__name"
+    return qs.order_by(ordering, "id")
+
+
+# --- Category overview / matrix (the "Danh mục" dashboard tabs) ---------------
+
+
+def category_overview() -> dict:
+    """Counts for the Tổng quan + Cây danh mục Hub stat cards.
+
+    ``hub_used`` = live (non-deleted) Hub categories; ``hub_total`` includes the
+    soft-deleted ones. ``linked`` = live categories present on ≥1 (live) site;
+    the tree cards split live categories into root/child and report the
+    soft-deleted count. Mirrors ``product_stats`` (Exists subquery, one query
+    each — independent of any paging).
+    """
+    from apps.sites.models import Site
+
+    live = Category.objects.filter(is_deleted=False)
+    linked_expr = Exists(
+        CategoryMapping.objects.filter(category=OuterRef("pk"), site__is_deleted=False)
+    )
+    hub_used = live.count()
+    linked = live.filter(linked_expr).count()
+    return {
+        "hub_used": hub_used,
+        "hub_total": Category.objects.count(),
+        "linked": linked,
+        "unlinked": hub_used - linked,
+        "linked_pct": round(linked / hub_used * 100, 1) if hub_used else 0.0,
+        "site_count": Site.objects.filter(is_deleted=False).count(),
+        "root_count": live.filter(parent__isnull=True).count(),
+        "child_count": live.filter(parent__isnull=False).count(),
+        "deleted_count": Category.objects.filter(is_deleted=True).count(),
+    }
+
+
+def active_sites_columns() -> list[dict]:
+    """Column headers for the cross-site matrix: every live site, trang chính
+    first then by name (the order the matrix renders its per-site columns)."""
+    from apps.sites.models import Site
+
+    return list(
+        Site.objects.filter(is_deleted=False)
+        .order_by("-is_primary", "name")
+        .values("id", "name", "base_url", "platform")
+    )
+
+
+_MATRIX_ORDERINGS = {"name", "linked_site_count"}
+
+
+def category_matrix_qs(params):
+    """Queryset for the cross-site matrix: one row per live Hub category, with
+    its live-site mappings prefetched (the serializer pivots them into per-site
+    cells) and ``linked_site_count`` annotated for sort/display.
+
+    Search matches the Hub name or its parent's name; ordering is whitelisted to
+    ``name``/``linked_site_count`` with an ``id`` tie-break for stable paging.
+    """
+    qs = (
+        Category.objects.filter(is_deleted=False)
+        .select_related("parent")
+        .prefetch_related("mappings__site")
+        .annotate(
+            linked_site_count=Count(
+                "mappings",
+                filter=Q(mappings__site__is_deleted=False),
+                distinct=True,
+            )
+        )
+    )
+    search = (params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(Q(name__icontains=search) | Q(parent__name__icontains=search))
+    ordering = params.get("ordering") or "name"
+    if ordering.lstrip("-") not in _MATRIX_ORDERINGS:
+        ordering = "name"
+    return qs.order_by(ordering, "id")
+
+
+def category_site_links(category) -> list[dict]:
+    """For one Hub category, every live site annotated with its link state.
+
+    Powers the tree-tab detail panel ("Liên kết với website"): ``linked`` is True
+    when a ``CategoryMapping`` exists for that site, carrying the per-site
+    ``woo_category_id`` + raw ``woo_name`` + ``last_synced_at``. Mirrors
+    ``product_sync_status``; trang chính first then by name.
+    """
+    from apps.sites.models import Site
+
+    mapping_by_site = {m.site_id: m for m in category.mappings.all()}
+    rows = []
+    for site in Site.objects.filter(is_deleted=False).order_by("-is_primary", "name"):
+        mapping = mapping_by_site.get(site.id)
+        rows.append(
+            {
+                "site_id": site.id,
+                "site_name": site.name,
+                "site_url": site.base_url,
+                "site_status": site.status,
+                "platform": site.platform,
+                "is_primary": site.is_primary,
+                "linked": mapping is not None,
+                "woo_category_id": mapping.woo_category_id if mapping else None,
+                "woo_name": mapping.woo_name if mapping else "",
+                "last_synced_at": mapping.last_synced_at if mapping else None,
+            }
+        )
+    return rows
+
+
+def clear_category_sync_data() -> dict:
+    """Global reset of the category catalog so it can be re-pulled from scratch.
+
+    Soft-deletes the Hub ``Category`` rows and clears their per-site
+    ``CategoryMapping`` + the ``pull_categories`` history, EXCEPT categories a
+    live product still references by name (and their ancestors, so the kept tree
+    stays connected). After this the user re-pulls — primary sites first — to
+    make their tree the canonical base; ``pull_categories_for_site`` revives a
+    soft-deleted Category by name (see its bulk_create ``update_fields``).
+
+    Soft-delete (``is_deleted=True``) keeps everything recoverable; the kept
+    categories' mappings are left intact (a re-pull rebuilds them wholesale per
+    site anyway). Returns the counts for the UI toast.
+    """
+    from django.db import transaction
+
+    # 1. Categories a live product references (matched by normalized name, the
+    #    same key the catalog stores). One pass over live products' name lists.
+    used_names: set[str] = set()
+    for names in MasterProduct.objects.filter(is_deleted=False).values_list(
+        "categories", flat=True
+    ):
+        for name in names or []:
+            used_names.add(normalize_category_name(name))
+
+    # 2. Protect the in-use categories AND their ancestors so the kept tree does
+    #    not lose a parent. Walk parents in Python over a {id: parent_id} map.
+    live = list(Category.objects.filter(is_deleted=False).values("id", "name", "parent_id"))
+    parent_by_id = {row["id"]: row["parent_id"] for row in live}
+    protected_ids: set[int] = set()
+    for row in live:
+        if row["name"] not in used_names:
+            continue
+        node = row["id"]
+        while node is not None and node not in protected_ids:
+            protected_ids.add(node)
+            node = parent_by_id.get(node)
+
+    cleared_ids = [row["id"] for row in live if row["id"] not in protected_ids]
+
+    with transaction.atomic():
+        # 3. Soft-delete every live category not protected.
+        categories_cleared = (
+            Category.objects.filter(id__in=cleared_ids, is_deleted=False).update(
+                is_deleted=True
+            )
+        )
+        # 4. Drop the cleared categories' mappings (no soft-delete flag on the
+        #    mapping; a re-pull rebuilds mappings wholesale per site). Kept
+        #    categories keep their mappings.
+        mappings_cleared, _ = CategoryMapping.objects.filter(
+            category_id__in=cleared_ids
+        ).delete()
+        # 5. Soft-delete the category pull history so the report starts fresh.
+        history_cleared = SyncLog.objects.filter(
+            operation=CATEGORY_OPERATION, is_deleted=False
+        ).update(is_deleted=True)
+
+    return {
+        "categories_cleared": categories_cleared,
+        "categories_kept": len(protected_ids),
+        "mappings_cleared": mappings_cleared,
+        "history_cleared": history_cleared,
+    }
+
+
+def pull_categories_for_site(site, run_id=None, triggered_by_id=None) -> dict:
     """Pull one site's product categories into the Hub catalog.
 
     Mirrors ``apps.orders.services.poll_site``: builds the client, fetches every
@@ -656,10 +1053,17 @@ def pull_categories_for_site(site, run_id=None) -> dict:
     ``(site, woo_category_id)``). Network errors are caught and returned (never
     raised) so one bad site does not abort the fan-out; a ``SyncLog`` row records
     the outcome — stamped with ``run_id`` and carrying the site + per-category
-    snapshot in ``detail`` so the run is reportable later. Logs by ``site_id``
-    only.
+    snapshot in ``detail`` so the run is reportable later. ``triggered_by_id`` is
+    the admin who clicked sync (threaded from the view), ``started`` is captured
+    up front so ``created_at - started_at`` is this site's pull duration. Logs by
+    ``site_id`` only.
     """
     from apps.sites.services import client_for_site
+
+    started = timezone.now()
+    # Stamped onto every SyncLog this call writes (any branch) so the report has
+    # the who/duration regardless of outcome.
+    audit = {"run_id": run_id, "triggered_by_id": triggered_by_id, "started_at": started}
 
     try:
         cats = client_for_site(site).list_categories()
@@ -669,16 +1073,16 @@ def pull_categories_for_site(site, run_id=None) -> dict:
             site=site,
             operation=CATEGORY_OPERATION,
             status=SyncLog.Status.ERROR,
-            run_id=run_id,
             error=exc.__class__.__name__,
             detail=_site_snapshot(site),
+            **audit,
         )
         return {"site_id": site.id, "pulled": 0, "error": exc.__class__.__name__}
 
     # Single-pass: build lookup maps for the bulk upsert below.
-    name_by_woo_id: dict = {}   # woo_id → normalized name
+    name_by_woo_id: dict = {}  # woo_id → normalized name
     raw_name_by_woo_id: dict = {}  # woo_id → raw Woo name (report snapshot)
-    slug_by_name: dict = {}     # name → slug
+    slug_by_name: dict = {}  # name → slug
     parent_id_by_name: dict = {}  # name → parent woo_id (0 = root)
     for c in cats:
         name = normalize_category_name(c.get("name", ""))
@@ -695,8 +1099,8 @@ def pull_categories_for_site(site, run_id=None) -> dict:
             site=site,
             operation=CATEGORY_OPERATION,
             status=SyncLog.Status.SUCCESS,
-            run_id=run_id,
             detail={"pulled": 0, **_site_snapshot(site)},
+            **audit,
         )
         return {"site_id": site.id, "pulled": 0, "error": None}
 
@@ -709,19 +1113,17 @@ def pull_categories_for_site(site, run_id=None) -> dict:
     with transaction.atomic():
         # ON CONFLICT (name) DO UPDATE — atomic at the DB level, race-safe
         # when multiple threads pull the same category name from different sites.
+        # update_fields includes is_deleted so a re-pull REVIVES a category that
+        # was soft-deleted by "clear category sync data" — the Category() default
+        # is_deleted=False overwrites the stale True on conflict. Without this the
+        # reset-then-pull workflow would leave the category hidden forever.
         Category.objects.bulk_create(
-            [
-                Category(name=name, slug=slug_by_name.get(name, ""))
-                for name in unique_names
-            ],
+            [Category(name=name, slug=slug_by_name.get(name, "")) for name in unique_names],
             update_conflicts=True,
-            update_fields=["slug"],
+            update_fields=["slug", "is_deleted"],
             unique_fields=["name"],
         )
-        categories_by_name = {
-            c.name: c
-            for c in Category.objects.filter(name__in=unique_names)
-        }
+        categories_by_name = {c.name: c for c in Category.objects.filter(name__in=unique_names)}
 
         # Rebuild the category TREE for this site: resolve each category's woo
         # parent id → parent name → parent Category, then set the self-FK. The
@@ -763,6 +1165,7 @@ def pull_categories_for_site(site, run_id=None) -> dict:
                     site=site,
                     category_id=category_id,
                     woo_category_id=woo_id,
+                    woo_name=raw_name_by_woo_id.get(woo_id, "")[:255],
                     last_synced_at=now,
                 )
                 for category_id, woo_id in woo_id_by_category.items()
@@ -774,7 +1177,6 @@ def pull_categories_for_site(site, run_id=None) -> dict:
         site=site,
         operation=CATEGORY_OPERATION,
         status=SyncLog.Status.SUCCESS,
-        run_id=run_id,
         detail={
             "pulled": pulled,
             "mapped": len(woo_id_by_category),
@@ -783,5 +1185,6 @@ def pull_categories_for_site(site, run_id=None) -> dict:
                 raw_name_by_woo_id, name_by_woo_id, categories_by_name
             ),
         },
+        **audit,
     )
     return {"site_id": site.id, "pulled": pulled, "error": None}

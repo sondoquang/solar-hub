@@ -188,6 +188,34 @@ class WooClient:
         r.raise_for_status()
         return r
 
+    def batch_categories(self, create: list[dict] | None = None) -> dict:
+        """POST /products/categories/batch — create product categories on the site.
+
+        Mirrors ``batch_products`` (60s timeout, Basic auth + query-string
+        fallback on 401, ``raise_for_status()``). The product push uses this to
+        pre-create categories not yet mapped on the site: Woo's products
+        endpoint only honours ``{"id"}`` category refs — ``{"name"}`` refs are
+        silently ignored (no auto-create) — so an unmapped name must become a
+        site term BEFORE the product payload is built. Returns
+        ``{"create": [...]}`` where each item carries ``id`` + ``name``, or an
+        ``error``; a ``term_exists`` reject carries the existing term's id in
+        ``error.data.resource_id``, which the caller maps instead of creating a
+        duplicate. The caller chunks to the ~100-item cap.
+        """
+        url = f"{self.base}/products/categories/batch"
+        payload = {"create": create or []}
+        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.post(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                json=payload,
+                timeout=60,
+            )
+        r.raise_for_status()
+        return r.json()
+
     def batch_variations(
         self,
         parent_id: int,

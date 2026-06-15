@@ -44,6 +44,9 @@ class SiteViewSet(viewsets.ModelViewSet):
         site_status = self.request.query_params.get("status")
         if site_status in Site.Status.values:
             qs = qs.filter(status=site_status)
+        platform = self.request.query_params.get("platform")
+        if platform in Site.Platform.values:
+            qs = qs.filter(platform=platform)
         is_primary = self.request.query_params.get("is_primary")
         if is_primary in ("true", "false"):
             qs = qs.filter(is_primary=is_primary == "true")
@@ -71,6 +74,7 @@ class SiteViewSet(viewsets.ModelViewSet):
             consumer_secret=data["consumer_secret"],
             hosting=data.get("hosting"),
             is_primary=data.get("is_primary", False),
+            platform=data.get("platform", Site.Platform.WOOCOMMERCE),
         )
         serializer.instance = site
 

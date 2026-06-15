@@ -178,7 +178,7 @@ const sig = (attrsObj) => JSON.stringify(Object.entries(attrsObj || {}).sort());
 
 const comboLabel = (attrsObj) => Object.values(attrsObj || {}).join(" / ") || "—";
 
-export default function ProductRegisterForm({ onSubmit, onCancel, pending, defaultValues }) {
+export default function ProductRegisterForm({ formId, onSubmit, defaultValues }) {
   const {
     control,
     handleSubmit,
@@ -186,7 +186,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     watch,
     setValue,
     getValues,
-    formState: { errors, isSubmitting },
+    formState: { errors },
   } = useForm({
     resolver: zodResolver(schema),
     defaultValues: toForm(defaultValues),
@@ -210,8 +210,6 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   const submit = async (values) => {
     await onSubmit(values, { onSuccess: () => reset(toForm()) });
   };
-
-  const busy = pending || isSubmitting;
 
   // Build the WooCommerce-style category tree from the flat list the API
   // returns (each row carries its `parent` id; null = root). Node value/title is
@@ -660,8 +658,9 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   const dataTabs = tabsByType[type] ?? [generalTab, inventoryTab];
 
   return (
-    <form onSubmit={handleSubmit(submit)} className="flex flex-col gap-4">
-      {/* Single column — sections stack vertically and the modal body scrolls */}
+    <form id={formId} onSubmit={handleSubmit(submit)} className="flex flex-col gap-4">
+      {/* Single column — sections stack vertically and the modal body scrolls.
+          Action buttons live in the modal footer (submit via the form id). */}
 
       {/* Tên & SKU */}
       <Postbox title="Thông tin chung">
@@ -866,14 +865,6 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           )}
         />
       </Postbox>
-
-      {/* Action buttons — pinned at the bottom of the popup */}
-      <div className="sticky bottom-0 -mx-6 -mb-5 flex justify-end gap-2 border-t border-slate-200 bg-white px-6 py-3">
-        {onCancel && <Button onClick={onCancel}>Hủy</Button>}
-        <Button type="primary" htmlType="submit" loading={busy}>
-          {busy ? "Đang lưu…" : "Lưu sản phẩm"}
-        </Button>
-      </div>
 
       {/* Media picker (ảnh đại diện / album / ảnh biến thể) */}
       <MediaLibraryModal

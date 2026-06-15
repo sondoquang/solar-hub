@@ -26,8 +26,15 @@ class Hosting(models.Model):
 
 
 class Site(models.Model):
-    """A registered WooCommerce site. ``consumer_secret`` is stored Fernet-encrypted
-    (see apps/sites/crypto.py); business logic lives in apps/sites/services.py."""
+    """A registered sales-channel site (WooCommerce or Sapo Web).
+
+    ``consumer_secret`` is stored Fernet-encrypted (see apps/sites/crypto.py);
+    for Sapo the same pair holds the private-app API key/secret. Business
+    logic lives in apps/sites/services.py."""
+
+    class Platform(models.TextChoices):
+        WOOCOMMERCE = "woocommerce", "WooCommerce"
+        SAPO = "sapo", "Sapo Web"
 
     class Status(models.TextChoices):
         UP = "up", "Up"
@@ -42,8 +49,23 @@ class Site(models.Model):
 
     name = models.CharField(max_length=120)
     base_url = models.URLField()
+    # WooCommerce: consumer key/secret. Sapo: private-app API key/secret.
     consumer_key = models.CharField(max_length=120)
     consumer_secret_enc = models.BinaryField()
+    platform = models.CharField(
+        max_length=20,
+        choices=Platform.choices,
+        default=Platform.WOOCOMMERCE,
+        db_index=True,
+    )
+    # Sapo only: the canonical ``*.mysapo.net`` store host this site resolves to,
+    # discovered by following the admin-API redirect during a health-check.
+    # Several storefront domains (separate Site rows, even separate API keys) can
+    # back ONE Sapo store; the order poll dedupes by this host so the store's
+    # orders are pulled once, not once per domain (see
+    # apps.orders.services.sites_for_order_poll). Blank until the first
+    # successful Sapo health-check; empty for WooCommerce sites.
+    sapo_store_host = models.CharField(max_length=255, blank=True, default="", db_index=True)
     site_type = models.CharField(
         max_length=20,
         choices=SiteType.choices,

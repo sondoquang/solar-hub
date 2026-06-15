@@ -28,9 +28,16 @@ function writeSeen(set) {
   }
 }
 
-// Link to the Orders tab pre-filtered to unprocessed orders, where they can be
-// viewed and have their status changed.
-const ORDERS_LINK = "/orders?status=processing";
+// Where a notification leads depends on the order's platform: WooCommerce
+// orders open the Orders tab pre-filtered to unprocessed orders; Sapo orders
+// live on their own "Đơn Sapo chưa thanh toán" screen (Sapo never appears on
+// the Woo Orders tab). `linkFor` picks the right destination per order; the
+// footer "view all" still points at the Woo unprocessed list.
+const WOO_ORDERS_LINK = "/orders?status=processing";
+const SAPO_ORDERS_LINK = "/sapo-unpaid-orders";
+
+const linkFor = (order) =>
+  order?.platform === "sapo" ? SAPO_ORDERS_LINK : WOO_ORDERS_LINK;
 
 function OrderRow({ order, onClick }) {
   return (
@@ -78,12 +85,17 @@ export default function NotificationBell() {
     writeSeen(next);
   }, [orders]);
 
-  // Following any link clears the badge and closes the popover.
-  const goToOrders = useCallback(() => {
-    markAllSeen();
-    setOpen(false);
-    navigate(ORDERS_LINK);
-  }, [markAllSeen, navigate]);
+  // Following any link clears the badge and closes the popover. Pass an order
+  // to land on the screen that owns it (Woo Orders vs Sapo unpaid); omit it for
+  // the footer "view all", which defaults to the Woo unprocessed list.
+  const goToOrders = useCallback(
+    (order) => {
+      markAllSeen();
+      setOpen(false);
+      navigate(linkFor(order));
+    },
+    [markAllSeen, navigate],
+  );
 
   const panel = (
     <div className="w-80">
@@ -107,14 +119,14 @@ export default function NotificationBell() {
       ) : (
         <div className="max-h-80 overflow-y-auto p-1">
           {unread.map((order) => (
-            <OrderRow key={order.id} order={order} onClick={goToOrders} />
+            <OrderRow key={order.id} order={order} onClick={() => goToOrders(order)} />
           ))}
         </div>
       )}
 
       <button
         type="button"
-        onClick={goToOrders}
+        onClick={() => goToOrders()}
         className="block w-full border-t border-slate-100 px-3 py-2 text-center text-sm font-medium text-brand hover:bg-slate-50"
       >
         Xem tất cả đơn chưa xử lý

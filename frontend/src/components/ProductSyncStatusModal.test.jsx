@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,8 +11,8 @@ const mutate = vi.fn();
 vi.mock("../api/products.js", () => ({
   useProductSyncStatus: () => ({
     data: [
-      { site_id: 1, site_name: "B-Site", site_url: "https://b-site.example.com", site_status: "up", is_primary: true, synced: true, woo_product_id: 50, last_synced_at: "2026-06-01T00:00:00Z" },
-      { site_id: 2, site_name: "A-Site", site_url: "https://a-site.example.com", site_status: "down", is_primary: false, synced: false, woo_product_id: null, last_synced_at: null },
+      { site_id: 1, site_name: "B-Site", site_url: "https://b-site.example.com", site_status: "up", platform: "woocommerce", is_primary: true, synced: true, woo_product_id: 50, last_synced_at: "2026-06-01T00:00:00Z" },
+      { site_id: 2, site_name: "A-Site", site_url: "https://a-site.example.com", site_status: "down", platform: "sapo", is_primary: false, synced: false, woo_product_id: null, last_synced_at: null },
     ],
     isLoading: false,
   }),
@@ -20,8 +21,16 @@ vi.mock("../api/products.js", () => ({
 
 const product = { id: 7, name: "Pin mặt trời", sku: "SP-1" };
 
+// The progress banner uses useQueryClient + a (disabled-until-triggered) run
+// query, so the modal needs a QueryClientProvider; no run is active in these
+// tests, so the run-progress query never fires.
 function renderModal() {
-  return render(<ProductSyncStatusModal product={product} open onClose={() => {}} />);
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ProductSyncStatusModal product={product} open onClose={() => {}} />
+    </QueryClientProvider>
+  );
 }
 
 describe("ProductSyncStatusModal", () => {
