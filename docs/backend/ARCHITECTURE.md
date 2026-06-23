@@ -87,19 +87,24 @@ Cả hai đường cùng đổ vào một upsert idempotent → an toàn khi tr�
 
 ### 5.2. Đồng bộ sản phẩm
 
-Thao tác CRUD diễn ra trên `MasterProduct` tại Hub (qua Admin/API). Khi "Sync all", `push_all_products` fan-out theo batch site → `push_products_batch_task` → `apps/catalog/services.push_products_to_site` chạy cho từng site:
+Thao tác CRUD diễn ra trên `MasterProduct` tại Hub (qua Admin/API). Khi "Sync all", `push_all_products` fan-out theo batch site → `push_products_batch_task` → `apps/catalog/services.push_products_to_site` chạy cho từng site. **Tập site đích đi qua `sites_for_product_push`** (mirror `sites_for_order_poll`, nhưng KHÔNG gate bởi `SAPO_ORDER_POLL_ENABLED`): site Woo lấy hết, các domain Sapo cùng `sapo_store_host` **gộp về 1** (8 storefront = 1 store dùng chung DB → push 1 lần) — `expected` của progress banner trong `sync_now` cũng đếm bằng hàm này:
 
 1. Duyệt `MasterProduct`, tra `ProductMapping` của site đó.
-2. Chưa có mapping & chưa xóa → mảng `create`; đã có mapping & chưa xóa → `update` theo `woo_product_id`; đã có mapping & **soft-deleted** → `delete` (rồi gỡ mapping).
-3. Gọi `WooClient.batch_products(create, update, delete)` — chia chunk **≤ `PRODUCT_BATCH_ITEM_LIMIT` (~100) item/request**, throttle `PRODUCT_PUSH_THROTTLE_SECONDS` giữa chunk.
-4. Khớp response **theo SKU** → upsert `woo_product_id` + `last_synced_at` vào `ProductMapping`, ghi `SyncLog`. Lỗi mạng được **nuốt theo site** (trả `error`, ghi `SyncLog(error)`, không raise) để một site hỏng không kéo cả mẻ.
-5. **Đếm thành công per-item = có `id` VÀ không có `error`** — batch của Woo trả HTTP 200 kể cả khi item bị từ chối, và reject của update/delete **vẫn echo `id`** (vd `woocommerce_rest_product_invalid_id`), nên "có id" không đủ. **Tự lành mapping mồ côi:** update bị reject `invalid_id` (sản phẩm đã bị xóa trên site ngoài Hub, vd wp-admin) → gỡ `ProductMapping` (+ var-mapping) và **re-push như create ngay trong cùng run**; số lượng ghi `SyncLog.detail["recreated_stale"]`.
+2. **Nhận theo tên (adoption) cho master CHƯA có mapping** — `_adopt_by_name` chạy **sau `_ensure_site_categories`, trước `_plan_site_push`**: vì các site chưa thống nhất SKU/id, một sản phẩm import về Hub có thể đã tồn tại sẵn trên site dưới tên gõ tay. `_adopt_by_name` liệt kê sản phẩm site (`WooClient.list_products`), index theo tên chuẩn hóa (`normalize_match_name` — trim+collapse+lowercase+**bỏ dấu tiếng Việt**, tắt được bằng `PRODUCT_MATCH_FOLD_DIACRITICS`), khớp `match_name` (đóng băng lúc import; rỗng → fallback `name`): **khớp đúng 1** → tạo `ProductMapping` (master rơi vào nhánh `update`, không tạo trùng); **khớp >1** (ambiguous) → KHÔNG nhận & KHÔNG tạo (loại khỏi run, ghi `SyncLog.detail["ambiguous"]`, run đánh PARTIAL); **0** → để bước sau create. Khớp tên chỉ chạy **một lần/(master,site)** (run sau đã có mapping → bỏ qua, không gọi `list_products`), nên đổi tên trên Hub về sau không phá liên kết. Số nhận ghi `SyncLog.detail["adopted"]`/`["adopted_count"]`.
+3. Chưa có mapping & chưa xóa → mảng `create`; đã có mapping & chưa xóa → `update` theo `woo_product_id`; đã có mapping & **soft-deleted** → `delete` (rồi gỡ mapping).
+4. Gọi `WooClient.batch_products(create, update, delete)` — chia chunk **≤ `PRODUCT_BATCH_ITEM_LIMIT` (~100) item/request**, throttle `PRODUCT_PUSH_THROTTLE_SECONDS` giữa chunk.
+5. Khớp response **theo SKU** → upsert `woo_product_id` + `last_synced_at` vào `ProductMapping`, ghi `SyncLog`. Lỗi mạng được **nuốt theo site** (trả `error`, ghi `SyncLog(error)`, không raise) để một site hỏng không kéo cả mẻ.
+6. **Đếm thành công per-item = có `id` VÀ không có `error`** — batch của Woo trả HTTP 200 kể cả khi item bị từ chối, và reject của update/delete **vẫn echo `id`** (vd `woocommerce_rest_product_invalid_id`), nên "có id" không đủ. **Tự lành mapping mồ côi:** update bị reject `invalid_id` (sản phẩm đã bị xóa trên site ngoài Hub, vd wp-admin) → gỡ `ProductMapping` (+ var-mapping) và **re-push như create ngay trong cùng run**; số lượng ghi `SyncLog.detail["recreated_stale"]`.
 
 **Loại sản phẩm (4 loại Woo):** `MasterProduct.type` ∈ `simple|grouped|external|variable`. `build_product_payload` nhánh theo type: `external` thêm `external_url`/`button_text`; `grouped` thêm `grouped_products` = ID các SKU con đã resolve (`_resolve_grouped_ids` tra `ProductMapping` của site; con chưa map ghi vào `SyncLog.detail["grouped_unresolved"]` và **tự lành** lần sync sau — `_plan_site_push` sắp xếp leaf-first/grouped-last); `variable` thêm `attributes` (định nghĩa, **không** kèm variations).
 
 **Biến thể (variable):** push **2 bước** — đẩy sản phẩm cha qua `batch_products` để có `woo_product_id`, rồi `_push_variations` diff `MasterProduct.variations` vs `ProductVariationMapping` (theo `variation_sku`) → `WooClient.batch_variations(parent_id, create/update/delete)` (`/products/{id}/variations/batch`), chunk/throttle như cha; upsert var-mapping theo `woo_variation_id`. Xóa biến thể khỏi master → Woo delete + gỡ var-mapping; xóa cha → cascade gỡ var-mapping. Số liệu biến thể ghi `SyncLog.detail["variations"]`.
 
 **Danh mục 2 chiều:** `MasterProduct.categories` vẫn là **list tên**. Hub có catalog danh mục riêng (`Category` + `CategoryMapping` per-site) được **kéo từ site về** (`pull_categories_for_site` ← `WooClient.list_categories`, fan-out `pull_all_categories`/`pull_categories_batch_task` mirror order-poll), upsert `Category` theo tên chuẩn hóa (`normalize_category_name` — trim+collapse, giữ hoa/thường) nên cùng tên ở nhiều site hội tụ về 1 `Category` nhiều mapping. **Cây danh mục (tree):** lúc pull, mỗi category resolve `parent` (woo parent id → tên → `Category`) rồi set self-FK `Category.parent` → Hub dựng lại đúng cây như WooCommerce (FE hiển thị `TreeSelect`); cây là **last-pull-wins** vì các site có thể nest khác nhau. Khi push, `build_product_payload` resolve tên → `{id}` của site qua `_category_id_map`. **Quan trọng: Woo REST API bỏ qua ref `{name}` (KHÔNG tự tạo category theo tên — chỉ CSV importer làm vậy)**, nên trước khi build payload, `_ensure_site_categories` **tạo trên site mọi category mà master sống tham chiếu nhưng chưa có mapping** (`WooClient.batch_categories` — `POST /products/categories/batch`, chunk + throttle như product): tạo **cha trước con theo wave** (kéo theo cả tổ tiên chưa map để giữ đúng cây; cha tạo fail → con tạo thành gốc, lần pull sau sửa lại); site đã có term trùng tên (chưa từng pull) → Woo reject `term_exists` kèm id sẵn có trong `error.data.resource_id` → **map id đó** thay vì tạo trùng; tên gõ tay chưa có trong Hub → `Category.objects.get_or_create` trước. Kết quả ghi `SyncLog.detail["categories"]` (`{created, linked, failed}`); category tạo fail → ref rơi về `{name}` (Woo bỏ qua) và run bị đánh **PARTIAL** để lộ thiếu sót thay vì success giả. Attribute/variation ID per-site để dành pha sau (attribute hiện gửi theo tên/option).
+
+**Nhập sản phẩm từ website chính (`import_products_from_site`):** lấy data gốc một chiều site → Hub (mirror `pull_categories_for_site`, fan-out 1 site qua `import_products_task` + lock `lock:import_products:{id}`, endpoint `POST /products/import_from_site/`, operation `import_products`). Với mỗi sản phẩm **simple**: SKU trùng master sống → **link** (chỉ tạo mapping); chưa có → **create** master (đóng băng `match_name` = tên lúc nhập đã chuẩn hóa, `source_site`/`imported_at`); đã có mapping `(site, woo_id)` → skip (idempotent). **v1 chỉ nhập `simple`** — `variable/grouped/external` ghi vào `SyncLog.detail["skipped_types"]` (đẩy một master nửa-vời các loại này dễ làm hỏng sản phẩm trên site). SKU rỗng → placeholder `IMPORT-{site}-{woo_id}`.
+
+**Báo cáo product-run (`apps/sync`):** mỗi run `push_products` (1 click "Đồng bộ ngay") gom theo `run_id`, mirror category-run — `product_runs_queryset`/`summarize_product_runs`/`product_run_stats`/`product_run_detail` + Excel (`build_product_run_workbook`), serve qua `GET /api/sync/product-runs/` (+ `stats/`, `{run_id}/`, `{run_id}/export/`). Mỗi `SyncLog` push mang snapshot `site_name`/`site_url`/`hosting` (`_site_snapshot`) để báo cáo sống sót khi site bị xóa + search theo tên. Per-site row phân loại created/updated/**adopted**/failed; `failed[].code` được `_classify_failure` gắn `kind` (`duplicate` vs `error`) cho FE tô màu. FE: tab "Lịch sử đồng bộ" trên trang Sản phẩm + modal tóm tắt cuối run (site nào thành công / thất bại + lý do).
 
 ### 5.3. Giám sát
 
@@ -124,6 +129,7 @@ Mọi giao tiếp WooCommerce tập trung tại đây để cô lập đặc th�
 - **Ghi**: `update_order(woo_order_id, status=)` (`PUT /orders/{id}`) — cùng pattern auth/timeout/fallback-401 như `list_orders`, trả payload đơn đã cập nhật để caller upsert lại Hub.
 - **Batch sản phẩm**: `batch_products(create, update, delete)` (`POST /products/batch`) — đã hiện thực, cùng pattern auth/fallback-401, timeout 60s (ghi nặng hơn đọc). Trả `{create, update, delete}` mỗi item kèm `id`+`sku`. **Caller (`push_products_to_site`) chịu trách nhiệm chia chunk ≤100 item.**
 - **Batch biến thể**: `batch_variations(parent_id, create, update, delete)` (`POST /products/{parent}/variations/batch`) — cùng pattern, timeout 60s; trả `{create, update, delete}` mỗi item kèm `id`+`sku` (map vào `ProductVariationMapping`).
+- **Sản phẩm (đọc)**: `list_products(search=)` (`GET /products`, `status=any`, phân trang `X-WP-TotalPages`) — dùng cho name-match adoption (index theo tên) và import sản phẩm về Hub.
 - **Danh mục (đọc)**: `list_categories()` (`GET /products/categories`, phân trang `X-WP-TotalPages` như `list_orders`) — kéo cây danh mục site về Hub.
 - **Danh mục (ghi)**: `batch_categories(create)` (`POST /products/categories/batch`) — cùng pattern auth/fallback-401, timeout 60s; push dùng để tạo trước các category chưa map trên site (Woo bỏ qua ref `{name}` trong payload product). Item lỗi `term_exists` mang id sẵn có ở `error.data.resource_id`.
 
@@ -155,6 +161,7 @@ Khác biệt nền tảng được hấp thụ bên trong client:
   placeholder** (sku rỗng) để Sapo materialize options; `batch_variations` về sau PUT đè
   placeholder bằng biến thể thật đầu tiên (tránh 422 trùng tổ hợp), các biến thể sau POST
   per-variant. Attributes của variation map vị trí `option1..3` theo thứ tự options của cha.
+- **Sản phẩm (đọc)**: `list_products()` (`GET /products.json`, phân trang 250) map về Woo-shape `{id, name, sku (variant đầu), type}` cho name-match adoption + import; vì 8 storefront Sapo chung 1 store/DB, push đã dedup theo `sapo_store_host` (`sites_for_product_push`) nên chỉ list/đẩy 1 lần.
 - **Danh mục = custom collections (PHẲNG)**: `list_categories()` map collection →
   `{id, name: name, slug: alias, parent: 0}` (Sapo custom_collection mang tên ở field
   **`name`** và slug ở `alias` — **không** có field `title` kiểu Shopify; đọc nhầm `title`
@@ -195,19 +202,22 @@ Khác biệt nền tảng được hấp thụ bên trong client:
   qua datetime thiếu timezone** (`...T00:00:00` bị bỏ, `...T00:00:00Z` mới được áp). Bound naive
   của `_date_bounds` → `_with_tz` đóng dấu `Z` (coi như UTC) trước khi gửi; thiếu bước này poll
   kéo về **toàn bộ** đơn thay vì đúng khoảng đã chọn.
-- **Thanh toán (Sapo)**: nghiệp vụ đơn Sapo chạy theo **trạng thái thanh toán**, không theo
-  lifecycle. `_sapo_order_to_woo` mang `financial_status` về Hub (lưu ở `Order.payment_status`;
-  Woo để trống). `list_orders(financial_status=)` (Sapo-only, WooClient không có) lọc theo
-  payment status — `poll_site` truyền `"unpaid"` cho site Sapo, *layer* trên `status=open` để
-  watermark `(site, status)` vẫn đơn trị. ⚠️ Sapo **không có alias nhóm `unpaid`** (cả list ngăn
-  cách dấu phẩy cũng bị bỏ qua — đều trả 0 đơn, smoke-tested), chỉ match một literal
-  (`pending`/`authorized`/`partially_paid`/`paid`); nên `list_orders` **bung `"unpaid"` thành một
-  query mỗi literal** trong `_UNPAID_FINANCIAL_STATUSES` rồi gộp/dedup theo id. `mark_order_paid(amount=)` ghi một transaction `sale`
-  đầy đủ (`POST /orders/{id}/transactions.json`) rồi **GET lại đơn** (endpoint transactions trả
-  về transaction, không phải order) → trả shape Woo để service upsert.
-  ⚠️ **Giới hạn staleness**: đơn được thanh toán ngoài luồng (trực tiếp trên Sapo) sẽ không được
-  poll `unpaid` kéo về để cập nhật; Hub chỉ chắc chắn đúng với đơn thao tác qua Hub
-  (`mark_order_paid`/`cancel` đều upsert lại đơn trả về).
+- **Thanh toán (Sapo)**: đơn Sapo mang **cả hai** trục trạng thái — lifecycle (open/closed/
+  cancelled → processing/completed/cancelled) và **trạng thái thanh toán**. `_sapo_order_to_woo`
+  mang `financial_status` về Hub (lưu ở `Order.payment_status`; Woo để trống). **`poll_site`
+  KHÔNG còn ghim `financial_status`** — poll kéo *mọi* trạng thái thanh toán (đã + chưa) cho
+  `status` đang poll, để màn Sapo liệt kê/lọc đủ; bộ lọc payment chạy ở query (`list_orders_qs`,
+  nhóm `"unpaid"` = `pending`/`authorized`/`partially_paid`). `list_orders(financial_status=)`
+  vẫn còn (Sapo-only, WooClient không có) cho caller nào cần lọc; ⚠️ Sapo **không có alias nhóm
+  `unpaid`** (cả list ngăn cách dấu phẩy cũng bị bỏ qua — đều trả 0 đơn, smoke-tested), chỉ match
+  một literal, nên khi được truyền `"unpaid"` thì `list_orders` **bung thành một query mỗi literal**
+  trong `_UNPAID_FINANCIAL_STATUSES` rồi gộp/dedup theo id. `mark_order_paid(amount=)` ghi một
+  transaction `sale` đầy đủ (`POST /orders/{id}/transactions.json`) rồi **GET lại đơn** (endpoint
+  transactions trả về transaction, không phải order) → trả shape Woo để service upsert.
+  ⚠️ **Backfill/staleness**: vì poll bám watermark `modified_on` theo `(site, status)`, đơn được
+  thanh toán trực tiếp trên Sapo sẽ bump `modified_on` và được poll kéo về cập nhật ở lần sau.
+  Riêng đơn *đã thanh toán từ trước* khi gỡ ghim `unpaid` có thể không tự xuất hiện cho tới khi bị
+  sửa hoặc khi chạy đồng bộ theo **khoảng ngày** (bỏ qua watermark, kéo lại cả cửa sổ).
 - **Giới hạn v1**: đổi tên thuộc tính biến thể không propagate khi update; ảnh riêng của
   variation bị bỏ qua (Sapo cần `image_id` đã upload, không nhận URL); Sapo không chặn trùng
   SKU nên mất mapping + re-create có thể tạo sản phẩm trùng (mapping table là lớp bảo vệ);

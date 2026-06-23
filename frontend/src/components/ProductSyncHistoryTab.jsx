@@ -5,15 +5,16 @@ import toast from "react-hot-toast";
 
 import { useAllSites } from "../api/sites.js";
 import {
-  exportCategoryRun,
-  useCategoryRuns,
-  useCategoryRunStats,
+  exportProductRun,
+  useProductRuns,
+  useProductRunStats,
 } from "../api/syncReports.js";
-import CategoryRunDetailModal, { RunStatusTag } from "./CategoryRunDetailModal.jsx";
+import { RunStatusTag } from "./CategoryRunDetailModal.jsx";
 import DataTable from "./DataTable.jsx";
 import EmptyState from "./EmptyState.jsx";
 import ErrorState from "./ErrorState.jsx";
 import { formatDate, formatDateTime, formatDuration } from "../lib/format.js";
+import ProductRunDetailModal from "./ProductRunDetailModal.jsx";
 import StatCards from "./StatCards.jsx";
 
 const { RangePicker } = DatePicker;
@@ -25,15 +26,12 @@ const STATUS_OPTIONS = [
   { value: "error", label: "Thất bại" },
 ];
 
-// Short, friendly run label from the UUID (the full id stays the row key + is
-// what the detail/export use).
 const shortRun = (runId) => `SYNC-${String(runId).replace(/-/g, "").slice(0, 12).toUpperCase()}`;
 
-// "Lịch sử đồng bộ" tab: stat cards + filters (kết quả / khoảng ngày / site /
-// tìm kiếm) + the runs table (one row per "Đồng bộ danh mục" click) with the
-// detail modal + Excel export. Stats + list share the same filters so the cards
-// track what the table shows.
-export default function CategorySyncHistoryTab() {
+// "Lịch sử đồng bộ" tab on the Products page: stat cards + filters + the runs
+// table (one row per "Đồng bộ ngay" click), with the per-site detail modal +
+// Excel export. Mirrors CategorySyncHistoryTab.
+export default function ProductSyncHistoryTab() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [siteFilter, setSiteFilter] = useState(null);
   const [range, setRange] = useState(null); // [dayjs, dayjs] | null
@@ -62,8 +60,8 @@ export default function CategorySyncHistoryTab() {
     search: search || undefined,
   };
 
-  const stats = useCategoryRunStats(filters);
-  const { data, isLoading, isFetching, isError, refetch } = useCategoryRuns({
+  const stats = useProductRunStats(filters);
+  const { data, isLoading, isFetching, isError, refetch } = useProductRuns({
     page,
     page_size: pageSize,
     ...filters,
@@ -117,7 +115,7 @@ export default function CategorySyncHistoryTab() {
   const handleExport = async (runId) => {
     setExportingId(runId);
     try {
-      await exportCategoryRun(runId);
+      await exportProductRun(runId);
       toast.success("Đã xuất báo cáo Excel.");
     } catch {
       toast.error("Xuất báo cáo thất bại.");
@@ -157,7 +155,7 @@ export default function CategorySyncHistoryTab() {
     {
       key: "website",
       title: "Website",
-      width: 180,
+      width: 160,
       render: (_v, r) => r.site_label ?? <span className="text-muted">{r.site_count} site</span>,
     },
     {
@@ -174,24 +172,32 @@ export default function CategorySyncHistoryTab() {
       ),
     },
     {
-      key: "total_pulled",
-      dataIndex: "total_pulled",
-      title: "Tổng",
+      key: "total_created",
+      dataIndex: "total_created",
+      title: "Tạo mới",
       width: 90,
       align: "right",
       render: (v) => <span className="tabular-nums">{v}</span>,
     },
     {
-      key: "total_mapped",
-      dataIndex: "total_mapped",
-      title: "Đã ánh xạ",
-      width: 110,
+      key: "total_updated",
+      dataIndex: "total_updated",
+      title: "Cập nhật",
+      width: 90,
       align: "right",
       render: (v) => <span className="tabular-nums">{v}</span>,
     },
     {
-      key: "error_count",
-      dataIndex: "error_count",
+      key: "total_adopted",
+      dataIndex: "total_adopted",
+      title: "Đã nhận",
+      width: 90,
+      align: "right",
+      render: (v) => <span className={`tabular-nums ${v ? "text-success" : ""}`}>{v}</span>,
+    },
+    {
+      key: "total_failed",
+      dataIndex: "total_failed",
       title: "Lỗi",
       width: 80,
       align: "right",
@@ -299,7 +305,7 @@ export default function CategorySyncHistoryTab() {
               emptyText: (
                 <EmptyState
                   title="Chưa có lần đồng bộ nào phù hợp"
-                  hint='Bấm "Đồng bộ danh mục" để bắt đầu, hoặc nới bộ lọc.'
+                  hint='Bấm "Đồng bộ ngay" để bắt đầu, hoặc nới bộ lọc.'
                 />
               ),
             }}
@@ -307,7 +313,7 @@ export default function CategorySyncHistoryTab() {
         </div>
       )}
 
-      <CategoryRunDetailModal
+      <ProductRunDetailModal
         runId={detailRunId}
         open={detailRunId != null}
         onClose={() => setDetailRunId(null)}

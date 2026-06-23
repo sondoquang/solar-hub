@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useNewOrders } from "../api/orders.js";
-import { formatVND, timeAgo } from "../lib/format.js";
+import { formatVND, timeAgo, titleCaseName } from "../lib/format.js";
 
 // Orders the user has already acknowledged are remembered in localStorage so the
 // same unprocessed order doesn't keep re-alerting across reloads. We store ids
@@ -44,9 +44,9 @@ function OrderRow({ order, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-start gap-2.5 rounded px-2 py-2 text-left transition-colors hover:bg-slate-50"
+      className="flex w-full items-start gap-2.5 rounded px-2 py-2 text-left transition-colors hover:bg-white/5"
     >
-      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
         <ClipboardList size={15} />
       </span>
       <div className="min-w-0 flex-1">
@@ -57,9 +57,9 @@ function OrderRow({ order, onClick }) {
           </span>
         </div>
         <p className="truncate text-xs text-muted">
-          {order.customer_name || "Khách lẻ"} · {order.site_name}
+          {titleCaseName(order.customer_name) || "Khách lẻ"} · {order.site_name}
         </p>
-        <p className="truncate text-xs font-medium tabular-nums text-slate-600">
+        <p className="truncate text-xs font-medium tabular-nums text-text">
           {formatVND(order.total)}
         </p>
       </div>
@@ -99,7 +99,7 @@ export default function NotificationBell() {
 
   const panel = (
     <div className="w-80">
-      <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <p className="text-sm font-semibold text-ink">Đơn hàng chưa xử lý</p>
         {count > 0 && (
           <button
@@ -127,7 +127,7 @@ export default function NotificationBell() {
       <button
         type="button"
         onClick={() => goToOrders()}
-        className="block w-full border-t border-slate-100 px-3 py-2 text-center text-sm font-medium text-brand hover:bg-slate-50"
+        className="block w-full border-t border-border px-3 py-2 text-center text-sm font-medium text-brand hover:bg-white/5"
       >
         Xem tất cả đơn chưa xử lý
       </button>
@@ -147,7 +147,7 @@ export default function NotificationBell() {
     >
       <button
         type="button"
-        className="relative rounded-full p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink"
+        className="relative rounded-full p-1.5 text-muted hover:bg-white/5 hover:text-ink"
         aria-label={count > 0 ? `Thông báo: ${count} đơn hàng chưa xử lý` : "Thông báo"}
       >
         <Bell size={20} />

@@ -190,7 +190,7 @@ export default function Sites() {
       sortOrder: ordering === "name" ? "ascend" : ordering === "-name" ? "descend" : null,
       render: (name, site) => (
         <span className="inline-flex max-w-full items-center gap-1.5 font-medium">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
             <Globe size={15} />
           </span>
           <span className="truncate">{name}</span>
@@ -214,7 +214,7 @@ export default function Sites() {
                   className={
                     site.is_primary
                       ? "fill-amber-400 text-amber-400"
-                      : "text-slate-300 hover:text-amber-400"
+                      : "text-muted hover:text-amber-400"
                   }
                 />
               }
@@ -233,10 +233,10 @@ export default function Sites() {
           href={url}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1.5 text-blue-600 hover:underline"
+          className="inline-flex items-center gap-1.5 text-brand hover:underline"
         >
           <span className="truncate">{url}</span>
-          <ExternalLink size={14} className="shrink-0 text-slate-400" />
+          <ExternalLink size={14} className="shrink-0 text-muted" />
         </a>
       ),
     },
@@ -426,7 +426,7 @@ export default function Sites() {
       {isError ? (
         <ErrorState message="Không tải được danh sách site" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={sites}

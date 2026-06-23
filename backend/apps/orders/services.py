@@ -54,8 +54,10 @@ CANCELLABLE_STATUSES = ("pending", "processing", "on-hold")
 UNPAID_PAYMENT_STATUSES = ("pending", "authorized", "partially_paid")
 PAID_PAYMENT_STATUS = "paid"
 
-# Payment status the Sapo poll asks for (Sapo's "unpaid" filter group). Passed
-# to SapoClient.list_orders for Sapo sites only (WooClient has no such param).
+# The "unpaid" payment-status group as a query value. ``list_orders_qs`` expands
+# it to UNPAID_PAYMENT_STATUSES (the not-yet-paid set) for the list screen's
+# payment-status filter. The Sapo client also understands it as a financial_status
+# filter, but the order poll no longer pins it — it pulls every payment status.
 UNPAID_POLL_FILTER = "unpaid"
 
 
@@ -660,17 +662,11 @@ def poll_site(
         )
         modified_after = latest.isoformat() if latest else None
 
-    # Sapo orders are tracked by payment status: the poll fetches only the
-    # unpaid ones (financial_status=unpaid), layered on status=open via the
-    # status arg. WooClient has no such param, so it is passed for Sapo only.
-    from apps.sites.models import Site
-
-    payment_kwargs = (
-        {"financial_status": UNPAID_POLL_FILTER}
-        if site.platform == Site.Platform.SAPO
-        else {}
-    )
-
+    # Sapo orders carry a payment status (``financial_status``) alongside the
+    # lifecycle status, but the poll no longer pins it: it pulls every order of
+    # the requested status — paid and unpaid alike — so the Sapo screen can list
+    # and filter them all (the payment-status filter is applied at query time, in
+    # ``list_orders_qs``). WooClient ignores the payment dimension regardless.
     created = updated = 0
     try:
         orders = client_for_site(site).list_orders(
@@ -678,7 +674,6 @@ def poll_site(
             after=after,
             before=before,
             modified_after=modified_after,
-            **payment_kwargs,
         )
     except httpx.HTTPError as exc:
         logger.error(

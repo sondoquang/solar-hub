@@ -55,6 +55,38 @@ export async function exportCategoryRun(runId) {
   URL.revokeObjectURL(url);
 }
 
+// Product-push run report — same shape as the category-run endpoints:
+//   GET /sync/product-runs/                   -> getProductRuns / useProductRuns
+//   GET /sync/product-runs/stats/             -> getProductRunStats / useProductRunStats
+//   GET /sync/product-runs/{run_id}/          -> getProductRun / useProductRun
+//   GET /sync/product-runs/{run_id}/export/   -> exportProductRun (.xlsx blob)
+export const getProductRuns = (params = {}) =>
+  api.get("/sync/product-runs/", { params: clean(params) }).then((r) => r.data);
+
+export const getProductRunStats = (params = {}) =>
+  api.get("/sync/product-runs/stats/", { params: clean(params) }).then((r) => r.data);
+
+export const getProductRun = (runId) =>
+  api.get(`/sync/product-runs/${runId}/`).then((r) => r.data);
+
+export async function exportProductRun(runId) {
+  const res = await api.get(`/sync/product-runs/${runId}/export/`, {
+    responseType: "blob",
+  });
+  const filename = filenameFromDisposition(
+    res.headers["content-disposition"],
+    "bao-cao-san-pham.xlsx"
+  );
+  const url = URL.createObjectURL(res.data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 const KEY = ["sync-reports"];
 
 export function useCategoryRuns(params = {}) {
@@ -86,11 +118,37 @@ export function useCategoryRun(runId, { enabled = true, ...rest } = {}) {
   });
 }
 
+export function useProductRuns(params = {}) {
+  return useQuery({
+    queryKey: [...KEY, "product-runs", params],
+    queryFn: () => getProductRuns(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useProductRunStats(params = {}) {
+  return useQuery({
+    queryKey: [...KEY, "product-run-stats", params],
+    queryFn: () => getProductRunStats(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useProductRun(runId, { enabled = true, ...rest } = {}) {
+  return useQuery({
+    queryKey: [...KEY, "product-run", runId],
+    queryFn: () => getProductRun(runId),
+    enabled: Boolean(runId) && enabled,
+    ...rest,
+  });
+}
+
 // Operation keys for /sync/run-progress/ (must match backend PROGRESS_OPERATIONS).
 export const SYNC_OPS = {
   orders: "poll_orders",
   products: "push_products",
   categories: "pull_categories",
+  import: "import_products",
 };
 
 // A scoped run finishes in seconds; the safety stop only kicks in when a site

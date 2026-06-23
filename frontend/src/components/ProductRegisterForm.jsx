@@ -100,9 +100,9 @@ const Label = ({ children, required }) => (
 // WP-style metabox: bordered card with a labelled header
 function Postbox({ title, action, children }) {
   return (
-    <div className="rounded border border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+    <div className="rounded border border-border bg-surface-raised">
+      <div className="flex items-center justify-between border-b border-border bg-surface-muted px-3 py-2">
+        <h3 className="text-sm font-semibold text-ink">{title}</h3>
         {action}
       </div>
       <div className="p-3">{children}</div>
@@ -426,7 +426,7 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Chưa có thuộc tính" />
         )}
         {attrArray.fields.map((f, i) => (
-          <div key={f.id} className="rounded border border-slate-200 p-2">
+          <div key={f.id} className="rounded border border-border p-2">
             <div className="grid grid-cols-[1fr_2fr_auto] items-end gap-2">
               <div>
                 <Label>Tên thuộc tính</Label>
@@ -572,13 +572,13 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
           control={control}
           render={({ field }) =>
             field.value ? (
-              <div className="group relative h-10 w-10 overflow-hidden rounded border border-slate-200">
+              <div className="group relative h-10 w-10 overflow-hidden rounded border border-border">
                 <img src={field.value} alt="Ảnh biến thể" className="h-full w-full object-cover" />
                 <button
                   type="button"
                   title="Xóa ảnh"
                   onClick={() => field.onChange("")}
-                  className="absolute inset-0 hidden items-center justify-center bg-white/70 text-danger group-hover:flex"
+                  className="absolute inset-0 hidden items-center justify-center bg-black/60 text-danger group-hover:flex"
                 >
                   <X size={14} />
                 </button>
@@ -770,7 +770,7 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
             <img
               src={featuredUrl}
               alt="Ảnh sản phẩm"
-              className="w-full rounded border border-slate-200 object-contain"
+              className="w-full rounded border border-border object-contain"
               style={{ maxHeight: 220 }}
             />
             <div className="flex gap-2">
@@ -819,14 +819,14 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
             {albumUrls.map((url, i) => (
               <div
                 key={`${url}-${i}`}
-                className="group relative aspect-square overflow-hidden rounded border border-slate-200"
+                className="group relative aspect-square overflow-hidden rounded border border-border"
               >
                 <img src={url} alt={`Ảnh phụ ${i + 1}`} className="h-full w-full object-cover" />
                 <button
                   type="button"
                   title="Xóa khỏi album"
                   onClick={() => removeImageAt(i + 1)}
-                  className="absolute right-1 top-1 hidden rounded-full bg-white/90 p-0.5 text-danger shadow group-hover:block"
+                  className="absolute right-1 top-1 hidden rounded-full bg-black/70 p-0.5 text-danger shadow group-hover:block"
                 >
                   <X size={14} />
                 </button>

@@ -72,21 +72,21 @@ export default function CategoryTreeTab() {
       label: "Tổng danh mục (đang dùng)",
       value: vi(o.hub_used),
       Icon: FolderTree,
-      tint: "bg-blue-50 text-blue-500",
+      tint: "bg-blue-500/15 text-blue-300",
     },
     {
       key: "root",
       label: "Danh mục gốc",
       value: vi(o.root_count),
       Icon: Network,
-      tint: "bg-green-50 text-success",
+      tint: "bg-green-500/15 text-success",
     },
     {
       key: "child",
       label: "Danh mục con",
       value: vi(o.child_count),
       Icon: Layers,
-      tint: "bg-violet-50 text-violet-500",
+      tint: "bg-violet-500/15 text-violet-300",
     },
     {
       key: "deleted",
@@ -94,7 +94,7 @@ export default function CategoryTreeTab() {
       value: vi(o.deleted_count),
       sub: "(ẩn khỏi cây)",
       Icon: Trash2,
-      tint: "bg-red-50 text-danger",
+      tint: "bg-red-500/15 text-danger",
     },
   ];
 
@@ -132,7 +132,7 @@ export default function CategoryTreeTab() {
           ) : (
             <>
               {name.slice(0, idx)}
-              <span className="bg-amber-100 text-brand">{name.slice(idx, idx + q.length)}</span>
+              <span className="bg-brand/25 text-ink">{name.slice(idx, idx + q.length)}</span>
               {name.slice(idx + q.length)}
             </>
           )}
@@ -194,7 +194,7 @@ export default function CategoryTreeTab() {
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
         {/* Tree */}
-        <div className="rounded bg-white p-3 shadow-card lg:col-span-2">
+        <div className="rounded bg-surface-raised p-3 border border-border lg:col-span-2">
           <div className="mb-2 flex items-center justify-between gap-2">
             <h3 className="font-display text-base font-semibold">Cây danh mục</h3>
             <span className="text-xs tabular-nums text-muted">{vi(o.hub_used)}</span>
@@ -229,7 +229,7 @@ export default function CategoryTreeTab() {
         </div>
 
         {/* Detail panel */}
-        <div className="rounded bg-white p-3 shadow-card lg:col-span-3">
+        <div className="rounded bg-surface-raised p-3 border border-border lg:col-span-3">
           {!selected ? (
             <div className="flex h-full min-h-64 items-center justify-center">
               <Empty

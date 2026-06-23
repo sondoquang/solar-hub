@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, DatePicker, Input, Popconfirm, Select } from "antd";
-import { CheckCircle2, RefreshCw, Store, XCircle } from "lucide-react";
+import { CheckCircle2, Eye, RefreshCw, Store, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
@@ -15,27 +15,62 @@ import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
+import OrderStatusBadge from "../components/OrderStatusBadge.jsx";
 import PaymentStatusBadge from "../components/PaymentStatusBadge.jsx";
-import { formatDateTime, formatVND } from "../lib/format.js";
+import SapoOrderDetailModal from "../components/SapoOrderDetailModal.jsx";
+import { formatDateTime, formatVND, titleCaseName } from "../lib/format.js";
 
 const { RangePicker } = DatePicker;
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
-// This screen lists only Sapo orders that are not yet paid. The backend poll
-// fetches Sapo orders by payment status (financial_status=unpaid), and the two
-// row actions — Hủy đơn / Đánh dấu đã thanh toán — push the change to Sapo and
-// re-sync the Hub row. WooCommerce orders never appear here (the filters pin
-// platform=sapo and payment_status=unpaid).
-const PINNED = { platform: "sapo", payment_status: "unpaid" };
+// This screen lists every Sapo order (the filters pin only ``platform=sapo``),
+// not just the unpaid ones. The backend poll pulls all payment statuses, and the
+// two filters below narrow the view: order status (Sapo's open/closed/cancelled,
+// mapped to the Woo statuses the Hub stores) and payment status (đã/chưa thanh
+// toán). "Đồng bộ ngay" re-pulls the chosen order status from Sapo. WooCommerce
+// orders never appear here. The two row actions — Hủy đơn / Đánh dấu đã thanh
+// toán — push the change to Sapo and re-sync the Hub row; each is shown only on
+// the rows it applies to (an open order can be cancelled; a not-yet-paid order
+// can be marked paid).
+const PINNED = { platform: "sapo" };
+
+// Only the three Sapo lifecycle states (open→processing, closed→completed,
+// cancelled) are reachable; the other Woo statuses never apply to Sapo orders.
+const STATUS_OPTIONS = [
+  { value: "all", label: "Tất cả trạng thái" },
+  { value: "processing", label: "Đang xử lý" },
+  { value: "completed", label: "Hoàn thành" },
+  { value: "cancelled", label: "Đã hủy" },
+];
+
+// "unpaid" is the not-yet-paid group (pending/authorized/partially_paid) — the
+// backend expands it in ``list_orders_qs``; "paid" matches exactly.
+const PAYMENT_OPTIONS = [
+  { value: "all", label: "Tất cả thanh toán" },
+  { value: "unpaid", label: "Chưa thanh toán" },
+  { value: "paid", label: "Đã thanh toán" },
+];
+
+// An order can be cancelled only from a non-terminal status (mirrors the
+// backend's CANCELLABLE_STATUSES); for Sapo that is the open→processing state.
+const CANCELLABLE = new Set(["pending", "processing", "on-hold"]);
+const canCancel = (r) => CANCELLABLE.has(r.status);
+const canMarkPaid = (r) => r.payment_status !== "paid" && r.status !== "cancelled";
 
 export default function SapoUnpaidOrders() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [paymentFilter, setPaymentFilter] = useState("all");
   const [scope, setScope] = useState("all"); // "all" | "site:<id>"
   const [range, setRange] = useState(null); // [dayjs, dayjs] | null
   const [ordering, setOrdering] = useState("-date_created_woo");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+
+  // Detail view: the per-row "Xem chi tiết" opens a single Sapo order.
+  const [viewOrder, setViewOrder] = useState(null);
+  const [viewOpen, setViewOpen] = useState(false);
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -51,11 +86,13 @@ export default function SapoUnpaidOrders() {
     return {
       ...PINNED,
       search: search || undefined,
+      status: statusFilter === "all" ? undefined : statusFilter,
+      payment_status: paymentFilter === "all" ? undefined : paymentFilter,
       site: scopeKind === "site" ? scopeId : undefined,
       date_from: range?.[0]?.format("YYYY-MM-DD"),
       date_to: range?.[1]?.format("YYYY-MM-DD"),
     };
-  }, [search, scope, range]);
+  }, [search, statusFilter, paymentFilter, scope, range]);
 
   const { data, isLoading, isFetching, isError, refetch } = useOrders({
     ...filters,
@@ -92,15 +129,17 @@ export default function SapoUnpaidOrders() {
     ...sites.map((s) => ({ value: `site:${s.id}`, label: s.name })),
   ];
 
-  // Sync the unpaid Sapo orders. ``platform: "sapo"`` scopes the run to every
-  // Sapo site server-side (deduped by store); a picked site narrows it further.
-  // The backend layers financial_status=unpaid for Sapo.
+  // Sync the chosen order status from Sapo. ``platform: "sapo"`` scopes the run
+  // to every Sapo site server-side (deduped by store); a picked site narrows it
+  // further. One run syncs one status — "Tất cả trạng thái" falls back to the
+  // backend default (processing/open). The poll pulls all payment statuses.
   const handlePoll = () => {
     const [scopeKind, scopeId] = scope.split(":");
     const pollSites = scopeKind === "site" ? [Number(scopeId)] : undefined;
     poll.mutate(
       {
         platform: "sapo",
+        status: statusFilter === "all" ? undefined : statusFilter,
         sites: pollSites,
         date_from: range?.[0]?.format("YYYY-MM-DD"),
         date_to: range?.[1]?.format("YYYY-MM-DD"),
@@ -130,6 +169,11 @@ export default function SapoUnpaidOrders() {
   const sortOrder = (field) =>
     ordering === field ? "ascend" : ordering === `-${field}` ? "descend" : null;
 
+  const openDetail = (r) => {
+    setViewOrder(r);
+    setViewOpen(true);
+  };
+
   const onPaid = (r) =>
     markPaid.mutate(r.id, {
       onSuccess: () => toast.success(`Đã đánh dấu thanh toán đơn #${r.number}.`),
@@ -158,7 +202,7 @@ export default function SapoUnpaidOrders() {
       width: 200,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
             <Store size={15} />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
@@ -174,7 +218,7 @@ export default function SapoUnpaidOrders() {
       width: 200,
       render: (_v, r) => (
         <div className="min-w-0 flex flex-col gap-1">
-          <p className="truncate mb-1">{r.customer_name || "—"}</p>
+          <p className="truncate mb-1">{titleCaseName(r.customer_name) || "—"}</p>
           <p className="truncate text-xs text-muted">{r.customer_phone || ""}</p>
         </div>
       ),
@@ -188,6 +232,14 @@ export default function SapoUnpaidOrders() {
       sorter: true,
       sortOrder: sortOrder("total"),
       render: (v) => <span className="font-medium tabular-nums">{formatVND(v)}</span>,
+    },
+    {
+      key: "status",
+      dataIndex: "status",
+      title: "Trạng thái đơn",
+      width: 150,
+      ellipsis: false,
+      render: (status) => <OrderStatusBadge status={status} />,
     },
     {
       key: "payment_status",
@@ -209,57 +261,78 @@ export default function SapoUnpaidOrders() {
     {
       key: "actions",
       title: "Thao tác",
-      width: 230,
+      width: 330,
       align: "right",
       hideable: false,
       ellipsis: false,
-      render: (_v, r) => (
-        <div className="flex items-center justify-end gap-1">
-          <Popconfirm
-            title="Đánh dấu đã thanh toán?"
-            description="Ghi nhận thanh toán đủ cho đơn này trên Sapo."
-            okText="Xác nhận"
-            cancelText="Đóng"
-            onConfirm={() => onPaid(r)}
-          >
+      render: (_v, r) => {
+        const paid = canMarkPaid(r);
+        const cancel = canCancel(r);
+        return (
+          <div className="flex items-center justify-end gap-1">
             <Button
               type="link"
               size="small"
-              icon={<CheckCircle2 size={14} />}
-              loading={markPaid.isPending && markPaid.variables === r.id}
+              icon={<Eye size={14} />}
+              onClick={() => openDetail(r)}
             >
-              Đã thanh toán
+              Xem chi tiết
             </Button>
-          </Popconfirm>
-          <Popconfirm
-            title="Hủy đơn này?"
-            description="Đơn sẽ được hủy trên Sapo."
-            okText="Xác nhận hủy"
-            cancelText="Đóng"
-            okButtonProps={{ danger: true }}
-            onConfirm={() => onCancel(r)}
-          >
-            <Button
-              type="link"
-              size="small"
-              danger
-              icon={<XCircle size={14} />}
-              loading={cancelOrder.isPending && cancelOrder.variables === r.id}
-            >
-              Hủy đơn
-            </Button>
-          </Popconfirm>
-        </div>
-      ),
+            {paid && (
+              <Popconfirm
+                title="Đánh dấu đã thanh toán?"
+                description="Ghi nhận thanh toán đủ cho đơn này trên Sapo."
+                okText="Xác nhận"
+                cancelText="Đóng"
+                onConfirm={() => onPaid(r)}
+              >
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<CheckCircle2 size={14} />}
+                  loading={markPaid.isPending && markPaid.variables === r.id}
+                >
+                  Đã thanh toán
+                </Button>
+              </Popconfirm>
+            )}
+            {cancel && (
+              <Popconfirm
+                title="Hủy đơn này?"
+                description="Đơn sẽ được hủy trên Sapo."
+                okText="Xác nhận hủy"
+                cancelText="Đóng"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => onCancel(r)}
+              >
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  icon={<XCircle size={14} />}
+                  loading={cancelOrder.isPending && cancelOrder.variables === r.id}
+                >
+                  Hủy đơn
+                </Button>
+              </Popconfirm>
+            )}
+          </div>
+        );
+      },
     },
   ];
 
-  const filterActive = search !== "" || scope !== "all" || range != null;
+  const filterActive =
+    search !== "" ||
+    statusFilter !== "all" ||
+    paymentFilter !== "all" ||
+    scope !== "all" ||
+    range != null;
 
   return (
     <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
-        <h1 className="font-display text-2xl font-bold">Đơn Sapo chưa thanh toán</h1>
+        <h1 className="font-display text-2xl font-bold">Đơn hàng Sapo</h1>
         <Button
           type="primary"
           icon={<RefreshCw size={16} />}
@@ -291,6 +364,24 @@ export default function SapoUnpaidOrders() {
           allowClear
         />
         <Select
+          value={statusFilter}
+          onChange={(v) => {
+            setStatusFilter(v);
+            setPage(1);
+          }}
+          options={STATUS_OPTIONS}
+          className="min-w-44"
+        />
+        <Select
+          value={paymentFilter}
+          onChange={(v) => {
+            setPaymentFilter(v);
+            setPage(1);
+          }}
+          options={PAYMENT_OPTIONS}
+          className="min-w-44"
+        />
+        <Select
           value={scope}
           onChange={(v) => {
             setScope(v);
@@ -306,7 +397,7 @@ export default function SapoUnpaidOrders() {
       {isError ? (
         <ErrorState message="Không tải được danh sách đơn Sapo" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={rows}
@@ -337,14 +428,12 @@ export default function SapoUnpaidOrders() {
               emptyText: (
                 <EmptyState
                   title={
-                    filterActive
-                      ? "Không có đơn Sapo phù hợp"
-                      : "Không có đơn Sapo chưa thanh toán"
+                    filterActive ? "Không có đơn Sapo phù hợp" : "Chưa có đơn Sapo nào"
                   }
                   hint={
                     filterActive
                       ? "Thử đổi bộ lọc hoặc khoảng thời gian."
-                      : 'Nhấn "Đồng bộ ngay" để gom đơn chưa thanh toán từ Sapo.'
+                      : 'Nhấn "Đồng bộ ngay" để gom đơn từ Sapo.'
                   }
                 />
               ),
@@ -352,6 +441,12 @@ export default function SapoUnpaidOrders() {
           />
         </div>
       )}
+
+      <SapoOrderDetailModal
+        order={viewOrder}
+        open={viewOpen}
+        onClose={() => setViewOpen(false)}
+      />
     </section>
   );
 }

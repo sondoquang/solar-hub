@@ -5,19 +5,19 @@ import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 const MAP = {
   healthy: {
     Icon: CheckCircle2,
-    bg: "bg-green-50",
+    bg: "bg-green-500/15",
     text: "text-success",
     label: "Khỏe mạnh",
   },
   warning: {
     Icon: AlertTriangle,
-    bg: "bg-amber-50",
+    bg: "bg-amber-500/15",
     text: "text-warning",
     label: "Cảnh báo",
   },
   critical: {
     Icon: XCircle,
-    bg: "bg-red-50",
+    bg: "bg-red-500/15",
     text: "text-danger",
     label: "Lỗi nghiêm trọng",
   },

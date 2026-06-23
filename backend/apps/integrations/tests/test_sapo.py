@@ -575,7 +575,7 @@ def _sapo_order(**overrides):
 def test_sapo_order_to_woo_maps_hub_fields():
     woo = sapo._sapo_order_to_woo(_sapo_order())
     assert woo["id"] == 450789469
-    assert woo["number"] == "#1001"
+    assert woo["number"] == "1001"  # "#1001" → bare number; FE prepends the "#"
     assert woo["status"] == "processing"  # open → processing
     assert woo["currency"] == "VND"
     assert woo["total"] == "409.94"
@@ -843,3 +843,41 @@ def test_mark_order_paid_posts_sale_transaction_then_refetches(monkeypatch):
     # Re-GETs the order (transactions endpoint returns the txn, not the order).
     assert len(fake.sent("GET", "/admin/orders/55.json")) == 1
     assert woo["financial_status"] == "paid"
+
+
+def test_list_products_maps_to_woo_shape(monkeypatch):
+    fake = _FakeHttp(
+        routes=[
+            (
+                "GET",
+                "/admin/products.json",
+                _FakeResponse(
+                    200,
+                    {
+                        "products": [
+                            {
+                                "id": 11,
+                                "name": "Tấm Pin 450W",
+                                # Sapo sends a default option even for a simple
+                                # (single-variant) product.
+                                "options": [{"name": "Tiêu đề"}],
+                                "variants": [{"sku": "PIN-450"}],
+                            },
+                            {
+                                "id": 12,
+                                "name": "Combo",
+                                "options": [{"name": "Màu"}],
+                                "variants": [{"sku": "C-1"}, {"sku": "C-2"}],
+                            },
+                        ]
+                    },
+                ),
+            )
+        ]
+    )
+    _patch(monkeypatch, fake)
+    # Single variant → simple (despite the default option); >1 variant → variable.
+    assert _client().list_products() == [
+        {"id": 11, "name": "Tấm Pin 450W", "sku": "PIN-450", "type": "simple"},
+        {"id": 12, "name": "Combo", "sku": "C-1", "type": "variable"},
+    ]

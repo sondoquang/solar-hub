@@ -14,7 +14,7 @@ export default function StatCards({ cards, loading = false, columns = 4 }) {
   return (
     <div className={`grid grid-cols-2 gap-2 ${COL_CLASS[columns] ?? COL_CLASS[4]}`}>
       {cards.map(({ key, label, value, sub, Icon, tint }) => (
-        <div key={key} className="flex items-start gap-3 rounded bg-white p-3 shadow-card">
+        <div key={key} className="flex items-start gap-3 rounded bg-surface-raised p-3 border border-border">
           <span
             className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${tint}`}
           >

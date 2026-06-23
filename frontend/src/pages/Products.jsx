@@ -1,17 +1,19 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Input, Modal, Popconfirm, Select } from "antd";
-import { Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Alert, Button, Input, Modal, Popconfirm, Select, Tabs } from "antd";
+import { Download, Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
 import {
   useCreateProduct,
   useDeleteProduct,
+  useImportProductsFromSite,
   useProducts,
   useProductStats,
   useSyncProducts,
   useUpdateProduct,
 } from "../api/products.js";
+import { useAllSites } from "../api/sites.js";
 import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -20,9 +22,12 @@ import ProductRegisterForm, {
   STATUS_OPTIONS as FORM_STATUS,
   STOCK_OPTIONS as FORM_STOCK,
 } from "../components/ProductRegisterForm.jsx";
+import ProductRunDetailModal from "../components/ProductRunDetailModal.jsx";
 import ProductStats from "../components/ProductStats.jsx";
 import ProductStatusBadge from "../components/ProductStatusBadge.jsx";
+import ProductSyncHistoryTab from "../components/ProductSyncHistoryTab.jsx";
 import ProductSyncStatusModal from "../components/ProductSyncStatusModal.jsx";
+import ProductSyncSummaryModal from "../components/ProductSyncSummaryModal.jsx";
 import { formatDate, formatVND } from "../lib/format.js";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -43,6 +48,11 @@ export default function Products() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null); // product being edited, or null
   const [syncProduct, setSyncProduct] = useState(null); // product whose sync panel is open
+  const [importOpen, setImportOpen] = useState(false); // import-from-site picker open
+  const [importSiteId, setImportSiteId] = useState(null); // chosen source site
+  const [lastPushRunId, setLastPushRunId] = useState(null); // run to summarize on finish
+  const [summaryRunId, setSummaryRunId] = useState(null); // end-of-run summary modal
+  const [detailRunId, setDetailRunId] = useState(null); // full per-site detail modal
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -76,10 +86,13 @@ export default function Products() {
   const savePending = createProduct.isPending || updateProduct.isPending;
   const deleteProduct = useDeleteProduct();
   const sync = useSyncProducts();
+  const importProducts = useImportProductsFromSite();
+  const { data: allSites = [], isLoading: sitesLoading } = useAllSites();
   const qc = useQueryClient();
 
   // "Đang đồng bộ sản phẩm… X/Y site" banner: poll the push run until every
-  // targeted site reports, then refetch so mappings/last_synced_at refresh.
+  // targeted site reports, then refetch so mappings/last_synced_at refresh and
+  // pop the end-of-run summary (which site landed / which failed + why).
   const productRun = useSyncRunProgress(SYNC_OPS.products, {
     onFinish: ({ finished, timedOut, expected, errorCount }) => {
       if (timedOut) {
@@ -89,6 +102,16 @@ export default function Products() {
       } else if (finished) {
         toast.success(`Đã đồng bộ sản phẩm xuống ${expected} site.`);
       }
+      qc.invalidateQueries({ queryKey: ["products"] });
+      if ((finished || errorCount) && lastPushRunId) setSummaryRunId(lastPushRunId);
+    },
+  });
+
+  // "Đang nhập sản phẩm…" banner for the import-from-site run (expected=1).
+  const importRun = useSyncRunProgress(SYNC_OPS.import, {
+    onFinish: ({ finished, timedOut }) => {
+      if (timedOut) toast("Nhập sản phẩm chạy lâu hơn dự kiến — kiểm tra lại sau.", { icon: "⏳" });
+      else if (finished) toast.success("Đã nhập sản phẩm từ website nguồn về Hub.");
       qc.invalidateQueries({ queryKey: ["products"] });
     },
   });
@@ -135,11 +158,25 @@ export default function Products() {
       {
         onSuccess: (res) => {
           toast.success("Đã kích hoạt đồng bộ sản phẩm xuống các site.");
+          setLastPushRunId(res.run_id);
           productRun.start({ runId: res.run_id, expected: res.expected });
         },
         onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
       }
     );
+  };
+
+  // Import the source site's products into the Hub catalog (the bootstrap).
+  const handleImport = () => {
+    if (!importSiteId) return;
+    importProducts.mutate(importSiteId, {
+      onSuccess: (res) => {
+        toast.success("Đã kích hoạt nhập sản phẩm từ website nguồn.");
+        setImportOpen(false);
+        importRun.start({ runId: res.run_id, expected: res.expected });
+      },
+      onError: () => toast.error("Kích hoạt nhập sản phẩm thất bại."),
+    });
   };
 
   const openEdit = (product) => {
@@ -182,7 +219,7 @@ export default function Products() {
       sortOrder: sortOrder("sku"),
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
             <Package size={15} />
           </span>
           <div className="min-w-0">
@@ -290,6 +327,12 @@ export default function Products() {
         </div>
         <div className="flex gap-1">
           <Button
+            icon={<Download size={16} />}
+            onClick={() => setImportOpen(true)}
+          >
+            Nhập từ website chính
+          </Button>
+          <Button
             icon={<RefreshCw size={16} />}
             loading={sync.isPending}
             onClick={handleSync}
@@ -317,77 +360,103 @@ export default function Products() {
           message={`Đang đồng bộ sản phẩm… ${productRun.doneSites}/${productRun.activeRun.expected} site hoàn tất.`}
         />
       )}
-
-      <div className="mb-3">
-        <ProductStats stats={stats ?? {}} loading={statsLoading} />
-      </div>
-
-      <div className="mb-2.5 flex flex-wrap items-center gap-2">
-        <Select
-          value={statusFilter}
-          onChange={(v) => {
-            setStatusFilter(v);
-            setPage(1);
-          }}
-          options={STATUS_FILTER}
-          className="min-w-44"
+      {importRun.activeRun && (
+        <Alert
+          type="info"
+          showIcon
+          className="mb-3"
+          message="Đang nhập sản phẩm từ website nguồn về Hub…"
         />
-        <Select
-          value={stockFilter}
-          onChange={(v) => {
-            setStockFilter(v);
-            setPage(1);
-          }}
-          options={STOCK_FILTER}
-          className="min-w-40"
-        />
-      </div>
-
-      {isError ? (
-        <ErrorState message="Không tải được danh sách sản phẩm" onRetry={refetch} />
-      ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
-          <DataTable
-            columns={columns}
-            dataSource={rows}
-            rowKey="id"
-            size="middle"
-            loading={isLoading || isFetching}
-            onRefresh={refetch}
-            refreshing={isFetching}
-            searchSlot={
-              <Input.Search
-                allowClear
-                placeholder="Tìm theo SKU hoặc tên…"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                className="w-64"
-              />
-            }
-            onChange={handleTableChange}
-            pagination={{
-              current: page,
-              pageSize,
-              total,
-              showSizeChanger: true,
-              pageSizeOptions: PAGE_SIZE_OPTIONS,
-              showTotal: (t, r) => `${r[0]}–${r[1]} trên ${t}`,
-            }}
-            locale={{
-              emptyText: (
-                <EmptyState
-                  title={filterActive ? "Không có sản phẩm phù hợp" : "Chưa có sản phẩm nào"}
-                  hint={
-                    filterActive
-                      ? "Thử đổi từ khóa hoặc bộ lọc."
-                      : 'Bấm "Thêm sản phẩm" để tạo catalog gốc.'
-                  }
-                />
-              ),
-            }}
-          />
-        </div>
       )}
+
+      <Tabs
+        defaultActiveKey="list"
+        items={[
+          {
+            key: "list",
+            label: "Danh sách sản phẩm",
+            children: (
+              <>
+                <div className="mb-3">
+                  <ProductStats stats={stats ?? {}} loading={statsLoading} />
+                </div>
+
+                <div className="mb-2.5 flex flex-wrap items-center gap-2">
+                  <Select
+                    value={statusFilter}
+                    onChange={(v) => {
+                      setStatusFilter(v);
+                      setPage(1);
+                    }}
+                    options={STATUS_FILTER}
+                    className="min-w-44"
+                  />
+                  <Select
+                    value={stockFilter}
+                    onChange={(v) => {
+                      setStockFilter(v);
+                      setPage(1);
+                    }}
+                    options={STOCK_FILTER}
+                    className="min-w-40"
+                  />
+                </div>
+
+                {isError ? (
+                  <ErrorState message="Không tải được danh sách sản phẩm" onRetry={refetch} />
+                ) : (
+                  <div className="rounded bg-surface-raised p-2.5 border border-border">
+                    <DataTable
+                      columns={columns}
+                      dataSource={rows}
+                      rowKey="id"
+                      size="middle"
+                      loading={isLoading || isFetching}
+                      onRefresh={refetch}
+                      refreshing={isFetching}
+                      searchSlot={
+                        <Input.Search
+                          allowClear
+                          placeholder="Tìm theo SKU hoặc tên…"
+                          value={searchInput}
+                          onChange={(e) => setSearchInput(e.target.value)}
+                          className="w-64"
+                        />
+                      }
+                      onChange={handleTableChange}
+                      pagination={{
+                        current: page,
+                        pageSize,
+                        total,
+                        showSizeChanger: true,
+                        pageSizeOptions: PAGE_SIZE_OPTIONS,
+                        showTotal: (t, r) => `${r[0]}–${r[1]} trên ${t}`,
+                      }}
+                      locale={{
+                        emptyText: (
+                          <EmptyState
+                            title={filterActive ? "Không có sản phẩm phù hợp" : "Chưa có sản phẩm nào"}
+                            hint={
+                              filterActive
+                                ? "Thử đổi từ khóa hoặc bộ lọc."
+                                : 'Bấm "Thêm sản phẩm" để tạo catalog gốc.'
+                            }
+                          />
+                        ),
+                      }}
+                    />
+                  </div>
+                )}
+              </>
+            ),
+          },
+          {
+            key: "history",
+            label: "Lịch sử đồng bộ",
+            children: <ProductSyncHistoryTab />,
+          },
+        ]}
+      />
 
       <Modal
         open={showForm}
@@ -423,6 +492,55 @@ export default function Products() {
         product={syncProduct}
         open={!!syncProduct}
         onClose={() => setSyncProduct(null)}
+      />
+
+      <Modal
+        open={importOpen}
+        onCancel={() => setImportOpen(false)}
+        title="Nhập sản phẩm từ website chính"
+        okText="Nhập về Hub"
+        cancelText="Hủy"
+        okButtonProps={{ disabled: !importSiteId, loading: importProducts.isPending }}
+        onOk={handleImport}
+      >
+        <p className="mb-2 text-sm text-muted">
+          Chọn website WooCommerce nguồn để lấy sản phẩm về làm dữ liệu gốc. Tên sản phẩm
+          lúc nhập được dùng làm khóa khớp khi đồng bộ sang các site khác. (Phiên bản này
+          chỉ hỗ trợ WooCommerce + sản phẩm đơn; sản phẩm có biến thể được ghi nhận để xử lý
+          sau, Sapo sẽ làm sau.)
+        </p>
+        <Select
+          showSearch
+          allowClear
+          loading={sitesLoading}
+          value={importSiteId}
+          placeholder="Chọn website WooCommerce nguồn"
+          optionFilterProp="label"
+          className="w-full"
+          onChange={(v) => setImportSiteId(v ?? null)}
+          options={allSites
+            .filter((site) => site.platform === "woocommerce")
+            .map((site) => ({
+              value: site.id,
+              label: site.is_primary ? `${site.name} (trang chính)` : site.name,
+            }))}
+        />
+      </Modal>
+
+      <ProductSyncSummaryModal
+        runId={summaryRunId}
+        open={summaryRunId != null}
+        onClose={() => setSummaryRunId(null)}
+        onViewDetail={() => {
+          setDetailRunId(summaryRunId);
+          setSummaryRunId(null);
+        }}
+      />
+
+      <ProductRunDetailModal
+        runId={detailRunId}
+        open={detailRunId != null}
+        onClose={() => setDetailRunId(null)}
       />
     </section>
   );

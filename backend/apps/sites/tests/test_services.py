@@ -131,3 +131,45 @@ def test_check_hosting_checks_primary_sites_first(monkeypatch):
     )
     services.check_hosting(hosting.id, check_type="manual")
     assert checked == [primary.id, normal.id]
+
+
+@pytest.mark.django_db
+def test_sites_for_product_push_includes_all_woo():
+    a = SiteFactory()
+    b = SiteFactory()
+    assert set(services.sites_for_product_push()) == {a.id, b.id}
+
+
+@pytest.mark.django_db
+def test_sites_for_product_push_dedupes_sapo_by_store_host():
+    """8 storefront domains of one Sapo store collapse to one push target."""
+    s1 = SiteFactory(
+        platform=Site.Platform.SAPO, consumer_key="k1", sapo_store_host="store.mysapo.net"
+    )
+    SiteFactory(
+        platform=Site.Platform.SAPO, consumer_key="k2", sapo_store_host="store.mysapo.net"
+    )
+    other = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="other.mysapo.net")
+    woo = SiteFactory()
+
+    result = services.sites_for_product_push()
+
+    assert s1.id in result  # lowest-id of the shared store
+    assert other.id in result and woo.id in result
+    assert len(result) == 3  # the duplicate storefront is dropped
+
+
+@pytest.mark.django_db
+def test_sites_for_product_push_not_gated_by_order_poll_flag(settings):
+    """Unlike the order poll, product push is never gated by SAPO_ORDER_POLL_ENABLED."""
+    settings.SAPO_ORDER_POLL_ENABLED = False
+    sapo = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    assert sapo.id in services.sites_for_product_push()
+
+
+@pytest.mark.django_db
+def test_sites_for_product_push_unresolved_host_not_merged():
+    s1 = SiteFactory(platform=Site.Platform.SAPO, consumer_key="k1", sapo_store_host="")
+    s2 = SiteFactory(platform=Site.Platform.SAPO, consumer_key="k2", sapo_store_host="")
+    result = services.sites_for_product_push()
+    assert s1.id in result and s2.id in result

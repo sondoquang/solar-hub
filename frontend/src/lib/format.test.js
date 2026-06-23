@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, formatDuration, formatVND } from "./format.js";
+import { formatDate, formatDuration, formatVND, titleCaseName } from "./format.js";
 
 describe("formatVND", () => {
   it("formats a number as VND", () => {
@@ -14,6 +14,23 @@ describe("formatVND", () => {
 describe("formatDate", () => {
   it("returns em dash for empty input", () => {
     expect(formatDate(null)).toBe("—");
+  });
+});
+
+describe("titleCaseName", () => {
+  it("capitalizes the first letter of each word", () => {
+    expect(titleCaseName("nguyễn văn an")).toBe("Nguyễn Văn An");
+  });
+  it("lowercases the rest of all-caps input", () => {
+    expect(titleCaseName("TRẦN THỊ B")).toBe("Trần Thị B");
+  });
+  it("normalizes mixed casing and extra spaces", () => {
+    expect(titleCaseName("  lê   vĂN  CưỜng ")).toBe("Lê Văn Cường");
+  });
+  it("returns empty string for blank input (caller applies its own fallback)", () => {
+    expect(titleCaseName("")).toBe("");
+    expect(titleCaseName(null)).toBe("");
+    expect(titleCaseName(undefined)).toBe("");
   });
 });
 

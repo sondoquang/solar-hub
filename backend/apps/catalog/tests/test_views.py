@@ -113,6 +113,48 @@ def test_sync_now_validates_sites(client):
     assert resp.status_code == 400
 
 
+@pytest.mark.django_db
+def test_import_from_site_dispatches_for_woocommerce(client, monkeypatch):
+    from apps.sites.models import Site
+    from apps.sync import tasks
+
+    site = SiteFactory(platform=Site.Platform.WOOCOMMERCE)
+    captured = {}
+
+    class _Result:
+        id = "imp-1"
+
+    monkeypatch.setattr(
+        tasks.import_products_task,
+        "delay",
+        lambda site_id, run_id=None, triggered_by_id=None: captured.update(
+            site_id=site_id, run_id=run_id
+        )
+        or _Result(),
+    )
+
+    resp = client.post("/api/products/import_from_site/", {"site": site.id}, format="json")
+    assert resp.status_code == 200
+    assert resp.data["task_id"] == "imp-1"
+    assert resp.data["expected"] == 1
+    assert captured["site_id"] == site.id
+
+
+@pytest.mark.django_db
+def test_import_from_site_rejects_sapo(client):
+    from apps.sites.models import Site
+
+    sapo = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    resp = client.post("/api/products/import_from_site/", {"site": sapo.id}, format="json")
+    assert resp.status_code == 400
+    assert "WooCommerce" in resp.data["detail"]
+
+
+@pytest.mark.django_db
+def test_import_from_site_validates_site_id(client):
+    assert client.post("/api/products/import_from_site/", {}, format="json").status_code == 400
+
+
 # --- product types via the serializer ----------------------------------------
 
 

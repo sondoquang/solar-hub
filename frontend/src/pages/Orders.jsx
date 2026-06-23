@@ -22,7 +22,7 @@ import ErrorState from "../components/ErrorState.jsx";
 import OrderDetailModal from "../components/OrderDetailModal.jsx";
 import OrderStats from "../components/OrderStats.jsx";
 import OrderStatusBadge from "../components/OrderStatusBadge.jsx";
-import { formatDateTime, formatVND } from "../lib/format.js";
+import { formatDateTime, formatVND, titleCaseName } from "../lib/format.js";
 
 const { RangePicker } = DatePicker;
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -280,7 +280,7 @@ export default function Orders() {
       width: 200,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
             <Globe size={15} />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
@@ -296,7 +296,7 @@ export default function Orders() {
       width: 200,
       render: (_v, r) => (
         <div className="min-w-0 flex flex-col gap-1">
-          <p className="truncate mb-1">{r.customer_name || "—"}</p>
+          <p className="truncate mb-1">{titleCaseName(r.customer_name) || "—"}</p>
           <p className="truncate text-xs text-muted">{r.customer_phone || ""}</p>
         </div>
       ),
@@ -456,7 +456,7 @@ export default function Orders() {
       {isError ? (
         <ErrorState message="Không tải được danh sách đơn hàng" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={rows}

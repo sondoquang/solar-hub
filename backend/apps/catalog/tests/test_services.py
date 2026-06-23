@@ -35,6 +35,7 @@ class _FakeClient:
         *,
         raise_error=False,
         categories=None,
+        products=None,
         error_skus=None,
         stale_woo_ids=None,
         category_error_names=None,
@@ -43,8 +44,11 @@ class _FakeClient:
         self.calls = []
         self.variation_calls = []
         self.category_calls = []
+        self.list_products_calls = 0
         self.raise_error = raise_error
         self.categories = categories or []
+        # What ``list_products`` returns (Woo-shaped {id, name, sku, type}).
+        self.products = products or []
         # SKUs Woo rejects per-item: returned as {"error": ...} with no id, like
         # a duplicate-SKU create against /products/batch (HTTP 200 overall).
         self.error_skus = set(error_skus or [])
@@ -117,6 +121,12 @@ class _FakeClient:
         if self.raise_error:
             raise httpx.ConnectError("boom")
         return self.categories
+
+    def list_products(self, per_page=100, search=None):
+        self.list_products_calls += 1
+        if self.raise_error:
+            raise httpx.ConnectError("boom")
+        return self.products
 
     def batch_categories(self, create=None):
         create = create or []

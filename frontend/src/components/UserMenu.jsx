@@ -192,16 +192,16 @@ export default function UserMenu() {
       >
         <button
           type="button"
-          className="flex cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-1.5 py-1 hover:bg-slate-100"
+          className="flex cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-1.5 py-1 hover:bg-white/5"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-200 text-sm font-semibold text-slate-600">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-text">
             {initialsOf(user)}
           </span>
           <div className="text-right text-sm leading-tight">
-            <p className="mb-1.5 font-semibold">{user?.full_name ?? user?.username ?? "—"}</p>
+            <p className="mb-1.5 font-semibold text-ink">{user?.full_name ?? user?.username ?? "—"}</p>
             <p className="text-xs text-muted">{user?.role ?? "—"}</p>
           </div>
-          <ChevronDown size={16} className="text-slate-400" />
+          <ChevronDown size={16} className="text-muted" />
         </button>
       </Dropdown>
 

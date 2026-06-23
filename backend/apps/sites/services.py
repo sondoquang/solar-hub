@@ -74,6 +74,43 @@ def update_site(site: Site, *, consumer_secret: str | None = None, **fields) -> 
     return site
 
 
+def sites_for_product_push(site_ids=None) -> list[int]:
+    """The site ids a product push should actually hit (single source of truth
+    for both ``push_all_products`` and the ``sync_now`` ``expected`` count).
+
+    WooCommerce sites are independent → every live one is pushed. Sapo is the
+    special case: several Sapo ``Site`` records can be storefront domains of ONE
+    backend store sharing a product DB (they resolve to the same
+    ``*.mysapo.net`` host). Pushing to each would write the SAME product N times
+    — wasteful and N redundant ``ProductMapping`` rows — so Sapo sites are
+    grouped by ``sapo_store_host`` and only the lowest-id site of each store is
+    pushed. A site whose host is not resolved yet (blank) is its own store so it
+    is never silently merged. Unlike ``sites_for_order_poll`` there is NO
+    ``SAPO_ORDER_POLL_ENABLED`` gate — that switch only pauses order polling.
+
+    ``site_ids`` (when given) scopes the candidate set first, so a manual run can
+    still target a subset.
+    """
+    qs = Site.objects.filter(is_deleted=False)
+    if site_ids is not None:
+        qs = qs.filter(id__in=site_ids)
+
+    ids = list(
+        qs.filter(platform=Site.Platform.WOOCOMMERCE).values_list("id", flat=True)
+    )
+    seen_stores: set = set()
+    for row in (
+        qs.filter(platform=Site.Platform.SAPO).order_by("id").values("id", "sapo_store_host")
+    ):
+        # Unresolved host → unique key per site (never merge unknowns).
+        store = row["sapo_store_host"] or f"site:{row['id']}"
+        if store in seen_stores:
+            continue
+        seen_stores.add(store)
+        ids.append(row["id"])
+    return ids
+
+
 def client_for_site(site: Site):
     """Build the platform client with the decrypted secret (in memory only).
 

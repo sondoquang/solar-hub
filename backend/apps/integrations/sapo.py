@@ -32,9 +32,9 @@ status change via Sapo's close/cancel endpoints (Sapo has no generic order
 status the Hub stores (processing/completed/cancelled). Unlike Woo, the Sapo
 order flow tracks payment: ``financial_status`` is carried through to the Hub
 (``Order.payment_status``), ``list_orders`` can filter by it (``financial_status``
-param — the poll passes ``"unpaid"``), and ``mark_order_paid`` records a full
-``sale`` transaction (Sapo has no settable payment-status field). Fulfillment
-status is still ignored.
+param, e.g. the ``"unpaid"`` group — the order poll no longer pins it, but
+callers may), and ``mark_order_paid`` records a full ``sale`` transaction (Sapo
+has no settable payment-status field). Fulfillment status is still ignored.
 """
 
 import logging
@@ -335,9 +335,12 @@ def _sapo_order_to_woo(order: dict | None) -> dict:
         billing["last_name"] = customer.get("last_name", "")
     return {
         "id": order.get("id"),
+        # Sapo's ``name`` is the display label and already carries a ``#``
+        # prefix (e.g. "#1001"); strip it so ``Order.number`` stays a bare
+        # number like Woo's — the frontend adds the single "#" for display.
         "number": str(
             order.get("name") or order.get("order_number") or order.get("id") or ""
-        ),
+        ).lstrip("#").strip(),
         "status": _SAPO_TO_WOO_STATUS.get(order.get("status"), order.get("status") or ""),
         "currency": order.get("currency", ""),
         "total": order.get("total_price") or 0,
@@ -826,6 +829,42 @@ class SapoClient:
                 ),
             }
         }
+
+    def list_products(self, per_page: int = 100, search: str | None = None) -> list[dict]:
+        """Store products as Woo-product-shaped dicts for name-match adoption.
+
+        Mirrors ``WooClient.list_products`` so the catalog adoption step is
+        platform-agnostic. Sapo paginates at 250 (Shopify-style); ``search`` is
+        ignored (the caller matches by exact normalized name anyway). The SKU
+        lives on the first variant. Type is decided by **variant count**, NOT by
+        the presence of ``options``: on Sapo/Shopify every product carries a
+        default option (e.g. "Tiêu đề"), so a single-variant product is
+        ``simple`` and only >1 variant is ``variable`` — checking ``options``
+        would mislabel every product variable. Returns ``{id, name, sku, type}``.
+        """
+        out: list[dict] = []
+        page = 1
+        while True:
+            r = self._request(
+                "GET", "/products.json", params={"limit": _PAGE_LIMIT, "page": page}
+            )
+            r.raise_for_status()
+            batch = r.json().get("products") or []
+            for p in batch:
+                variants = p.get("variants") or []
+                sku = (variants[0].get("sku") if variants else "") or ""
+                out.append(
+                    {
+                        "id": p.get("id"),
+                        "name": p.get("name") or "",
+                        "sku": sku,
+                        "type": "variable" if len(variants) > 1 else "simple",
+                    }
+                )
+            if len(batch) < _PAGE_LIMIT:
+                break
+            page += 1
+        return out
 
     # ------------------------------------------------------------- categories
 

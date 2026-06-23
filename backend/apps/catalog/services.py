@@ -8,6 +8,8 @@ traffic goes through ``WooClient`` (built by ``apps.sites.services.client_for_si
 import logging
 import re
 import time
+import unicodedata
+from decimal import Decimal, InvalidOperation
 
 import httpx
 from django.conf import settings
@@ -28,8 +30,15 @@ logger = logging.getLogger(__name__)
 
 OPERATION = "push_products"
 CATEGORY_OPERATION = "pull_categories"
+IMPORT_OPERATION = "import_products"
 
 _WS = re.compile(r"\s+")
+
+# v1 imports only "simple" products as ready-to-sync masters. variable/grouped/
+# external are reported as skipped (not imported): pushing a half-defined master
+# of those types would degrade the site product (empty attributes / unsupported
+# type), so they are handled manually for now — see import_products_from_site.
+_IMPORTABLE_TYPES = {MasterProduct.Type.SIMPLE}
 
 
 def _item_limit() -> int:
@@ -59,6 +68,33 @@ def normalize_category_name(value: str) -> str:
     ``"Pin"`` and ``"PIN"`` stay distinct.
     """
     return _WS.sub(" ", (value or "").strip())
+
+
+def _fold_diacritics(value: str) -> str:
+    """Strip Vietnamese diacritics so accented/unaccented names converge.
+
+    ``đ``/``Đ`` decompose to nothing under NFD, so they are mapped to ``d``
+    explicitly before dropping the remaining combining marks.
+    """
+    value = value.replace("đ", "d").replace("Đ", "D")
+    return "".join(c for c in unicodedata.normalize("NFD", value) if not unicodedata.combining(c))
+
+
+def normalize_match_name(value: str) -> str:
+    """Normalize a product name for the cross-site *name* matching key.
+
+    Unlike ``normalize_sku`` (upper) and ``normalize_category_name`` (case kept),
+    this is for adoption: trim + collapse whitespace + lowercase, and — unless
+    ``settings.PRODUCT_MATCH_FOLD_DIACRITICS`` is False — fold Vietnamese
+    diacritics so ``"Tấm pin Mặt Trời"`` matches a site product named
+    ``"tam pin mat troi"``. Diacritic folding is a flag because it can merge
+    genuinely different names that differ only by accent; turning it off makes
+    matching stricter without a code change.
+    """
+    out = _WS.sub(" ", (value or "").strip()).lower()
+    if getattr(settings, "PRODUCT_MATCH_FOLD_DIACRITICS", True):
+        out = _fold_diacritics(out)
+    return out
 
 
 def _category_refs(names, category_id_by_name: dict) -> list[dict]:
@@ -339,6 +375,67 @@ def _resolve_grouped_ids(site, master: MasterProduct) -> tuple[list, list]:
     return ids, missing
 
 
+def _adopt_by_name(site, client, masters) -> dict:
+    """Bootstrap ``ProductMapping`` by NAME for masters not yet mapped on a site.
+
+    The sites are not unified on SKU/id, so a product imported into the Hub may
+    already exist on a target site under a (possibly hand-typed) name. Before the
+    push plans a CREATE for an unmapped master, this lists the site's products,
+    indexes them by normalized name, and on a UNIQUE match against the master's
+    frozen ``match_name`` (falling back to ``name``) creates the mapping — so the
+    master falls into ``_plan_site_push``'s UPDATE branch instead of duplicating
+    the product. The match runs ONCE per ``(master, site)``: the moment a mapping
+    exists it is never re-run, so a rename on the Hub afterwards never breaks the
+    link, and stable runs that have nothing to adopt never even call the API
+    (the candidate list is empty → early return).
+
+    Ambiguous matches (two site products share the normalized name) are NOT
+    adopted AND NOT created — adopting either could clobber the wrong product and
+    creating would duplicate. Their master ids are returned so the caller drops
+    them from this run and the SyncLog reports them for a human to resolve.
+    Returns ``{"adopted": [sku], "ambiguous": [sku], "ambiguous_master_ids": set}``.
+    """
+    report: dict = {"adopted": [], "ambiguous": [], "ambiguous_master_ids": set()}
+    mapped_ids = set(
+        ProductMapping.objects.filter(site=site, master__in=masters).values_list(
+            "master_id", flat=True
+        )
+    )
+    candidates = [m for m in masters if not m.is_deleted and m.id not in mapped_ids]
+    if not candidates:
+        return report
+
+    index: dict = {}
+    for p in client.list_products():
+        woo_id = p.get("id")
+        if not woo_id:
+            continue
+        index.setdefault(normalize_match_name(p.get("name", "")), []).append(woo_id)
+
+    # Woo ids already owned by a mapping on this site must never be adopted again
+    # (the ``(site, woo_product_id)`` unique constraint; another master owns it).
+    claimed = set(
+        ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True)
+    )
+    for master in candidates:
+        key = normalize_match_name(master.match_name or master.name)
+        if not key:
+            continue
+        ids = [i for i in index.get(key, []) if i not in claimed]
+        if len(ids) == 1:
+            ProductMapping.objects.update_or_create(
+                master=master,
+                site=site,
+                defaults={"woo_product_id": ids[0], "last_synced_at": None},
+            )
+            claimed.add(ids[0])
+            report["adopted"].append(master.sku)
+        elif len(ids) > 1:
+            report["ambiguous"].append(master.sku)
+            report["ambiguous_master_ids"].add(master.id)
+    return report
+
+
 def _plan_site_push(site, masters, category_id_by_name) -> tuple[list, list, list, dict]:
     """Split masters into Woo create/update/delete work for one site.
 
@@ -543,6 +640,7 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
     set, even the no-op (nothing to push) case writes a SUCCESS row so every
     targeted site reports and the banner's ``done`` count reaches ``expected``.
     """
+    from apps.sites.models import Site
     from apps.sites.services import client_for_site
 
     started = timezone.now()
@@ -570,7 +668,7 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             operation=OPERATION,
             status=SyncLog.Status.ERROR,
             error=exc.__class__.__name__,
-            detail={"stage": "ensure_categories"},
+            detail={"stage": "ensure_categories", **_site_snapshot(site)},
             **audit,
         )
         return {
@@ -581,18 +679,77 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             "error": exc.__class__.__name__,
         }
 
-    create, update, delete, grouped_unresolved = _plan_site_push(site, masters, category_id_by_name)
+    # Adopt existing site products by name BEFORE planning, so a matched master
+    # becomes an update (not a duplicate create). Wrapped like ensure_categories:
+    # a network failure here aborts only this site (the fan-out continues).
+    # v1: name adoption runs for WooCommerce only — Sapo (shared-DB, different
+    # field model) is handled separately later, and its push keeps the existing
+    # SKU/mapping behaviour (no extra list_products call per store).
+    adopt_report = {"adopted": [], "ambiguous": [], "ambiguous_master_ids": set()}
+    if site.platform == Site.Platform.WOOCOMMERCE:
+        try:
+            adopt_report = _adopt_by_name(site, client, masters)
+        except httpx.HTTPError as exc:
+            logger.error(
+                "push_products adopt_by_name failed site_id=%s: %s",
+                site.id,
+                exc.__class__.__name__,
+            )
+            SyncLog.objects.create(
+                site=site,
+                operation=OPERATION,
+                status=SyncLog.Status.ERROR,
+                error=exc.__class__.__name__,
+                detail={"stage": "adopt_products", **_site_snapshot(site)},
+                **audit,
+            )
+            return {
+                "site_id": site.id,
+                "created": 0,
+                "updated": 0,
+                "deleted": 0,
+                "error": exc.__class__.__name__,
+            }
+
+    # Ambiguous masters are neither adopted nor created this run — drop them so
+    # _plan_site_push does not queue a duplicate create.
+    plan_masters = (
+        [m for m in masters if m.id not in adopt_report["ambiguous_master_ids"]]
+        if adopt_report["ambiguous_master_ids"]
+        else masters
+    )
+    # Surfaced in every SyncLog this call writes (the set is not JSON-serializable).
+    adopt_detail = {
+        "adopted": adopt_report["adopted"],
+        "adopted_count": len(adopt_report["adopted"]),
+        "ambiguous": adopt_report["ambiguous"],
+    }
+
+    create, update, delete, grouped_unresolved = _plan_site_push(
+        site, plan_masters, category_id_by_name
+    )
     total = len(create) + len(update) + len(delete)
     if total == 0:
         # Nothing to push (site already in sync). A periodic/admin push logs
         # nothing here, but a tracked run must record this site so the progress
-        # banner sees it finish — write a no-op SUCCESS row only when grouped.
+        # banner sees it finish — write a no-op row only when grouped. Ambiguous
+        # matches mean some products were deliberately left untouched, so flag
+        # PARTIAL (not a clean SUCCESS) so the report nudges a human to resolve.
         if run_id:
             SyncLog.objects.create(
                 site=site,
                 operation=OPERATION,
-                status=SyncLog.Status.SUCCESS,
-                detail={"planned": 0, "categories": category_report},
+                status=(
+                    SyncLog.Status.PARTIAL
+                    if adopt_report["ambiguous"]
+                    else SyncLog.Status.SUCCESS
+                ),
+                detail={
+                    "planned": 0,
+                    "categories": category_report,
+                    **adopt_detail,
+                    **_site_snapshot(site),
+                },
                 **audit,
             )
         return {
@@ -674,7 +831,7 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
         # Variations ride on the parent push (parent ids now mapped above —
         # including parents just re-created from stale mappings).
         variable_masters = [
-            m for m in masters if m.type == MasterProduct.Type.VARIABLE and not m.is_deleted
+            m for m in plan_masters if m.type == MasterProduct.Type.VARIABLE and not m.is_deleted
         ]
         if variable_masters:
             variations = _push_variations(site, client, variable_masters)
@@ -688,7 +845,12 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             updated_count=updated,
             deleted_count=deleted,
             error=exc.__class__.__name__,
-            detail={"planned": total, "categories": category_report},
+            detail={
+                "planned": total,
+                "categories": category_report,
+                **adopt_detail,
+                **_site_snapshot(site),
+            },
             **audit,
         )
         return {
@@ -709,9 +871,11 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
     # + Woo's error code so the cause (e.g. duplicate SKU) is visible.
     if failures:
         status = SyncLog.Status.PARTIAL if (created or updated or deleted) else SyncLog.Status.ERROR
-    elif category_report["failed"]:
-        # Products landed but some categories could not be created on the site —
-        # those refs went out by name, which Woo ignores, so the run is flagged.
+    elif category_report["failed"] or adopt_report["ambiguous"]:
+        # Products landed but the run is not clean: either a category could not be
+        # created (its name-only ref is ignored by Woo) or some products matched
+        # more than one site product by name and were left untouched — both are
+        # flagged PARTIAL so the report surfaces the gap.
         status = SyncLog.Status.PARTIAL
     else:
         status = SyncLog.Status.SUCCESS
@@ -733,6 +897,8 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             # Products re-created because their mapping pointed at a woo id
             # that no longer exists (deleted on the site outside the Hub).
             "recreated_stale": len(stale_creates),
+            **adopt_detail,
+            **_site_snapshot(site),
         },
         **audit,
     )
@@ -1188,3 +1354,158 @@ def pull_categories_for_site(site, run_id=None, triggered_by_id=None) -> dict:
         **audit,
     )
     return {"site_id": site.id, "pulled": pulled, "error": None}
+
+
+def _to_decimal(value):
+    """Parse a Woo price/weight (string, '' = unset) into Decimal or None."""
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _master_fields_from_remote(item: dict, sku: str, site, now) -> dict:
+    """Map a remote (Woo-shaped) product dict to ``MasterProduct`` kwargs.
+
+    Defensive about missing fields: WooCommerce's product list carries the full
+    object, but Sapo's slim list only has name/sku/type — the rest fall back to
+    sensible defaults. ``match_name`` freezes the import-time name as the
+    name-match key; ``source_site``/``imported_at`` are audit only.
+    """
+    name = (item.get("name") or "").strip()
+    status = item.get("status")
+    if status not in MasterProduct.Status.values:
+        status = MasterProduct.Status.DRAFT
+    stock = item.get("stock_status")
+    if stock not in MasterProduct.StockStatus.values:
+        stock = MasterProduct.StockStatus.INSTOCK
+    regular = _to_decimal(item.get("regular_price"))
+    images = [
+        img["src"]
+        for img in (item.get("images") or [])
+        if isinstance(img, dict) and img.get("src")
+    ]
+    categories = [
+        c["name"]
+        for c in (item.get("categories") or [])
+        if isinstance(c, dict) and c.get("name")
+    ]
+    return {
+        "sku": sku,
+        "name": name,
+        "match_name": normalize_match_name(name),
+        "type": MasterProduct.Type.SIMPLE,
+        "description": item.get("description") or "",
+        "short_description": item.get("short_description") or "",
+        "regular_price": regular if regular is not None else Decimal("0"),
+        "sale_price": _to_decimal(item.get("sale_price")),
+        "status": status,
+        "stock_status": stock,
+        "weight": _to_decimal(item.get("weight")),
+        "images": images,
+        "categories": categories,
+        "source_site": site,
+        "imported_at": now,
+    }
+
+
+def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dict:
+    """Import one site's products into the Hub catalog (the "lấy data chuẩn từ
+    website chính về" bootstrap).
+
+    Mirrors ``pull_categories_for_site``: builds the client, lists every product,
+    and for each SIMPLE product either LINKS it to an existing master with the
+    same SKU (create the mapping only) or CREATES a new master — freezing the
+    site name into ``match_name`` (the name-match key a later push adopts by) and
+    stamping ``source_site``/``imported_at``. The new/linked master is mapped to
+    the site so a later push UPDATEs it instead of duplicating. ``variable`` /
+    ``grouped`` / ``external`` products are NOT imported (v1: pushing a
+    half-defined master of those types would degrade the site product) — they are
+    counted in ``skipped`` / ``skipped_types`` so the report names what needs
+    manual handling. Idempotent: a product already mapped on the site is skipped,
+    so re-importing is safe. Network errors are caught and returned (never
+    raised); a ``SyncLog`` row records the outcome. Logs by ``site_id`` only.
+    """
+    from django.db import transaction
+
+    from apps.sites.services import client_for_site
+
+    started = timezone.now()
+    audit = {"run_id": run_id, "triggered_by_id": triggered_by_id, "started_at": started}
+
+    try:
+        products = client_for_site(site).list_products()
+    except httpx.HTTPError as exc:
+        logger.error("import_products failed site_id=%s: %s", site.id, exc.__class__.__name__)
+        SyncLog.objects.create(
+            site=site,
+            operation=IMPORT_OPERATION,
+            status=SyncLog.Status.ERROR,
+            error=exc.__class__.__name__,
+            detail=_site_snapshot(site),
+            **audit,
+        )
+        return {"site_id": site.id, "imported": 0, "error": exc.__class__.__name__}
+
+    created = linked = skipped = 0
+    skipped_types: dict = {}
+    # woo ids already mapped on this site → idempotent skip on re-import.
+    mapped_woo_ids = set(
+        ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True)
+    )
+    now = timezone.now()
+    with transaction.atomic():
+        for item in products:
+            woo_id = item.get("id")
+            if not woo_id:
+                continue
+            ptype = item.get("type") or MasterProduct.Type.SIMPLE
+            if ptype not in _IMPORTABLE_TYPES:
+                skipped += 1
+                skipped_types[ptype] = skipped_types.get(ptype, 0) + 1
+                continue
+            if woo_id in mapped_woo_ids:
+                skipped += 1
+                continue
+            sku = normalize_sku(item.get("sku", "")) or f"IMPORT-{site.id}-{woo_id}"
+            master = MasterProduct.objects.filter(sku=sku, is_deleted=False).first()
+            if master is None:
+                master = MasterProduct.objects.create(
+                    **_master_fields_from_remote(item, sku, site, now)
+                )
+                created += 1
+            else:
+                linked += 1
+            ProductMapping.objects.update_or_create(
+                master=master,
+                site=site,
+                defaults={"woo_product_id": woo_id, "last_synced_at": now},
+            )
+            mapped_woo_ids.add(woo_id)
+
+    SyncLog.objects.create(
+        site=site,
+        operation=IMPORT_OPERATION,
+        status=SyncLog.Status.SUCCESS,
+        created_count=created,
+        updated_count=linked,
+        detail={
+            "imported": created + linked,
+            "created": created,
+            "linked": linked,
+            "skipped": skipped,
+            "skipped_types": skipped_types,
+            **_site_snapshot(site),
+        },
+        **audit,
+    )
+    return {
+        "site_id": site.id,
+        "imported": created + linked,
+        "created": created,
+        "linked": linked,
+        "skipped": skipped,
+        "error": None,
+    }

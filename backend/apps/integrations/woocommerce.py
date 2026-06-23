@@ -188,6 +188,48 @@ class WooClient:
         r.raise_for_status()
         return r
 
+    def list_products(self, per_page: int = 100, search: str | None = None) -> list[dict]:
+        """GET /products, paginated — list a site's products for name matching.
+
+        Mirrors ``list_categories``: walks every page (``X-WP-TotalPages``),
+        Basic auth with the query-string fallback on a 401. ``status="any"`` so
+        draft/private products are seen too (an existing draft must still be
+        adopted, not duplicated). ``search`` narrows server-side when given, but
+        Woo's search is fuzzy — the caller still matches by exact normalized
+        name. Returns each remote product dict (``{id, name, sku, type, ...}``),
+        which the caller indexes by normalized name to adopt unmapped masters.
+        """
+        base_params: dict = {"per_page": min(per_page, 100), "status": "any"}
+        if search:
+            base_params["search"] = search
+        products: list[dict] = []
+        page = 1
+        while True:
+            r = self._get_products_page({**base_params, "page": page})
+            batch = r.json()
+            if not batch:
+                break
+            products.extend(batch)
+            total_pages = int(r.headers.get("X-WP-TotalPages", 1) or 1)
+            if page >= total_pages:
+                break
+            page += 1
+        return products
+
+    def _get_products_page(self, params: dict) -> httpx.Response:
+        """One page of /products, with the 401 query-string fallback."""
+        url = f"{self.base}/products"
+        r = httpx.get(url, params=params, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.get(
+                url,
+                params={**params, "consumer_key": key, "consumer_secret": secret},
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r
+
     def batch_categories(self, create: list[dict] | None = None) -> dict:
         """POST /products/categories/batch — create product categories on the site.
 

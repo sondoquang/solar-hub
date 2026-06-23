@@ -503,7 +503,9 @@ def test_normalize_order_payment_status_blank_for_woo():
 
 
 @pytest.mark.django_db
-def test_poll_site_filters_unpaid_for_sapo(monkeypatch):
+def test_poll_site_pulls_all_payment_statuses_for_sapo(monkeypatch):
+    """The Sapo poll no longer pins financial_status=unpaid — it pulls every
+    payment status so the Sapo screen can list paid and unpaid orders alike."""
     from apps.sites.models import Site
 
     site = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
@@ -513,7 +515,7 @@ def test_poll_site_filters_unpaid_for_sapo(monkeypatch):
         lambda s: _FakeClient([], capture=capture),
     )
     services.poll_site(site, "processing")
-    assert capture["financial_status"] == "unpaid"
+    assert capture["financial_status"] is None
 
 
 @pytest.mark.django_db

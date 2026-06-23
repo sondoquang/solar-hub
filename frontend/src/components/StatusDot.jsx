@@ -1,7 +1,7 @@
 const MAP = {
-  up: { dot: "bg-success", bg: "bg-green-50", text: "text-success", label: "Hoạt động" },
-  down: { dot: "bg-danger", bg: "bg-red-50", text: "text-danger", label: "Không hoạt động" },
-  unknown: { dot: "bg-warning", bg: "bg-amber-50", text: "text-warning", label: "Tạm dừng" },
+  up: { dot: "bg-success", bg: "bg-green-500/15", text: "text-success", label: "Hoạt động" },
+  down: { dot: "bg-danger", bg: "bg-red-500/15", text: "text-danger", label: "Không hoạt động" },
+  unknown: { dot: "bg-warning", bg: "bg-amber-500/15", text: "text-warning", label: "Tạm dừng" },
 };
 
 export default function StatusDot({ status = "unknown" }) {

@@ -125,7 +125,7 @@ export default function SiteNotesModal({ site, open, onClose }) {
   return (
     <Modal open={open} onCancel={onClose} footer={null} title={title} width={720} destroyOnHidden>
       {/* Composer (add / edit) */}
-      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+      <div className="mb-4 rounded-lg border border-border bg-surface-muted p-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-medium">
             {editingNote ? "Sửa ghi chú" : "Thêm ghi chú mới"}
@@ -154,7 +154,7 @@ export default function SiteNotesModal({ site, open, onClose }) {
                 <button
                   type="button"
                   onClick={() => removeExisting(img)}
-                  className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-white text-danger shadow"
+                  className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-surface-raised text-danger shadow"
                   aria-label="Bỏ ảnh"
                 >
                   <X size={13} />
@@ -207,16 +207,16 @@ export default function SiteNotesModal({ site, open, onClose }) {
           {notes.map((note, idx) => (
             <article
               key={note.id}
-              className="rounded-lg border border-slate-200 p-3 shadow-card"
+              className="rounded-lg border border-border p-3 shadow-card"
             >
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-xs text-muted">
                   {page === 1 && idx === 0 && (
-                    <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-700">
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-semibold text-amber-300">
                       Mới nhất
                     </span>
                   )}
-                  <span className="font-medium text-slate-700">{note.created_by_name}</span>
+                  <span className="font-medium text-text">{note.created_by_name}</span>
                   <span className="tabular-nums">{formatDate(note.created_at)}</span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -239,7 +239,7 @@ export default function SiteNotesModal({ site, open, onClose }) {
 
               {note.content && (
                 <div
-                  className="richtext text-sm text-slate-800"
+                  className="richtext text-sm text-text"
                   // Backend sanitizes on save; DOMPurify is a second layer at render.
                   dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(note.content) }}
                 />

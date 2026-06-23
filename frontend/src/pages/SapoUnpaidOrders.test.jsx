@@ -60,11 +60,19 @@ describe("SapoUnpaidOrders", () => {
     cancelMutate.mockClear();
   });
 
-  it("lists an unpaid Sapo order with its payment-status badge", () => {
+  it("lists a Sapo order with its order- and payment-status badges", () => {
     renderPage();
     expect(screen.getByText("#SP-1001")).toBeInTheDocument();
     expect(screen.getByText("Trần Văn Khách")).toBeInTheDocument();
+    expect(screen.getByText("Đang xử lý")).toBeInTheDocument();
     expect(screen.getByText("Chưa thanh toán")).toBeInTheDocument();
+  });
+
+  it("offers the order-status and payment-status filters", () => {
+    renderPage();
+    // antd Selects render their current selection ("Tất cả …") as the label.
+    expect(screen.getByText("Tất cả trạng thái")).toBeInTheDocument();
+    expect(screen.getByText("Tất cả thanh toán")).toBeInTheDocument();
   });
 
   it("marks an order paid after confirming", async () => {
@@ -81,5 +89,16 @@ describe("SapoUnpaidOrders", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Xác nhận hủy" }));
     expect(cancelMutate).toHaveBeenCalledTimes(1);
     expect(cancelMutate.mock.calls[0][0]).toBe(42);
+  });
+
+  it('opens the detail modal from the row "Xem chi tiết" action', async () => {
+    renderPage();
+    expect(screen.queryByText("Chi tiết đơn Sapo")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Xem chi tiết/ }));
+    // The modal (title + its own footer action) is now mounted.
+    expect(await screen.findByText("Chi tiết đơn Sapo")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Đánh dấu đã thanh toán" })
+    ).toBeInTheDocument();
   });
 });

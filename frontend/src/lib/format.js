@@ -63,6 +63,20 @@ export function formatDuration(seconds) {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
+// Title-case a person/customer name for display & export: first letter of each
+// word uppercased, the rest lowercased ("nguyễn VĂN an" → "Nguyễn Văn An"). The
+// synced/stored value is left untouched — this only formats output. Returns ""
+// for blank input so callers keep their own fallback ("—", "Khách lẻ").
+export function titleCaseName(value) {
+  if (!value) return "";
+  return String(value)
+    .toLocaleLowerCase("vi")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toLocaleUpperCase("vi") + w.slice(1))
+    .join(" ");
+}
+
 // Response time: sub-second as "256 ms", ≥1s as "1.25 s".
 export function formatResponseTime(ms) {
   const n = Number(ms);

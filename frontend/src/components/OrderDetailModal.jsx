@@ -119,7 +119,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
       {isCarousel && (
         <span
           key={safeIndex}
-          className="animate-order-next rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-600"
+          className="animate-order-next rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-blue-300"
         >
           Đơn {safeIndex + 1}/{count}
         </span>
@@ -174,7 +174,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
       {current && (
         <div className="mt-2 space-y-3" onWheel={handleWheel}>
           {isCarousel && (
-            <div className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-surface-muted px-2 py-1.5">
               <Button
                 type="text"
                 icon={<ChevronLeft size={16} />}
@@ -194,7 +194,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
                     className={`rounded-full transition-all duration-200 ${
                       i === safeIndex
                         ? "h-2 w-5 bg-blue-500"
-                        : "h-2 w-2 bg-gray-300 hover:scale-125 hover:bg-gray-400"
+                        : "h-2 w-2 bg-white/25 hover:scale-125 hover:bg-white/50"
                     }`}
                   />
                 ))}

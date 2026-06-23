@@ -35,6 +35,15 @@ class MasterProduct(models.Model):
 
     sku = models.CharField(max_length=120, unique=True, db_index=True)
     name = models.CharField(max_length=255)
+    # The product's name as it was when imported from a site, frozen at import
+    # time and never touched by edits to ``name``. It is the cross-site *name*
+    # matching key: on the first push to a site with no mapping yet, the push
+    # looks the site up by this name and "adopts" the existing product (creates
+    # the mapping + updates it) instead of creating a duplicate. After that one
+    # adoption the stable ProductMapping takes over — name matching never runs
+    # again for that (master, site). Blank for hand-created masters (the push
+    # falls back to ``name``). See services.normalize_match_name / _adopt_by_name.
+    match_name = models.CharField(max_length=255, blank=True, default="", db_index=True)
     type = models.CharField(max_length=20, choices=Type.choices, default=Type.SIMPLE)
     description = models.TextField(blank=True)
     short_description = models.TextField(blank=True)
@@ -67,6 +76,17 @@ class MasterProduct(models.Model):
     # and their per-site woo ids live on ProductVariationMapping.
     attributes = models.JSONField(default=list)
     variations = models.JSONField(default=list)
+
+    # Where this master was imported from (audit only; SET_NULL so deleting the
+    # site keeps the master). Null for hand-created products.
+    source_site = models.ForeignKey(
+        "sites.Site",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="imported_products",
+    )
+    imported_at = models.DateTimeField(null=True, blank=True)
 
     is_deleted = models.BooleanField(default=False, db_index=True)
     deleted_at = models.DateTimeField(null=True, blank=True)

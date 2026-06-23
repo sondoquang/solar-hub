@@ -101,8 +101,8 @@ export default function RichTextEditor({
   };
 
   return (
-    <div className="overflow-hidden rounded border border-slate-200">
-      <div className="flex flex-wrap items-center gap-0.5 border-b border-slate-200 bg-slate-50 px-1.5 py-1">
+    <div className="overflow-hidden rounded border border-border">
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-border bg-surface-muted px-1.5 py-1">
         <ToolbarButton
           title="Đậm"
           active={editor.isActive("bold")}
@@ -131,7 +131,7 @@ export default function RichTextEditor({
         >
           <Strikethrough size={15} />
         </ToolbarButton>
-        <span className="mx-1 h-4 w-px bg-slate-300" />
+        <span className="mx-1 h-4 w-px bg-border-strong" />
         <ToolbarButton
           title="Tiêu đề lớn"
           active={editor.isActive("heading", { level: 2 })}
@@ -146,7 +146,7 @@ export default function RichTextEditor({
         >
           <Heading3 size={15} />
         </ToolbarButton>
-        <span className="mx-1 h-4 w-px bg-slate-300" />
+        <span className="mx-1 h-4 w-px bg-border-strong" />
         <ToolbarButton
           title="Danh sách"
           active={editor.isActive("bulletList")}
@@ -168,7 +168,7 @@ export default function RichTextEditor({
         >
           <Quote size={15} />
         </ToolbarButton>
-        <span className="mx-1 h-4 w-px bg-slate-300" />
+        <span className="mx-1 h-4 w-px bg-border-strong" />
         <ToolbarButton
           title="Chèn liên kết"
           active={editor.isActive("link")}

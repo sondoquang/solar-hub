@@ -26,7 +26,7 @@ export default function HealthCheckStats({ stats = {}, loading = false }) {
       label: "Tổng số lần kiểm tra",
       value: total,
       Icon: Activity,
-      tint: "bg-blue-50 text-blue-500",
+      tint: "bg-blue-500/15 text-blue-300",
       sub: <Trend value={stats.trend_pct} />,
     },
     {
@@ -34,7 +34,7 @@ export default function HealthCheckStats({ stats = {}, loading = false }) {
       label: "Hệ thống khỏe mạnh",
       value: stats.healthy ?? 0,
       Icon: ShieldCheck,
-      tint: "bg-green-50 text-success",
+      tint: "bg-green-500/15 text-success",
       sub: <span className="text-xs text-muted">{pct(stats.healthy ?? 0, total)}</span>,
     },
     {
@@ -42,7 +42,7 @@ export default function HealthCheckStats({ stats = {}, loading = false }) {
       label: "Cảnh báo",
       value: stats.warning ?? 0,
       Icon: AlertTriangle,
-      tint: "bg-amber-50 text-warning",
+      tint: "bg-amber-500/15 text-warning",
       sub: <span className="text-xs text-muted">{pct(stats.warning ?? 0, total)}</span>,
     },
     {
@@ -50,7 +50,7 @@ export default function HealthCheckStats({ stats = {}, loading = false }) {
       label: "Lỗi nghiêm trọng",
       value: stats.critical ?? 0,
       Icon: XCircle,
-      tint: "bg-red-50 text-danger",
+      tint: "bg-red-500/15 text-danger",
       sub: <span className="text-xs text-muted">{pct(stats.critical ?? 0, total)}</span>,
     },
   ];
@@ -58,7 +58,7 @@ export default function HealthCheckStats({ stats = {}, loading = false }) {
   return (
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
       {cards.map(({ key, label, value, Icon, tint, sub }) => (
-        <div key={key} className="flex items-start gap-3 rounded bg-white p-3 shadow-card">
+        <div key={key} className="flex items-start gap-3 rounded bg-surface-raised p-3 border border-border">
           <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${tint}`}>
             <Icon size={22} />
           </span>

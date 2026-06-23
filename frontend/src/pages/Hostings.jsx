@@ -22,9 +22,9 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 // Compact per-hosting health summary: up / down / unknown counts as colored pills.
 function HealthSummary({ counts }) {
   const items = [
-    { key: "up", label: "Hoạt động", cls: "bg-green-50 text-success" },
-    { key: "down", label: "Lỗi", cls: "bg-red-50 text-danger" },
-    { key: "unknown", label: "Chưa rõ", cls: "bg-amber-50 text-warning" },
+    { key: "up", label: "Hoạt động", cls: "bg-green-500/15 text-success" },
+    { key: "down", label: "Lỗi", cls: "bg-red-500/15 text-danger" },
+    { key: "unknown", label: "Chưa rõ", cls: "bg-amber-500/15 text-warning" },
   ];
   return (
     <span className="inline-flex flex-wrap gap-1">
@@ -149,7 +149,7 @@ export default function Hostings() {
       width: 220,
       render: (name) => (
         <span className="inline-flex items-center gap-2.5 font-medium">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
             <Server size={15} />
           </span>
           <span className="truncate">{name}</span>
@@ -257,7 +257,7 @@ export default function Hostings() {
       {isError ? (
         <ErrorState message="Không tải được danh sách hosting" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={hostings}

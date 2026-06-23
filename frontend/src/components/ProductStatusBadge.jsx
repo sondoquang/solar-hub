@@ -1,16 +1,16 @@
 // Presentational badge for a MasterProduct publish status. Mirrors
 // OrderStatusBadge so the catalog reads consistently with the rest of the app.
 const MAP = {
-  publish: { bg: "bg-green-50", text: "text-success", label: "Đã đăng" },
-  draft: { bg: "bg-slate-100", text: "text-slate-600", label: "Nháp" },
-  pending: { bg: "bg-amber-50", text: "text-warning", label: "Chờ duyệt" },
-  private: { bg: "bg-blue-50", text: "text-blue-600", label: "Riêng tư" },
+  publish: { bg: "bg-green-500/15", text: "text-success", label: "Đã đăng" },
+  draft: { bg: "bg-white/10", text: "text-slate-300", label: "Nháp" },
+  pending: { bg: "bg-amber-500/15", text: "text-warning", label: "Chờ duyệt" },
+  private: { bg: "bg-blue-500/15", text: "text-blue-300", label: "Riêng tư" },
 };
 
 export default function ProductStatusBadge({ status }) {
   const { bg, text, label } = MAP[status] || {
-    bg: "bg-slate-100",
-    text: "text-slate-600",
+    bg: "bg-white/10",
+    text: "text-slate-300",
     label: status || "—",
   };
   return (

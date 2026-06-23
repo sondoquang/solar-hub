@@ -55,7 +55,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       value: vi(o.hub_used),
       sub: `Trong tổng số ${vi(o.hub_total)} danh mục`,
       Icon: Boxes,
-      tint: "bg-blue-50 text-blue-500",
+      tint: "bg-blue-500/15 text-blue-300",
     },
     {
       key: "linked",
@@ -63,7 +63,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       value: vi(o.linked),
       sub: `${o.linked_pct ?? 0}%`,
       Icon: Link2,
-      tint: "bg-green-50 text-success",
+      tint: "bg-green-500/15 text-success",
     },
     {
       key: "unlinked",
@@ -71,7 +71,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       value: vi(o.unlinked),
       sub: o.hub_used ? `${(100 - (o.linked_pct ?? 0)).toFixed(1)}%` : "—",
       Icon: Unlink,
-      tint: "bg-amber-50 text-warning",
+      tint: "bg-amber-500/15 text-warning",
     },
     {
       key: "sites",
@@ -79,7 +79,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       value: vi(o.site_count),
       sub: "Đã kết nối",
       Icon: Globe,
-      tint: "bg-violet-50 text-violet-500",
+      tint: "bg-violet-500/15 text-violet-300",
     },
   ];
 
@@ -162,7 +162,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {/* Scoped pull (Woo → Hub) */}
-        <div className="rounded bg-white p-3 shadow-card">
+        <div className="rounded bg-surface-raised p-3 border border-border">
           <h3 className="font-display text-base font-semibold">Đồng bộ danh mục từ website (PULL)</h3>
           <p className="mt-1 text-sm text-muted">
             Kéo danh mục từ một website về Hub. Dữ liệu được gộp, chuẩn hóa và dựng
@@ -193,7 +193,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
         </div>
 
         {/* Recent runs */}
-        <div className="rounded bg-white p-3 shadow-card lg:col-span-2">
+        <div className="rounded bg-surface-raised p-3 border border-border lg:col-span-2">
           <h3 className="font-display text-base font-semibold">Lịch sử đồng bộ gần đây</h3>
           {recent.isError ? (
             <ErrorState message="Không tải được lịch sử" onRetry={recent.refetch} />
@@ -224,7 +224,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       {matrix.isError ? (
         <ErrorState message="Không tải được ma trận danh mục" onRetry={matrix.refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={rows}

@@ -55,6 +55,11 @@ export const deleteProduct = (id) =>
 export const syncProducts = (body = {}) =>
   api.post("/products/sync_now/", clean(body)).then((r) => r.data);
 
+// Import a site's products into the Hub catalog ("Nhập từ website chính").
+// body: { site: number } (the source site id). Async Celery; returns run_id.
+export const importProductsFromSite = (siteId) =>
+  api.post("/products/import_from_site/", { site: siteId }).then((r) => r.data);
+
 // Per-product sync state across every active site (đã/chưa đồng bộ + thời gian).
 export const getProductSyncStatus = (id) =>
   api.get(`/products/${id}/sync_status/`).then((r) => r.data);
@@ -215,6 +220,16 @@ export const useDeleteProduct = () => useInvalidatingMutation(deleteProduct);
 // but mappings/last_synced_at update once the task runs — invalidate so a later
 // refetch shows them. (The task is async; we don't await its completion here.)
 export const useSyncProducts = () => useInvalidatingMutation(syncProducts);
+
+// Importing products from a site is async; the catalog changes once the task
+// runs, so invalidate the product caches on settle (the banner polls the run).
+export function useImportProductsFromSite() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: importProductsFromSite,
+    onSettled: () => qc.invalidateQueries({ queryKey: KEY }),
+  });
+}
 
 // Pulling categories from sites is async; invalidate the picker cache on settle
 // so it refreshes once the task has run.

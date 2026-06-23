@@ -185,7 +185,7 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     <div className="flex items-center gap-2">
       <span>Trạng thái đồng bộ</span>
       {product && (
-        <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-600">
+        <span className="rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-blue-300">
           {syncedCount}/{rows.length} site
         </span>
       )}
@@ -217,7 +217,7 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
   );
 
   return (
-    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={800}>
+    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={1040}>
       {product && (
         <div className="mt-2">
           <p className="mb-2 truncate text-sm text-muted">
@@ -231,34 +231,45 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
               message={`Đang đồng bộ… ${pushRun.doneSites}/${pushRun.activeRun.expected} site hoàn tất.`}
             />
           )}
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Input
-              size="small"
-              allowClear
-              placeholder="Tìm theo domain..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-56"
-            />
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-sm text-muted">Loại trang:</span>
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <div className="min-w-[240px] flex-1">
+              <label className="mb-1.5 block text-sm font-medium text-muted">
+                Tìm theo domain
+              </label>
+              <Input
+                size="large"
+                allowClear
+                placeholder="Tìm theo domain..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full"
+              />
+            </div>
+            <div className="w-full sm:w-52">
+              <label className="mb-1.5 block text-sm font-medium text-muted">
+                Loại trang
+              </label>
               <Select
-                size="small"
+                size="large"
                 value={primaryFilter}
                 onChange={setPrimaryFilter}
-                className="min-w-32"
+                className="w-full"
                 options={[
                   { value: "all", label: "Tất cả" },
                   { value: "true", label: "Trang chính" },
                   { value: "false", label: "Trang thường" },
                 ]}
               />
-              <span className="text-sm text-muted">Trạng thái web:</span>
+            </div>
+            <div className="w-full sm:w-52">
+              <label className="mb-1.5 block text-sm font-medium text-muted">
+                Trạng thái web
+              </label>
               <Select
-                size="small"
+                size="large"
                 value={statusFilter}
                 onChange={setStatusFilter}
-                className="min-w-36"
+                className="w-full"
                 options={[
                   { value: "all", label: "Tất cả" },
                   { value: "up", label: "Hoạt động" },
@@ -275,7 +286,7 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
             columns={columns}
             dataSource={visible}
             pagination={false}
-            scroll={{ y: 360 }}
+            scroll={{ y: 460 }}
             rowSelection={{
               selectedRowKeys: selected,
               onChange: setSelected,

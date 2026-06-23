@@ -112,8 +112,10 @@ def push_all_products(site_ids=None, master_ids=None, run_id=None, triggered_by_
 
     The "Đồng bộ ngay" UI (or admin action) triggers this. ``site_ids`` scopes
     which sites to push to (all live sites when omitted); ``master_ids`` scopes
-    which products (the whole catalog when omitted). Sites are chunked into
-    batches of ``PRODUCT_PUSH_BATCH_SIZE`` and one ``push_products_batch_task`` is
+    which products (the whole catalog when omitted). The target set runs through
+    ``sites_for_product_push`` so a Sapo store reachable under several storefront
+    domains is pushed once, not once per domain. Sites are chunked into batches
+    of ``PRODUCT_PUSH_BATCH_SIZE`` and one ``push_products_batch_task`` is
     dispatched per chunk, so a slow/broken site only holds up its own batch. The
     push is idempotent (upsert on ``(master, site)``), so re-running is safe.
 
@@ -121,12 +123,9 @@ def push_all_products(site_ids=None, master_ids=None, run_id=None, triggered_by_
     ``SyncLog`` rows so the progress banner can poll completion; ``triggered_by_id``
     is the admin who clicked sync. Both are threaded onto each row.
     """
-    from apps.sites.models import Site
+    from apps.sites.services import sites_for_product_push
 
-    qs = Site.objects.filter(is_deleted=False)
-    if site_ids is not None:
-        qs = qs.filter(id__in=site_ids)
-    ids = list(qs.values_list("id", flat=True))
+    ids = sites_for_product_push(site_ids)
 
     size = _push_batch_size()
     batches = [ids[i : i + size] for i in range(0, len(ids), size)]
@@ -243,3 +242,40 @@ def pull_categories_batch_task(site_ids, run_id=None, triggered_by_id=None):
     with ThreadPoolExecutor(max_workers=_batch_size()) as executor:
         results = list(executor.map(_pull, sites))
     return {"pulled": len(results), "results": results}
+
+
+_IMPORT_PRODUCTS_LOCK_TTL = 600  # 10 min — expected max import time for one site
+
+
+@shared_task
+def import_products_task(site_id, run_id=None, triggered_by_id=None):
+    """Import one site's products into the Hub catalog (the "Nhập từ website chính").
+
+    Unlike the push/pull fan-outs this targets a SINGLE site — importing the same
+    products from many sites would create conflicting masters — so there is no
+    batch split. A per-site Redis lock (``lock:import_products:{id}``) makes a
+    rapid double-click dispatch only one import. ``run_id`` groups the site's
+    ``SyncLog`` row so the progress banner (expected=1) can poll completion;
+    ``triggered_by_id`` is the admin who clicked import. Network errors are
+    swallowed by ``import_products_from_site`` into a SyncLog row, never raised.
+    """
+    lock_key = f"lock:import_products:{site_id}"
+    if not cache.add(lock_key, "1", timeout=_IMPORT_PRODUCTS_LOCK_TTL):
+        return {"status": "skipped_already_running", "site_id": site_id}
+
+    from apps.catalog import services
+    from apps.sites.models import Site
+
+    if run_id is None:
+        run_id = str(uuid.uuid4())
+
+    try:
+        site = Site.objects.filter(id=site_id, is_deleted=False).first()
+        if site is None:
+            return {"status": "site_not_found", "site_id": site_id}
+        return services.import_products_from_site(
+            site, run_id=run_id, triggered_by_id=triggered_by_id
+        )
+    finally:
+        cache.delete(lock_key)
+        connection.close()

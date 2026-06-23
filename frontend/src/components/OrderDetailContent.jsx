@@ -1,8 +1,9 @@
 import { Descriptions, Table } from "antd";
 
-import { formatDateTime, formatVND } from "../lib/format.js";
+import { formatDateTime, formatVND, titleCaseName } from "../lib/format.js";
 import ClassificationBadge from "./ClassificationBadge.jsx";
 import OrderStatusBadge from "./OrderStatusBadge.jsx";
+import PaymentStatusBadge from "./PaymentStatusBadge.jsx";
 
 // Presentational body of a single order — the Descriptions block + the line
 // items table. Shared by OrderDetailModal (single view and the bulk carousel).
@@ -49,16 +50,23 @@ export default function OrderDetailContent({ order }) {
   return (
     <div className="space-y-3">
       <Descriptions column={1} bordered size="small">
-        <Descriptions.Item label={<span className="font-semibold text-gray-700">Số đơn</span>}>
-          <span className="text-base font-bold text-gray-900">#{order.number}</span>
+        <Descriptions.Item label={<span className="font-semibold text-muted">Số đơn</span>}>
+          <span className="text-base font-bold text-ink">#{order.number}</span>
         </Descriptions.Item>
-        <Descriptions.Item label={<span className="font-semibold text-gray-700">Website</span>}>
-          <span className="text-base font-bold text-gray-900">{order.site_name}</span>
+        <Descriptions.Item label={<span className="font-semibold text-muted">Website</span>}>
+          <span className="text-base font-bold text-ink">{order.site_name}</span>
         </Descriptions.Item>
         <Descriptions.Item label="Hosting">{order.hosting_name || "—"}</Descriptions.Item>
         <Descriptions.Item label="Trạng thái">
           <OrderStatusBadge status={order.status} />
         </Descriptions.Item>
+        {/* Sapo orders carry a payment status (financial_status); Woo orders
+            leave it blank, so the row only appears for Sapo. */}
+        {order.payment_status ? (
+          <Descriptions.Item label="Thanh toán">
+            <PaymentStatusBadge status={order.payment_status} />
+          </Descriptions.Item>
+        ) : null}
         <Descriptions.Item label="Phân loại">
           <div className="space-y-1">
             <ClassificationBadge
@@ -77,15 +85,17 @@ export default function OrderDetailContent({ order }) {
         <Descriptions.Item label="Ngày tạo">
           {formatDateTime(order.date_created_woo)}
         </Descriptions.Item>
-        <Descriptions.Item label="Khách hàng">{order.customer_name || "—"}</Descriptions.Item>
-        <Descriptions.Item label={<span className="font-semibold text-gray-700">Điện thoại</span>}>
-          <span className="text-base font-bold text-gray-900">{order.customer_phone || "—"}</span>
+        <Descriptions.Item label="Khách hàng">
+          {titleCaseName(order.customer_name) || "—"}
+        </Descriptions.Item>
+        <Descriptions.Item label={<span className="font-semibold text-muted">Điện thoại</span>}>
+          <span className="text-base font-bold text-ink">{order.customer_phone || "—"}</span>
         </Descriptions.Item>
         <Descriptions.Item label="Email">{order.customer_email || "—"}</Descriptions.Item>
         <Descriptions.Item label="Địa chỉ giao">{order.shipping_address || "—"}</Descriptions.Item>
         <Descriptions.Item label="Ghi chú">{order.customer_note || "—"}</Descriptions.Item>
-        <Descriptions.Item label={<span className="font-semibold text-gray-700">Tổng tiền</span>}>
-          <span className="text-lg font-bold text-blue-600">{formatVND(order.total)}</span>
+        <Descriptions.Item label={<span className="font-semibold text-muted">Tổng tiền</span>}>
+          <span className="text-lg font-bold text-brand">{formatVND(order.total)}</span>
         </Descriptions.Item>
       </Descriptions>
 

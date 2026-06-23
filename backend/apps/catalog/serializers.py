@@ -187,10 +187,18 @@ class ProductSyncStatusSerializer(serializers.Serializer):
 
 class MasterProductSerializer(serializers.ModelSerializer):
     """Full CRUD product. ``sku`` is normalized + checked unique on write; the
-    per-site ``mappings`` are read-only (populated by the push, not the client)."""
+    per-site ``mappings`` are read-only (populated by the push, not the client).
+
+    ``match_name`` is the frozen import-time name the push adopts existing site
+    products by (editable so a wrong match key can be corrected, defaults to
+    blank → the push falls back to ``name``); ``source_site``/``imported_at`` are
+    read-only audit of where an imported product came from."""
 
     mappings = ProductMappingSerializer(many=True, read_only=True)
     mapping_count = serializers.IntegerField(source="mappings.count", read_only=True)
+    source_site_name = serializers.CharField(
+        source="source_site.name", read_only=True, allow_null=True
+    )
 
     class Meta:
         model = MasterProduct
@@ -198,6 +206,7 @@ class MasterProductSerializer(serializers.ModelSerializer):
             "id",
             "sku",
             "name",
+            "match_name",
             "type",
             "description",
             "short_description",
@@ -215,9 +224,13 @@ class MasterProductSerializer(serializers.ModelSerializer):
             "variations",
             "mappings",
             "mapping_count",
+            "source_site",
+            "source_site_name",
+            "imported_at",
             "created_at",
             "updated_at",
         ]
+        read_only_fields = ["source_site", "imported_at"]
 
     def validate_sku(self, value):
         sku = normalize_sku(value)

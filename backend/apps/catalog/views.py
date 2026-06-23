@@ -68,7 +68,7 @@ class MasterProductViewSet(viewsets.ModelViewSet):
         """
         import uuid
 
-        from apps.sites.models import Site
+        from apps.sites.services import sites_for_product_push
         from apps.sync.tasks import push_all_products
 
         sites = request.data.get("sites")
@@ -90,15 +90,14 @@ class MasterProductViewSet(viewsets.ModelViewSet):
             )
 
         # ``run_id`` groups this push's per-site SyncLog rows so the progress
-        # banner can poll "X/Y site hoàn tất"; ``expected`` is the live-site count
-        # the task will push to (same query as push_all_products). Each site
-        # writes exactly one row (including no-op sites), so ``done`` reaches it.
+        # banner can poll "X/Y site hoàn tất"; ``expected`` is the count of sites
+        # the task will actually push to — ``sites_for_product_push`` (the same
+        # helper push_all_products uses) so a Sapo store reachable under several
+        # domains counts once, matching the rows written. Each site writes exactly
+        # one row (including no-op sites), so ``done`` reaches ``expected``.
         run_id = str(uuid.uuid4())
         triggered_by_id = request.user.id if request.user.is_authenticated else None
-        site_qs = Site.objects.filter(is_deleted=False)
-        if sites:
-            site_qs = site_qs.filter(id__in=sites)
-        expected = site_qs.count()
+        expected = len(sites_for_product_push(sites or None))
 
         result = push_all_products.delay(
             site_ids=sites or None,
@@ -107,6 +106,48 @@ class MasterProductViewSet(viewsets.ModelViewSet):
             triggered_by_id=triggered_by_id,
         )
         return Response({"task_id": result.id, "run_id": run_id, "expected": expected})
+
+    @action(detail=False, methods=["post"])
+    def import_from_site(self, request):
+        """Import a site's products into the Hub catalog (the "Nhập từ website chính").
+
+        Body: ``site`` (required, the source site id). Runs async in Celery
+        (listing + upserting many products is heavy). Returns the ``run_id`` so
+        the UI can poll the progress banner (``expected`` is always 1 — import
+        targets a single site) and ``task_id``. Validation only here.
+        """
+        import uuid
+
+        from apps.sites.models import Site
+        from apps.sync.tasks import import_products_task
+
+        site_id = request.data.get("site")
+        if not isinstance(site_id, int):
+            return Response(
+                {"detail": "site phải là id (số nguyên) của website nguồn."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        site = Site.objects.filter(id=site_id, is_deleted=False).first()
+        if site is None:
+            return Response(
+                {"detail": "Không tìm thấy website nguồn."},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # v1 imports only from WooCommerce sites — Sapo (shared-DB, Shopify-like
+        # field model) is handled separately later. Block it here so a Sapo store
+        # cannot flood the Hub catalog with products shaped for another platform.
+        if site.platform != Site.Platform.WOOCOMMERCE:
+            return Response(
+                {"detail": "Hiện chỉ hỗ trợ nhập từ website WooCommerce."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        run_id = str(uuid.uuid4())
+        triggered_by_id = request.user.id if request.user.is_authenticated else None
+        result = import_products_task.delay(
+            site_id, run_id=run_id, triggered_by_id=triggered_by_id
+        )
+        return Response({"task_id": result.id, "run_id": run_id, "expected": 1})
 
     @action(detail=True, methods=["get"])
     def sync_status(self, request, pk=None):
