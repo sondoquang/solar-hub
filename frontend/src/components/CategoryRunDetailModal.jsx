@@ -1,10 +1,10 @@
-import { Button, Modal, Table, Tag } from "antd";
+import { Button, Modal, Table, Tag, Tooltip } from "antd";
 import { Download } from "lucide-react";
 import { useState } from "react";
 import toast from "react-hot-toast";
 
 import { exportCategoryRun, useCategoryRun } from "../api/syncReports.js";
-import { formatDateTime } from "../lib/format.js";
+import { formatDateTime, friendlySyncError } from "../lib/format.js";
 import ErrorState from "./ErrorState.jsx";
 
 // Run/site status → antd Tag. Shared by the Reports table and this modal.
@@ -101,8 +101,15 @@ export default function CategoryRunDetailModal({ runId, open, onClose }) {
       key: "error",
       dataIndex: "error",
       title: "Lỗi",
-      width: 140,
-      render: (v) => (v ? <span className="text-danger">{v}</span> : "—"),
+      width: 210,
+      render: (v) =>
+        v ? (
+          <Tooltip title={`Mã kỹ thuật: ${v}`}>
+            <span className="text-xs leading-snug text-danger">{friendlySyncError(v)}</span>
+          </Tooltip>
+        ) : (
+          "—"
+        ),
     },
   ];
 

@@ -1,0 +1,136 @@
+{% autoescape on %}<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ title }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:20px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px;max-width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="padding:20px 24px;border-bottom:3px solid #f59e0b;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="font-size:20px;font-weight:bold;color:#f59e0b;">SOLAR HUB</td>
+                  <td align="right" style="font-size:13px;color:#6b7280;">{{ title }}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Summary -->
+          <tr>
+            <td style="padding:16px 24px;background:#f9fafb;border-bottom:1px solid #e5e7eb;">
+              <p style="margin:0;font-size:14px;color:#1f2937;">
+                Có <strong>{{ count }}</strong> đơn hàng (khách hàng thật) trong báo cáo này.
+              </p>
+              <p style="margin:6px 0 0;font-size:12px;color:#6b7280;">
+                Tạo lúc {{ generated_at }}. Mỗi đơn là một trang trong file PDF đính kèm.
+              </p>
+            </td>
+          </tr>
+
+          {% for order in orders %}
+          <!-- Order {{ order.number }} -->
+          <tr>
+            <td style="padding:20px 24px;{% if not forloop.last %}border-bottom:1px solid #e5e7eb;{% endif %}">
+              <p style="margin:0 0 12px;font-size:16px;font-weight:bold;color:#1f2937;">
+                Đơn #{{ order.number }}
+                <span style="font-size:12px;font-weight:normal;color:#6b7280;">— {{ order.site_name }}</span>
+              </p>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;">
+                <tr>
+                  <td width="130" style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Website</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.site_name }}</td>
+                </tr>
+                {% if order.hosting_name %}
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Hosting</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.hosting_name }}</td>
+                </tr>
+                {% endif %}
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Trạng thái</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.status_label }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Phân loại</td>
+                  <td style="padding:5px 0;color:#16a34a;font-weight:bold;border-bottom:1px solid #f0f0f0;">{{ order.classification_label }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Ngày tạo</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.date_created }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Khách hàng</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.customer_name }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Điện thoại</td>
+                  <td style="padding:5px 0;color:#1f2937;font-weight:bold;border-bottom:1px solid #f0f0f0;">{{ order.customer_phone }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Email</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.customer_email }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;border-bottom:1px solid #f0f0f0;vertical-align:top;">Địa chỉ giao</td>
+                  <td style="padding:5px 0;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ order.shipping_address }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 0;color:#6b7280;vertical-align:top;">Ghi chú</td>
+                  <td style="padding:5px 0;color:#1f2937;">{{ order.customer_note }}</td>
+                </tr>
+              </table>
+
+              <!-- Line items -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;font-size:12px;border-collapse:collapse;border:1px solid #e5e7eb;">
+                <tr style="background:#f9fafb;">
+                  <th align="center" width="36" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #e5e7eb;">STT</th>
+                  <th align="left" width="90" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #e5e7eb;">SKU</th>
+                  <th align="left" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #e5e7eb;">Sản phẩm</th>
+                  <th align="center" width="40" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #e5e7eb;">SL</th>
+                  <th align="right" width="90" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #e5e7eb;">Đơn giá</th>
+                  <th align="right" width="100" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #e5e7eb;">Thành tiền</th>
+                </tr>
+                {% for item in order.items %}
+                <tr>
+                  <td align="center" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ item.index }}</td>
+                  <td align="left" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ item.sku }}</td>
+                  <td align="left" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ item.name }}</td>
+                  <td align="center" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ item.quantity }}</td>
+                  <td align="right" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ item.unit_price }}</td>
+                  <td align="right" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ item.total }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                  <td colspan="6" style="padding:7px 6px;color:#6b7280;">Không có sản phẩm</td>
+                </tr>
+                {% endfor %}
+                <tr>
+                  <td colspan="5" align="right" style="padding:9px 6px;color:#6b7280;font-weight:bold;">Tổng tiền</td>
+                  <td align="right" style="padding:9px 6px;color:#f59e0b;font-size:14px;font-weight:bold;">{{ order.total }}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 24px;background:#f9fafb;border-top:1px solid #e5e7eb;">
+              <p style="margin:0;font-size:11px;color:#9ca3af;">
+                Email tự động từ hệ thống Solar Hub. Vui lòng không trả lời email này.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>{% endautoescape %}

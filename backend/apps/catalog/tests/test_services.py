@@ -9,6 +9,7 @@ from apps.catalog.models import (
     CategoryMapping,
     ProductMapping,
     ProductVariationMapping,
+    SiteMediaAsset,
 )
 from apps.catalog.tests.factories import (
     CategoryFactory,
@@ -40,6 +41,7 @@ class _FakeClient:
         stale_woo_ids=None,
         category_error_names=None,
         existing_term_ids=None,
+        image_error_skus=None,
     ):
         self.calls = []
         self.variation_calls = []
@@ -62,9 +64,44 @@ class _FakeClient:
         # rejected `term_exists` carrying that id in error.data.resource_id,
         # exactly like Woo when the term was never pulled into the Hub.
         self.existing_term_ids = existing_term_ids or {}
+        # SKUs Woo rejects with ``woocommerce_product_image_upload_error`` WHEN the
+        # item carries images (URL it cannot sideload) — the same item retried
+        # WITHOUT images succeeds, modelling the real failure/heal.
+        self.image_error_skus = set(image_error_skus or [])
         self._next_id = 9000
         self._next_var_id = 8000
         self._next_cat_id = 600
+        self._next_media_id = 700
+        # src URLs Woo "sideloaded" across all batch calls — lets a test assert an
+        # image is uploaded once per site, not re-uploaded on a later push.
+        self.media_uploads = []
+        # woo_product_id → images that ``get_product`` returns (an already-synced
+        # product not part of any batch this run).
+        self.product_images = {}
+
+    def _echo_images(self, images):
+        """Mimic Woo's batch response ``images``: keep id-refs, sideload src-refs.
+
+        An ``{"id": n}`` ref is echoed (already in the gallery); an ``{"src": url}``
+        ref is "downloaded" → gets a fresh media id + a site URL (recorded in
+        ``media_uploads``). Order is preserved, like Woo, so the sideload can match
+        appended images by position.
+        """
+        out = []
+        for img in images or []:
+            if img.get("id"):
+                out.append({"id": img["id"], "src": f"https://site.example/uploads/keep-{img['id']}.png"})
+            elif img.get("src"):
+                mid = self._next_media_id
+                self._next_media_id += 1
+                self.media_uploads.append(img["src"])
+                out.append({"id": mid, "src": f"https://site.example/uploads/{mid}.png"})
+        return out
+
+    def get_product(self, woo_id):
+        if self.raise_error:
+            raise httpx.ConnectError("boom")
+        return {"id": woo_id, "images": self.product_images.get(woo_id, [])}
 
     def batch_products(self, create=None, update=None, delete=None):
         create, update, delete = create or [], update or [], delete or []
@@ -83,7 +120,23 @@ class _FakeClient:
                     }
                 )
                 continue
-            created.append({"id": self._next_id, "sku": item["sku"]})
+            if item["sku"] in self.image_error_skus and item.get("images"):
+                created.append(
+                    {
+                        "error": {
+                            "code": "woocommerce_product_image_upload_error",
+                            "message": "Lỗi khi lấy hình ảnh.",
+                        }
+                    }
+                )
+                continue
+            created.append(
+                {
+                    "id": self._next_id,
+                    "sku": item["sku"],
+                    "images": self._echo_images(item.get("images")),
+                }
+            )
             self._next_id += 1
         updated = []
         for item in update:
@@ -98,7 +151,24 @@ class _FakeClient:
                     }
                 )
                 continue
-            updated.append({"id": item["id"], "sku": item["sku"]})
+            if item.get("sku") in self.image_error_skus and item.get("images"):
+                updated.append(
+                    {
+                        "id": item["id"],
+                        "error": {
+                            "code": "woocommerce_product_image_upload_error",
+                            "message": "Lỗi khi lấy hình ảnh.",
+                        },
+                    }
+                )
+                continue
+            updated.append(
+                {
+                    "id": item["id"],
+                    "sku": item.get("sku"),
+                    "images": self._echo_images(item.get("images")),
+                }
+            )
         deleted = [{"id": woo_id} for woo_id in delete]
         return {"create": created, "update": updated, "delete": deleted}
 
@@ -1011,3 +1081,189 @@ def test_push_recreates_product_when_mapping_is_stale(monkeypatch, settings):
     assert log.detail["recreated_stale"] == 1
     assert log.detail["failed"] == []
     assert log.created_count == 1 and log.updated_count == 0
+
+
+# --- description-image sideload (pure helpers) -------------------------------
+
+
+def test_extract_description_media_finds_hub_images_only():
+    html = (
+        '<img src="https://hub/media/a.png">'
+        "<img src='/media/b.jpg'>"
+        '<img src="https://cdn.other.com/x.png">'  # external → ignored
+    )
+    assert services._extract_description_media(html) == {
+        "https://hub/media/a.png": "/media/a.png",
+        "/media/b.jpg": "/media/b.jpg",
+    }
+
+
+def test_media_path_strips_host_and_query():
+    assert services._media_path("https://h/media/p/x.png?v=2#frag") == "/media/p/x.png"
+    assert services._media_path("https://cdn/x.png") is None
+    assert services._media_path("") is None
+
+
+def test_apply_media_map_rewrites_only_known_paths():
+    html = '<img src="https://hub/media/a.png"><img src="https://hub/media/b.png">'
+    out = services._apply_media_map(html, {"/media/a.png": "https://site/a.png"})
+    assert "https://site/a.png" in out
+    assert "https://hub/media/b.png" in out  # unknown path left untouched
+
+
+def test_absolute_media_url_handles_relative_and_absolute(settings):
+    settings.MEDIA_PUBLIC_BASE_URL = "https://hub.example"
+    assert services._absolute_media_url("https://x/media/a.png") == "https://x/media/a.png"
+    assert services._absolute_media_url("/media/a.png") == "https://hub.example/media/a.png"
+    settings.MEDIA_PUBLIC_BASE_URL = ""
+    assert services._absolute_media_url("/media/a.png") is None
+
+
+# --- description-image sideload (push) ---------------------------------------
+
+
+@pytest.mark.django_db
+def test_push_sideloads_description_image_and_rewrites(monkeypatch, settings):
+    """A Hub image embedded in the description is sideloaded into the site's media
+    (round 1), the gallery is restored clean (round 2), and the description is
+    rewritten to the site URL. The mapping is cached in SiteMediaAsset."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    hub_img = "https://hub.example/media/products/desc.png"
+    master = MasterProductFactory(
+        sku="SP-1",
+        images=["https://hub.example/media/products/main.png"],
+        description=f'<p>Xem ảnh:</p><img src="{hub_img}" />',
+    )
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["created"] == 1
+    asset = SiteMediaAsset.objects.get(site=site)
+    assert asset.source_path == "/media/products/desc.png"
+    assert asset.site_url.startswith("https://site.example/uploads/")
+    # 3 batch calls: main create, round-1 (append desc image), round-2 (rewrite).
+    assert len(fake.calls) == 3
+    final_update = fake.calls[-1]["update"][0]
+    assert hub_img not in final_update["description"]
+    assert asset.site_url in final_update["description"]
+    # Round 2 gallery keeps the real image by id only (desc image left the gallery).
+    assert final_update["images"] and all("src" not in img for img in final_update["images"])
+    log = SyncLog.objects.get(site=site)
+    assert log.detail["description_images"]["uploaded"] == 1
+
+
+@pytest.mark.django_db
+def test_push_sideload_cached_on_second_push(monkeypatch, settings):
+    """The second push finds the image already in SiteMediaAsset → it rewrites in
+    the MAIN batch with no extra rounds and no re-upload."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    hub_img = "https://hub.example/media/products/desc.png"
+    master = MasterProductFactory(sku="SP-1", images=[], description=f'<img src="{hub_img}">')
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+    uploads_after_first = list(fake.media_uploads)
+    calls_after_first = len(fake.calls)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert SiteMediaAsset.objects.filter(site=site).count() == 1
+    assert fake.media_uploads == uploads_after_first  # nothing re-uploaded
+    second_push_calls = fake.calls[calls_after_first:]
+    assert len(second_push_calls) == 1  # only the main update, no sideload rounds
+    update_item = second_push_calls[0]["update"][0]
+    assert hub_img not in update_item["description"]
+    assert SiteMediaAsset.objects.get(site=site).site_url in update_item["description"]
+
+
+@pytest.mark.django_db
+def test_push_sideload_disabled_keeps_hotlink(monkeypatch, settings):
+    settings.PRODUCT_SIDELOAD_DESCRIPTION_IMAGES = False
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    hub_img = "https://hub.example/media/products/desc.png"
+    master = MasterProductFactory(sku="SP-1", images=[], description=f'<img src="{hub_img}">')
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert SiteMediaAsset.objects.filter(site=site).count() == 0
+    assert len(fake.calls) == 1  # only the main batch
+    assert hub_img in fake.calls[0]["create"][0]["description"]  # left as a hot-link
+
+
+@pytest.mark.django_db
+def test_push_sideload_absolutizes_relative_media_url(monkeypatch, settings):
+    """A root-relative ``/media/...`` src is sideloaded using the absolute
+    MEDIA_PUBLIC_BASE_URL so the remote site can download it."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    settings.MEDIA_PUBLIC_BASE_URL = "https://hub.example"
+    site = SiteFactory()
+    master = MasterProductFactory(
+        sku="SP-1", images=[], description='<img src="/media/products/rel.png">'
+    )
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    asset = SiteMediaAsset.objects.get(site=site)
+    assert asset.source_path == "/media/products/rel.png"
+    assert "https://hub.example/media/products/rel.png" in fake.media_uploads
+
+
+# --- image-upload-error self-heal (retry without images) ---------------------
+
+
+@pytest.mark.django_db
+def test_push_update_retries_without_images_on_image_error(monkeypatch, settings):
+    """Woo rejects the update because it cannot sideload the product image →
+    the push retries the SAME update without ``images`` so the price still lands;
+    the SKU is flagged in ``image_skipped`` and the run is PARTIAL (not ERROR)."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    m = MasterProductFactory(
+        sku="SP-1", images=["https://ecopower.vn/x.png"], regular_price="999000.00"
+    )
+    ProductMappingFactory(master=m, site=site, woo_product_id=13716)
+    fake = _FakeClient(image_error_skus=["SP-1"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[m])
+
+    assert result["error"] is None
+    assert result["updated"] == 1  # price landed on the image-less retry
+    update_calls = [c for c in fake.calls if c["update"]]
+    assert "images" in update_calls[0]["update"][0]  # first try carried images (rejected)
+    assert "images" not in update_calls[-1]["update"][0]  # retry omitted images
+    assert update_calls[-1]["update"][0]["id"] == 13716  # still targets the mapped product
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.detail["image_skipped"] == ["SP-1"]
+    assert log.detail["failed"] == []  # healed, not a hard failure
+
+
+@pytest.mark.django_db
+def test_push_create_retries_without_images_on_image_error(monkeypatch, settings):
+    """A CREATE rejected for image upload is re-created without images, so the
+    product (and its mapping) still lands; the image is left for re-hosting."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    m = MasterProductFactory(sku="SP-NEW", images=["https://ecopower.vn/x.png"])
+    fake = _FakeClient(image_error_skus=["SP-NEW"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[m])
+
+    assert result["created"] == 1
+    assert ProductMapping.objects.filter(master=m, site=site).exists()
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.detail["image_skipped"] == ["SP-NEW"]
+    assert log.detail["failed"] == []

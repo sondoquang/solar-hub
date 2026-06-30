@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "apps.sync",
     "apps.monitoring",
     "apps.integrations",
+    "apps.mailer",
 ]
 
 MIDDLEWARE = [
@@ -157,13 +158,14 @@ CELERY_TASK_TRACK_STARTED = True
 
 # --- Task routing: sync do người dùng bấm không bao giờ xếp sau job nền định kỳ.
 # Hai queue, mỗi queue một worker riêng (docker-compose.yml):
-#  - "interactive": push sản phẩm / pull category on-demand từ UI/Admin.
+#  - "interactive": push sản phẩm / pull category / import sản phẩm on-demand từ UI/Admin.
 #  - "periodic" (default): beat (poll đơn, health check) + task chưa route.
 # Task con (batch) đi theo queue của task cha vì route theo tên.
 CELERY_TASK_DEFAULT_QUEUE = "periodic"
 CELERY_TASK_ROUTES = {
     "apps.sync.tasks.push_*": {"queue": "interactive"},
     "apps.sync.tasks.pull_*": {"queue": "interactive"},
+    "apps.sync.tasks.import_*": {"queue": "interactive"},
 }
 
 # How often Celery Beat polls orders across all sites (seconds).
@@ -178,6 +180,29 @@ ORDER_POLL_BATCH_SIZE = env.int("ORDER_POLL_BATCH_SIZE", default=8)
 PRODUCT_PUSH_BATCH_SIZE = env.int("PRODUCT_PUSH_BATCH_SIZE", default=8)
 PRODUCT_BATCH_ITEM_LIMIT = env.int("PRODUCT_BATCH_ITEM_LIMIT", default=100)
 PRODUCT_PUSH_THROTTLE_SECONDS = env.float("PRODUCT_PUSH_THROTTLE_SECONDS", default=0.5)
+
+# Description-image sideloading (WooCommerce only): images embedded in a product's
+# description/short_description HTML that live on the Hub (``/media/...``) are
+# normally just hot-linked back to the Hub. When this is ON, the push makes Woo
+# sideload them into the SITE's own media library (via the product ``images``
+# field) and rewrites the description ``src`` to the site URL, so the description
+# is self-contained per site. Each Hub image is sideloaded once per site and
+# cached in ``catalog.SiteMediaAsset`` — steady-state re-pushes add no extra
+# calls. See apps.catalog.services._sideload_description_images.
+PRODUCT_SIDELOAD_DESCRIPTION_IMAGES = env.bool(
+    "PRODUCT_SIDELOAD_DESCRIPTION_IMAGES", default=True
+)
+
+# When importing a site's products into the Hub, download their images (gallery +
+# images embedded in the description HTML) into the Hub media library and rewrite
+# the references to Hub URLs. Off → the master keeps the SOURCE site's image URLs,
+# and a push to OTHER sites fails to sideload them (the source is usually
+# unreachable from the target), so the pushed product loses its images. The
+# download host must reach the source site (the Hub already does — it talks to
+# that site's API). See apps.catalog.services._internalize_imported_media.
+PRODUCT_INTERNALIZE_IMPORTED_IMAGES = env.bool(
+    "PRODUCT_INTERNALIZE_IMPORTED_IMAGES", default=True
+)
 
 # Sapo Web has no batch endpoints — one "batch" becomes many sequential
 # requests, so SapoClient paces itself (THROTTLE between requests) and retries
@@ -206,6 +231,24 @@ SITE_HEALTHCHECK_OK_INTERVAL_SECONDS = env.int(
 SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS = env.int(
     "SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS", default=300
 )  # 5 min
+
+# --- Mail / order digest ------------------------------------------------
+# The SMTP account (host/port/login/app-password) is stored in the DB
+# (apps.mailer.MailSettings), edited from the UI, not from EMAIL_* here — so the
+# Hub can change accounts without a redeploy. The digest runs on an admin-set
+# daily schedule (MailSettings.digest_times); a per-minute beat tick
+# (config/celery.py) emails the genuine orders synced since the last run.
+#
+# MAILER_EMAIL_BACKEND: the backend send_orders_email connects through. Default
+# SMTP; tests override it to the in-memory backend so no real mail goes out.
+MAILER_EMAIL_BACKEND = env.str(
+    "MAILER_EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend"
+)
+# First digest after deploy (no watermark yet) only looks back this many hours,
+# so it doesn't email the entire order history at once.
+MAIL_DIGEST_FIRST_RUN_LOOKBACK_HOURS = env.int(
+    "MAIL_DIGEST_FIRST_RUN_LOOKBACK_HOURS", default=24
+)
 
 # --- CORS / CSRF (CORS only needed for dev-on-host Vite at :5173) --------
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173", "http://192.168.1.53:5173"])

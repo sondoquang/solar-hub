@@ -186,4 +186,49 @@ export const handlers = [
       error_count: 0,
     })
   ),
+  // Mail SMTP settings (singleton) + manual order email.
+  http.get("*/mail-settings/", () =>
+    HttpResponse.json({
+      smtp_host: "smtp.gmail.com",
+      smtp_port: 587,
+      use_tls: true,
+      use_ssl: false,
+      username: "shop@gmail.com",
+      from_email: "",
+      from_name: "Solar Hub",
+      recipients: ["boss@example.com"],
+      digest_enabled: true,
+      digest_times: ["09:00", "16:00"],
+      has_password: true,
+      last_digest_sent_at: "2026-06-24T09:00:00Z",
+      updated_at: "2026-06-24T09:00:00Z",
+    })
+  ),
+  http.patch("*/mail-settings/", async ({ request }) => {
+    const body = await request.json();
+    return HttpResponse.json({
+      smtp_host: "smtp.gmail.com",
+      smtp_port: 587,
+      use_tls: true,
+      use_ssl: false,
+      username: "shop@gmail.com",
+      from_email: "",
+      from_name: "Solar Hub",
+      recipients: ["boss@example.com"],
+      digest_enabled: true,
+      digest_times: ["09:00", "16:00"],
+      has_password: true,
+      last_digest_sent_at: "2026-06-24T09:00:00Z",
+      updated_at: "2026-06-24T10:00:00Z",
+      ...body,
+    });
+  }),
+  http.post("*/mail-settings/test/", () => HttpResponse.json({ ok: true })),
+  http.post("*/orders/send_email/", async ({ request }) => {
+    const body = await request.json();
+    return HttpResponse.json({
+      sent: body.ids?.length ?? 0,
+      recipient: body.recipient,
+    });
+  }),
 ];

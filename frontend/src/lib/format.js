@@ -84,3 +84,32 @@ export function formatResponseTime(ms) {
   if (n < 1000) return `${n} ms`;
   return `${(n / 1000).toFixed(2)} s`;
 }
+
+// Sync errors reach the UI as the backend's raw exception class name (httpx etc.)
+// — "ReadTimeout", "ConnectError", "HTTPStatusError" — which mean nothing to an
+// end user. Map them to one short Vietnamese sentence each; the raw token is kept
+// elsewhere (a tooltip) for support staff. Order matters: more specific patterns
+// first (e.g. ConnectTimeout before the generic timeout/connect rules).
+const SYNC_ERROR_RULES = [
+  [/connect\s*timeout/i, "Không kết nối được tới website — quá thời gian chờ kết nối"],
+  [/timed?\s*out|timeout/i, "Website phản hồi quá chậm, đã hết thời gian chờ"],
+  [/connect|connection|getaddr|dns|resolve|nodename|unreachable|refused/i,
+    "Không kết nối được tới website"],
+  [/ssl|cert/i, "Lỗi chứng chỉ bảo mật (SSL) của website"],
+  [/redirect/i, "Website chuyển hướng sai, không truy cập được"],
+  [/401|403|forbidden|unauthor|authenticat/i,
+    "Sai thông tin đăng nhập (key/secret) tới website"],
+  [/404|not\s*found/i, "Không tìm thấy địa chỉ API trên website"],
+  [/protocol|decod|json|parse|malformed/i, "Website trả về dữ liệu không hợp lệ"],
+  [/5\d\d|internal\s*server|server\s*error/i, "Website đang gặp sự cố máy chủ"],
+];
+
+export function friendlySyncError(raw) {
+  if (!raw) return "";
+  const text = String(raw).trim();
+  if (!text) return "";
+  for (const [pattern, message] of SYNC_ERROR_RULES) {
+    if (pattern.test(text)) return message;
+  }
+  return "Không đồng bộ được — website không phản hồi đúng";
+}

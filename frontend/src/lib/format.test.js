@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { formatDate, formatDuration, formatVND, titleCaseName } from "./format.js";
+import {
+  formatDate,
+  formatDuration,
+  formatVND,
+  friendlySyncError,
+  titleCaseName,
+} from "./format.js";
 
 describe("formatVND", () => {
   it("formats a number as VND", () => {
@@ -44,5 +50,37 @@ describe("formatDuration", () => {
   it("returns em dash for null/invalid", () => {
     expect(formatDuration(null)).toBe("—");
     expect(formatDuration(-5)).toBe("—");
+  });
+});
+
+describe("friendlySyncError", () => {
+  it("maps read/generic timeouts to a slow-response message", () => {
+    expect(friendlySyncError("ReadTimeout")).toBe(
+      "Website phản hồi quá chậm, đã hết thời gian chờ"
+    );
+    expect(friendlySyncError("PoolTimeout")).toBe(
+      "Website phản hồi quá chậm, đã hết thời gian chờ"
+    );
+  });
+  it("distinguishes a connect timeout from connect failures", () => {
+    expect(friendlySyncError("ConnectTimeout")).toBe(
+      "Không kết nối được tới website — quá thời gian chờ kết nối"
+    );
+    expect(friendlySyncError("ConnectError")).toBe("Không kết nối được tới website");
+  });
+  it("maps auth and SSL errors", () => {
+    expect(friendlySyncError("HTTPStatusError 401")).toBe(
+      "Sai thông tin đăng nhập (key/secret) tới website"
+    );
+    expect(friendlySyncError("SSLError")).toBe("Lỗi chứng chỉ bảo mật (SSL) của website");
+  });
+  it("falls back to a generic message for unknown tokens", () => {
+    expect(friendlySyncError("SomethingWeird")).toBe(
+      "Không đồng bộ được — website không phản hồi đúng"
+    );
+  });
+  it("returns empty string for blank input", () => {
+    expect(friendlySyncError("")).toBe("");
+    expect(friendlySyncError(null)).toBe("");
   });
 });

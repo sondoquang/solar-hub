@@ -112,6 +112,27 @@ class WooClient:
         r.raise_for_status()
         return r.json()
 
+    def get_product(self, woo_id: int) -> dict:
+        """GET /products/{id} — fetch one product.
+
+        Used by the description-image sideload to learn a product's CURRENT
+        gallery image ids when the product was not part of a batch this run (an
+        already-synced product). Mirrors the other reads: per-call timeout, Basic
+        auth with the query-string fallback on a 401 (some shared hosts strip the
+        ``Authorization`` header), then ``raise_for_status()``.
+        """
+        url = f"{self.base}/products/{woo_id}"
+        r = httpx.get(url, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.get(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r.json()
+
     def batch_products(
         self,
         create: list[dict] | None = None,

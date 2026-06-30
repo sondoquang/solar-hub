@@ -55,21 +55,22 @@ describe("ProductSyncStatusModal", () => {
     expect(mutate.mock.calls[0][0]).toEqual({ sites: [2], products: [7] });
   });
 
-  it("filters rows by website status and prunes hidden selections", async () => {
+  it("keeps selections when a filter hides the selected site", async () => {
     renderModal();
     // Select the unsynced A-Site (status down) while everything is visible.
     await userEvent.click(screen.getByRole("button", { name: /Chọn site chưa đồng bộ/ }));
 
-    // Filter to "Hoạt động" (up) → only B-Site remains, A-Site selection is pruned.
+    // Filter to "Hoạt động" (up) → only B-Site remains, but A-Site stays selected.
     // Comboboxes are [Loại trang, Trạng thái web] in DOM order.
     await userEvent.click(screen.getAllByRole("combobox")[1]);
     await userEvent.click(screen.getByTitle("Hoạt động"));
 
     expect(screen.queryByText("A-Site")).not.toBeInTheDocument();
     expect(screen.getByText("B-Site")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Đồng bộ site đã chọn" })
-    ).toBeDisabled();
+    // The hidden selection is surfaced and the push still targets it.
+    expect(screen.getByText(/1 site đã chọn đang ẩn/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Đồng bộ site đã chọn/ }));
+    expect(mutate.mock.calls[0][0]).toEqual({ sites: [2], products: [7] });
   });
 
   it("filters rows to primary sites only", async () => {
@@ -81,18 +82,29 @@ describe("ProductSyncStatusModal", () => {
     expect(screen.queryByText("A-Site")).not.toBeInTheDocument();
   });
 
-  it("filters rows by domain search and prunes hidden selections", async () => {
+  it("accumulates selections across searches instead of clearing them", async () => {
     renderModal();
-    expect(screen.getByText("a-site.example.com")).toBeInTheDocument();
+    const searchBox = screen.getByPlaceholderText("Tìm theo domain...");
 
-    // Select unsynced A-Site, then search for B-Site's domain → selection pruned.
+    // Search for A-Site, then tick it (unsynced).
+    await userEvent.type(searchBox, "a-site");
     await userEvent.click(screen.getByRole("button", { name: /Chọn site chưa đồng bộ/ }));
-    await userEvent.type(screen.getByPlaceholderText("Tìm theo domain..."), "b-site");
 
+    // Search again for B-Site: A-Site is hidden but its selection survives.
+    await userEvent.clear(searchBox);
+    await userEvent.type(searchBox, "b-site");
     expect(screen.queryByText("A-Site")).not.toBeInTheDocument();
     expect(screen.getByText("B-Site")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Đồng bộ site đã chọn" })
-    ).toBeDisabled();
+
+    // Tick B-Site's row checkbox (checkbox[0] is the header select-all).
+    const checkboxes = screen.getAllByRole("checkbox");
+    await userEvent.click(checkboxes[checkboxes.length - 1]);
+
+    // Both picks survive — the push targets both sites.
+    await userEvent.click(screen.getByRole("button", { name: /Đồng bộ site đã chọn/ }));
+    expect(mutate).toHaveBeenCalledTimes(1);
+    const arg = mutate.mock.calls[0][0];
+    expect(arg.products).toEqual([7]);
+    expect([...arg.sites].sort()).toEqual([1, 2]);
   });
 });

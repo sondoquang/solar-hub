@@ -1,14 +1,27 @@
-import { Button, Modal, Table, Tag } from "antd";
-import { Download } from "lucide-react";
+import { Button, Modal, Table, Tag, Tooltip } from "antd";
+import { Download, Info } from "lucide-react";
 import { useState } from "react";
 import toast from "react-hot-toast";
 
 import { exportProductRun, useProductRun } from "../api/syncReports.js";
-import { formatDateTime } from "../lib/format.js";
+import { formatDateTime, friendlySyncError } from "../lib/format.js";
 import { RunStatusTag } from "./CategoryRunDetailModal.jsx";
 import ErrorState from "./ErrorState.jsx";
 
 const OP_LABEL = { create: "Tạo", update: "Cập nhật", delete: "Xóa" };
+
+// A column header with a hover "?" explaining the column in plain Vietnamese —
+// most of these (Đã nhận, Cập nhật, Lỗi) are not self-evident to an end user.
+function ColTitle({ label, hint }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {label}
+      <Tooltip title={hint}>
+        <Info size={13} className="cursor-help text-muted/70" aria-label={`Giải thích: ${label}`} />
+      </Tooltip>
+    </span>
+  );
+}
 
 // One rejected SKU within a site's push. ``kind`` tints a duplicate/already-exists
 // reject (amber — expected friction) apart from a genuine error (red).
@@ -62,7 +75,7 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
   const columns = [
     {
       key: "site",
-      title: "Website",
+      title: <ColTitle label="Website" hint="Trang web nhận sản phẩm trong lần đồng bộ này." />,
       render: (_v, r) => (
         <div className="min-w-0">
           <p className="truncate font-medium">{r.site_name || "—"}</p>
@@ -73,50 +86,69 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
     {
       key: "hosting",
       dataIndex: "hosting",
-      title: "Hosting",
-      width: 140,
+      title: <ColTitle label="Hosting" hint="Nhà cung cấp hosting đang chạy website này." />,
+      width: 150,
       render: (v) => v || "—",
     },
     {
       key: "status",
       dataIndex: "status",
-      title: "Kết quả",
+      title: (
+        <ColTitle
+          label="Kết quả"
+          hint="Trạng thái đồng bộ tới website: Thành công, Một phần (có mục lỗi) hoặc Lỗi."
+        />
+      ),
       width: 120,
       render: (v) => <RunStatusTag status={v} />,
     },
     {
       key: "created",
       dataIndex: "created",
-      title: "Tạo mới",
-      width: 90,
+      title: <ColTitle label="Tạo mới" hint="Số sản phẩm chưa có trên website, được tạo mới." />,
+      width: 95,
       align: "right",
       render: (v) => <span className="tabular-nums">{v}</span>,
     },
     {
       key: "updated",
       dataIndex: "updated",
-      title: "Cập nhật",
-      width: 90,
+      title: (
+        <ColTitle label="Cập nhật" hint="Số sản phẩm đã có sẵn liên kết, được cập nhật lại nội dung." />
+      ),
+      width: 95,
       align: "right",
       render: (v) => <span className="tabular-nums">{v}</span>,
     },
     {
       key: "adopted_count",
       dataIndex: "adopted_count",
-      title: "Đã nhận",
-      width: 90,
+      title: (
+        <ColTitle
+          label="Đã nhận"
+          hint="Sản phẩm đã có sẵn trên website, được tự động khớp theo tên và liên kết vào Hub để lần sau cập nhật thay vì tạo trùng."
+        />
+      ),
+      width: 95,
       align: "right",
       render: (v) =>
         v ? <span className="tabular-nums text-success">{v}</span> : <span className="text-muted">0</span>,
     },
     {
       key: "failed",
-      title: "Lỗi",
-      width: 150,
+      title: (
+        <ColTitle
+          label="Lỗi"
+          hint="Số sản phẩm đẩy không thành công. Nếu cả website gặp sự cố, cột này hiển thị lý do."
+        />
+      ),
+      width: 210,
       align: "right",
       render: (_v, r) =>
         r.error ? (
-          <span className="text-danger">{r.error}</span>
+          <Tooltip title={`Mã kỹ thuật: ${r.error}`}>
+            <span className="text-xs leading-snug text-danger">{friendlySyncError(r.error)}</span>
+          </Tooltip>
         ) : (
           <span className={`tabular-nums ${r.failed.length ? "text-danger" : ""}`}>
             {r.failed.length}

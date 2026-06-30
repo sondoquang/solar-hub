@@ -12,6 +12,7 @@ urlpatterns = [
     path("api/", include("apps.orders.urls")),
     path("api/", include("apps.catalog.urls")),
     path("api/", include("apps.sync.urls")),
+    path("api/", include("apps.mailer.urls")),
 ]
 
 # Serve user-uploaded media (site-note attachments) from the dev server.

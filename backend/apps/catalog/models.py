@@ -121,6 +121,49 @@ class ProductImage(models.Model):
         return self.original_name or f"Image #{self.pk}"
 
 
+class SiteMediaAsset(models.Model):
+    """Cache: one Hub media file that has been sideloaded onto one ``Site``.
+
+    Used by the description-image sideload (services._sideload_description_images,
+    WooCommerce only). When a product's description HTML embeds a Hub image
+    (``/media/...``), the push makes Woo download it into the site's own media
+    library and rewrites the description ``src`` to the returned site URL. This
+    row remembers that upload so the SAME image is never re-uploaded to the SAME
+    site on later pushes (Woo's REST sideload does not dedup by source URL — it
+    would create a duplicate attachment every push otherwise).
+
+    Keyed by ``source_path`` (the host-INDEPENDENT ``/media/...`` part, not the
+    full URL) so the cache survives a change of the Hub's public host (new
+    cloudflared tunnel / real deploy — see the set_media_public_url command).
+    UNIQUE ``(site, source_path)`` keeps the sideload idempotent.
+    """
+
+    site = models.ForeignKey(
+        "sites.Site",
+        on_delete=models.CASCADE,
+        related_name="media_assets",
+        db_index=True,
+    )
+    # Host-independent Hub media path, e.g. "/media/products/2026/06/x.png".
+    source_path = models.CharField(max_length=500)
+    # The URL the file resolved to on the SITE after Woo sideloaded it.
+    site_url = models.URLField(max_length=500)
+    # The site's attachment id (kept for audit / future cleanup; nullable because
+    # some Woo responses omit it).
+    woo_media_id = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["site", "source_path"], name="mediaasset_unique_site_path"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source_path}@{self.site_id} → {self.site_url}"
+
+
 class ProductMapping(models.Model):
     """Maps one ``MasterProduct`` to its ``woo_product_id`` on one ``Site``.
 

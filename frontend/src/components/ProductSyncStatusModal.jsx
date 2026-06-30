@@ -88,16 +88,18 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     [visible]
   );
 
-  const selectUnsynced = () => setSelected(unsyncedIds);
+  // Add the currently-visible unsynced sites to the selection (union) instead of
+  // replacing it — consistent with the accumulate behavior below.
+  const selectUnsynced = () =>
+    setSelected((prev) => [...new Set([...prev, ...unsyncedIds])]);
 
-  // Changing any filter prunes hidden selections so "Đồng bộ site đã chọn"
-  // never pushes to a site the user can no longer see.
-  useEffect(() => {
-    const ids = new Set(visible.map((r) => r.site_id));
-    setSelected((prev) =>
-      prev.every((sid) => ids.has(sid)) ? prev : prev.filter((sid) => ids.has(sid))
-    );
-  }, [visible]);
+  // Selection accumulates across searches/filters: the user can search, tick a
+  // few sites, search again and tick more, and the earlier picks survive. It's
+  // only reset when the panel reopens or switches product (the effect above).
+  // `hiddenSelectedCount` surfaces in the footer so the user knows the push
+  // includes selected sites the current filter is hiding.
+  const visibleIds = useMemo(() => new Set(visible.map((r) => r.site_id)), [visible]);
+  const hiddenSelectedCount = selected.filter((sid) => !visibleIds.has(sid)).length;
 
   const handleSync = () => {
     if (!selected.length) return;
@@ -194,14 +196,21 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
 
   const footer = (
     <div className="flex items-center justify-between gap-1.5">
-      <Button
-        type="text"
-        size="small"
-        disabled={!unsyncedIds.length}
-        onClick={selectUnsynced}
-      >
-        Chọn site chưa đồng bộ
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          type="text"
+          size="small"
+          disabled={!unsyncedIds.length}
+          onClick={selectUnsynced}
+        >
+          Chọn site chưa đồng bộ
+        </Button>
+        {hiddenSelectedCount > 0 && (
+          <span className="text-xs text-muted">
+            +{hiddenSelectedCount} site đã chọn đang ẩn bởi bộ lọc
+          </span>
+        )}
+      </div>
       <div className="flex gap-1.5">
         <Button onClick={onClose}>Đóng</Button>
         <Button
@@ -290,6 +299,9 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
             rowSelection={{
               selectedRowKeys: selected,
               onChange: setSelected,
+              // Keep keys that leave the filtered dataSource so ticking sites
+              // under one search doesn't drop sites ticked under another.
+              preserveSelectedRowKeys: true,
             }}
             locale={{ emptyText: "Không có website phù hợp bộ lọc." }}
           />

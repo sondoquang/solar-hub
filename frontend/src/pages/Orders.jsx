@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, DatePicker, Input, Select } from "antd";
-import { Eye, FileDown, Globe, RefreshCw, Send, X } from "lucide-react";
+import { Eye, FileDown, Globe, Mail, RefreshCw, Send, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { useSearchParams } from "react-router-dom";
@@ -22,6 +22,7 @@ import ErrorState from "../components/ErrorState.jsx";
 import OrderDetailModal from "../components/OrderDetailModal.jsx";
 import OrderStats from "../components/OrderStats.jsx";
 import OrderStatusBadge from "../components/OrderStatusBadge.jsx";
+import SendOrdersEmailModal from "../components/SendOrdersEmailModal.jsx";
 import { formatDateTime, formatVND, titleCaseName } from "../lib/format.js";
 
 const { RangePicker } = DatePicker;
@@ -79,6 +80,7 @@ export default function Orders() {
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [selectedMap, setSelectedMap] = useState(() => new Map());
   const [exporting, setExporting] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -497,6 +499,13 @@ export default function Orders() {
                   >
                     Xuất PDF ({selectedKeys.length})
                   </Button>
+                  <Button
+                    size="small"
+                    icon={<Mail size={14} />}
+                    onClick={() => setSendOpen(true)}
+                  >
+                    Gửi mail ({selectedKeys.length})
+                  </Button>
                   <Button size="small" icon={<X size={14} />} onClick={clearSelection}>
                     Bỏ chọn
                   </Button>
@@ -538,6 +547,13 @@ export default function Orders() {
       )}
 
       <OrderDetailModal orders={viewOrders} open={viewOpen} onClose={() => setViewOpen(false)} />
+
+      <SendOrdersEmailModal
+        open={sendOpen}
+        orderIds={selectedKeys}
+        onClose={() => setSendOpen(false)}
+        onSent={clearSelection}
+      />
     </section>
   );
 }

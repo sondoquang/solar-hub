@@ -21,6 +21,8 @@ import { api } from "./client.js";
 //   POST /orders/{id}/mark_paid/ -> markOrderPaid / useMarkOrderPaid (Sapo: record a paid transaction)
 //   POST /orders/forward_bulk/  -> forwardOrdersBulk / useForwardOrdersBulk (Hub-internal, one-way)
 //       body: { ids: number[] }
+//   POST /orders/send_email/   -> sendOrdersEmail / useSendOrdersEmail (HTML + PDF to one address)
+//       body: { recipient: string, ids: number[] }
 //   GET  /orders/export_pdf/ -> exportOrdersPdf (PDF blob download)
 //       params: ?ids=1,2,3 (selected orders) — or the active list filters when omitted
 
@@ -80,6 +82,11 @@ export const markOrderPaid = (id) =>
 // Hub-internal, one-way (a completed order is forwarded automatically server-side).
 export const forwardOrdersBulk = (ids) =>
   api.post("/orders/forward_bulk/", { ids }).then((r) => r.data);
+
+// Email the selected orders to one address (HTML body + PDF attachment), built
+// server-side from the saved SMTP config. Returns { sent: <count>, recipient }.
+export const sendOrdersEmail = ({ recipient, ids }) =>
+  api.post("/orders/send_email/", { recipient, ids }).then((r) => r.data);
 
 const KEY = ["orders"];
 
@@ -160,4 +167,10 @@ export function useForwardOrdersBulk() {
     mutationFn: forwardOrdersBulk,
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   });
+}
+
+// Email the ticked orders to an address. Read-only for order data (sending
+// changes nothing in the Hub), so no cache invalidation.
+export function useSendOrdersEmail() {
+  return useMutation({ mutationFn: sendOrdersEmail });
 }

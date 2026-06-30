@@ -9,6 +9,7 @@
 - ``POST /api/orders/{id}/mark_paid/``— mark one Sapo order paid (records a Sapo transaction).
 - ``POST /api/orders/{id}/forward/``  — forward one order to marketing (Hub-internal, one-way).
 - ``POST /api/orders/forward_bulk/``  — forward many selected orders to marketing at once.
+- ``POST /api/orders/send_email/``    — email selected orders to one address (HTML + PDF).
 
 Orders are pulled in by the periodic poll (apps/sync/tasks). ``complete``/``cancel``
 push a status change back to the site and re-sync the Hub; ``forward``/``forward_bulk``
@@ -75,6 +76,65 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+    @action(detail=False, methods=["post"])
+    def send_email(self, request):
+        """Email the selected orders to one address (HTML body + PDF attachment).
+
+        Body: ``{"recipient": "a@b.com", "ids": [1, 2, 3]}``. The ids are
+        intersected with the current filtered queryset (filters/permissions still
+        apply). Synchronous — like ``complete``/``cancel`` it does one external
+        I/O call and returns the result so the UI can confirm. SMTP errors map to
+        502; a misconfigured account maps to 400. Errors carry no PII.
+        """
+        import smtplib
+
+        from django.core.exceptions import ValidationError
+        from django.core.validators import validate_email
+
+        from apps.mailer import services as mailer_services
+
+        recipient = (request.data.get("recipient") or "").strip()
+        try:
+            validate_email(recipient)
+        except ValidationError:
+            return Response(
+                {"detail": "Email người nhận không hợp lệ."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        ids = request.data.get("ids")
+        if not isinstance(ids, list) or not ids or not all(
+            isinstance(i, int) for i in ids
+        ):
+            return Response(
+                {"detail": "ids phải là danh sách id (số nguyên) và không rỗng."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = self.filter_queryset(self.get_queryset())
+        orders = services.select_orders_for_pdf(qs, ",".join(str(i) for i in ids))
+        if not orders:
+            return Response(
+                {"detail": "Không có đơn hàng để gửi."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            sent = mailer_services.send_orders_email(
+                orders, [recipient], title="Đơn hàng gửi thủ công"
+            )
+        except mailer_services.MailNotConfigured as exc:
+            return Response(
+                {"detail": str(exc)}, status=http_status.HTTP_400_BAD_REQUEST
+            )
+        except (smtplib.SMTPException, OSError):
+            logger.error("send order email failed order_count=%s", len(orders))
+            return Response(
+                {"detail": "Không gửi được email. Kiểm tra lại cấu hình SMTP."},
+                status=http_status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"sent": sent, "recipient": recipient})
 
     @action(detail=False, methods=["post"])
     def poll_now(self, request):

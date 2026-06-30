@@ -94,10 +94,14 @@ const WEBSITE_NAV = {
   ],
 };
 
-const SECONDARY_NAV = [
-  { to: "/reports", label: "Báo cáo", icon: BarChart3 },
-  { label: "Cài đặt hệ thống", icon: Settings },
-];
+const SECONDARY_NAV = [{ to: "/reports", label: "Báo cáo", icon: BarChart3 }];
+
+const SETTINGS_NAV = {
+  label: "Cài đặt hệ thống",
+  icon: Settings,
+  to: "/settings/mail", // collapsed-mode target
+  children: [{ to: "/settings/mail", label: "Mail SMTP" }],
+};
 
 const itemBase =
   "flex w-full items-center gap-3 rounded px-2 py-3 text-base font-medium transition-colors border-0";
@@ -289,7 +293,7 @@ function LogoutButton({ collapsed }) {
 
 // All expandable groups, in render order. Used to derive which group should
 // start open based on the current route.
-const NAV_GROUPS = [...MAIN_NAV.filter((item) => item.children), WEBSITE_NAV];
+const NAV_GROUPS = [...MAIN_NAV.filter((item) => item.children), WEBSITE_NAV, SETTINGS_NAV];
 
 function Sidebar() {
   const { pathname } = useLocation();
@@ -361,6 +365,13 @@ function Sidebar() {
         {SECONDARY_NAV.map((item) => (
           <NavRow key={item.label} item={item} collapsed={collapsed} />
         ))}
+
+        <NavGroup
+          item={SETTINGS_NAV}
+          collapsed={collapsed}
+          open={openGroup === SETTINGS_NAV.label}
+          onToggle={() => toggleGroup(SETTINGS_NAV.label)}
+        />
 
         <LogoutButton collapsed={collapsed} />
       </nav>

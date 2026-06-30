@@ -2,6 +2,7 @@ import { Button, Modal } from "antd";
 import { CircleCheck, CircleX, TriangleAlert } from "lucide-react";
 
 import { useProductRun } from "../api/syncReports.js";
+import { friendlySyncError } from "../lib/format.js";
 
 // End-of-run summary shown right after a push finishes: how many sites succeeded
 // vs failed (with the failing sites + reason), plus a "Xem chi tiết" jump into
@@ -69,7 +70,7 @@ export default function ProductSyncSummaryModal({ runId, open, onClose, onViewDe
                     <p className="truncate text-sm font-medium">{s.site_name || "—"}</p>
                     <p className="truncate text-xs text-muted">
                       {s.error
-                        ? s.error
+                        ? friendlySyncError(s.error)
                         : s.failed.length
                           ? `${s.failed.length} sản phẩm lỗi (${s.failed[0]?.code || "?"}…)`
                           : s.ambiguous?.length

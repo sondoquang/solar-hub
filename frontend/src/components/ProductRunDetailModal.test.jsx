@@ -88,7 +88,9 @@ describe("ProductRunDetailModal", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("A-Site")).toBeInTheDocument();
     expect(screen.getByText("TenTen")).toBeInTheDocument();
-    expect(screen.getByText("ConnectError")).toBeInTheDocument();
+    // Raw "ConnectError" is mapped to an end-user message; the raw token lives in a tooltip.
+    expect(screen.getByText("Không kết nối được tới website")).toBeInTheDocument();
+    expect(screen.queryByText("ConnectError")).not.toBeInTheDocument();
   });
 
   it("expands a site row to its failed SKUs with reasons", async () => {
