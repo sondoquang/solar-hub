@@ -3,6 +3,7 @@ import pytest
 from apps.catalog.models import MasterProduct
 from apps.catalog.tests.factories import (
     CategoryFactory,
+    CategoryMappingFactory,
     MasterProductFactory,
     ProductMappingFactory,
 )
@@ -89,22 +90,69 @@ def test_sync_now_dispatches_task(client, monkeypatch):
     monkeypatch.setattr(
         tasks.push_all_products,
         "delay",
-        lambda site_ids=None, master_ids=None: captured.update(
-            site_ids=site_ids, master_ids=master_ids
+        lambda site_ids=None, master_ids=None, run_id=None, triggered_by_id=None: captured.update(
+            site_ids=site_ids, master_ids=master_ids, run_id=run_id, triggered_by_id=triggered_by_id
         )
         or _Result(),
     )
 
     resp = client.post("/api/products/sync_now/", {"sites": [1, 2], "products": [5]}, format="json")
     assert resp.status_code == 200
-    assert resp.data == {"task_id": "task-123"}
-    assert captured == {"site_ids": [1, 2], "master_ids": [5]}
+    # run_id + expected drive the progress banner; run_id is threaded to the task.
+    assert resp.data["task_id"] == "task-123"
+    assert resp.data["run_id"] == captured["run_id"]
+    assert resp.data["expected"] == 0  # no sites in this test DB
+    assert captured["site_ids"] == [1, 2]
+    assert captured["master_ids"] == [5]
+    assert "triggered_by_id" in captured  # threaded from request.user
 
 
 @pytest.mark.django_db
 def test_sync_now_validates_sites(client):
     resp = client.post("/api/products/sync_now/", {"sites": ["x"]}, format="json")
     assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_import_from_site_dispatches_for_woocommerce(client, monkeypatch):
+    from apps.sites.models import Site
+    from apps.sync import tasks
+
+    site = SiteFactory(platform=Site.Platform.WOOCOMMERCE)
+    captured = {}
+
+    class _Result:
+        id = "imp-1"
+
+    monkeypatch.setattr(
+        tasks.import_products_task,
+        "delay",
+        lambda site_id, run_id=None, triggered_by_id=None: captured.update(
+            site_id=site_id, run_id=run_id
+        )
+        or _Result(),
+    )
+
+    resp = client.post("/api/products/import_from_site/", {"site": site.id}, format="json")
+    assert resp.status_code == 200
+    assert resp.data["task_id"] == "imp-1"
+    assert resp.data["expected"] == 1
+    assert captured["site_id"] == site.id
+
+
+@pytest.mark.django_db
+def test_import_from_site_rejects_sapo(client):
+    from apps.sites.models import Site
+
+    sapo = SiteFactory(platform=Site.Platform.SAPO, sapo_store_host="a.mysapo.net")
+    resp = client.post("/api/products/import_from_site/", {"site": sapo.id}, format="json")
+    assert resp.status_code == 400
+    assert "WooCommerce" in resp.data["detail"]
+
+
+@pytest.mark.django_db
+def test_import_from_site_validates_site_id(client):
+    assert client.post("/api/products/import_from_site/", {}, format="json").status_code == 400
 
 
 # --- product types via the serializer ----------------------------------------
@@ -188,7 +236,22 @@ def test_categories_list_and_search(client):
 
 
 @pytest.mark.django_db
-def test_categories_pull_now_dispatches_task(client, monkeypatch):
+def test_categories_picker_returns_full_catalog_in_one_page(client):
+    # The form picker loads everything with one big page; the default
+    # max_page_size=100 used to truncate big catalogs silently, so categories
+    # past the cutoff never showed up in the product-form TreeSelect.
+    from apps.catalog.models import Category
+
+    Category.objects.bulk_create(Category(name=f"Danh mục {i:03d}") for i in range(150))
+    resp = client.get("/api/products/categories/", {"page_size": 1000})
+    assert resp.status_code == 200
+    assert resp.data["count"] == 150
+    assert len(resp.data["results"]) == 150
+    assert resp.data["next"] is None
+
+
+@pytest.mark.django_db
+def test_categories_pull_now_dispatches_task(client, user, monkeypatch):
     from apps.sync import tasks
 
     captured = {}
@@ -199,8 +262,8 @@ def test_categories_pull_now_dispatches_task(client, monkeypatch):
     monkeypatch.setattr(
         tasks.pull_all_categories,
         "delay",
-        lambda site_ids=None, run_id=None: captured.update(
-            site_ids=site_ids, run_id=run_id
+        lambda site_ids=None, run_id=None, triggered_by_id=None: captured.update(
+            site_ids=site_ids, run_id=run_id, triggered_by_id=triggered_by_id
         )
         or _Result(),
     )
@@ -212,6 +275,202 @@ def test_categories_pull_now_dispatches_task(client, monkeypatch):
     # — that's what lets the report group this click's SyncLog rows.
     assert resp.data["run_id"] == captured["run_id"]
     assert captured["site_ids"] == [3]
+    # The clicking admin is threaded onto the task → onto each SyncLog row.
+    assert captured["triggered_by_id"] == user.id
+
+
+@pytest.mark.django_db
+def test_categories_clear_all_returns_counts(client):
+    """Clears unused categories + history, keeps in-use ones, returns counts."""
+    from apps.sync.models import SyncLog
+
+    site = SiteFactory()
+    used = CategoryFactory(name="Pin mặt trời")
+    orphan = CategoryFactory(name="Rác")
+    MasterProductFactory(sku="SP-1", categories=["Pin mặt trời"])
+    CategoryMappingFactory(category=orphan, site=site)
+    SyncLog.objects.create(site=site, operation="pull_categories", status="success")
+
+    resp = client.post("/api/products/categories/clear_all/", format="json")
+
+    assert resp.status_code == 200
+    assert resp.data["categories_kept"] == 1
+    assert resp.data["categories_cleared"] == 1
+    assert resp.data["history_cleared"] == 1
+    used.refresh_from_db()
+    orphan.refresh_from_db()
+    assert used.is_deleted is False
+    assert orphan.is_deleted is True
+
+
+@pytest.mark.django_db
+def test_categories_clear_all_requires_auth():
+    from rest_framework.test import APIClient
+
+    resp = APIClient().post("/api/products/categories/clear_all/", format="json")
+    assert resp.status_code in (401, 403)
+
+
+# --- per-site category mappings ------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_category_mappings_requires_site(client):
+    assert client.get("/api/products/categories/mappings/").status_code == 400
+    assert client.get("/api/products/categories/mappings/", {"site": "abc"}).status_code == 400
+
+
+@pytest.mark.django_db
+def test_category_mappings_lists_for_site(client):
+    site, other = SiteFactory(), SiteFactory()
+    parent = CategoryFactory(name="Sản phẩm")
+    pin = CategoryFactory(name="Pin mặt trời", parent=parent)
+    CategoryMappingFactory(category=pin, site=site, woo_category_id=220, woo_name=" Pin  mặt trời ")
+    CategoryMappingFactory(site=other)  # site khác — không được lẫn vào
+
+    resp = client.get("/api/products/categories/mappings/", {"site": site.id})
+    assert resp.status_code == 200
+    assert resp.data["count"] == 1
+    row = resp.data["results"][0]
+    assert row["woo_category_id"] == 220
+    assert row["woo_name"] == " Pin  mặt trời "  # tên RAW trên site
+    assert row["category_id"] == pin.id
+    assert row["category_name"] == "Pin mặt trời"
+    assert row["category_parent_id"] == parent.id
+    assert row["category_parent_name"] == "Sản phẩm"
+
+
+@pytest.mark.django_db
+def test_category_mappings_search(client):
+    site = SiteFactory()
+    CategoryMappingFactory(
+        category=CategoryFactory(name="Pin mặt trời"),
+        site=site,
+        woo_category_id=104,
+        woo_name="Pin mặt trời",
+    )
+    CategoryMappingFactory(
+        category=CategoryFactory(name="Inverter"),
+        site=site,
+        woo_category_id=300,
+        woo_name="Biến tần",
+    )
+
+    def names(params):
+        resp = client.get("/api/products/categories/mappings/", {"site": site.id, **params})
+        return [r["category_name"] for r in resp.data["results"]]
+
+    assert names({"search": "Biến"}) == ["Inverter"]  # theo woo_name
+    assert names({"search": "Inver"}) == ["Inverter"]  # theo tên Hub
+    assert names({"search": "104"}) == ["Pin mặt trời"]  # theo woo_category_id
+
+
+@pytest.mark.django_db
+def test_category_mappings_excludes_deleted_categories(client):
+    site = SiteFactory()
+    CategoryMappingFactory(category=CategoryFactory(is_deleted=True), site=site)
+    resp = client.get("/api/products/categories/mappings/", {"site": site.id})
+    assert resp.data["count"] == 0
+
+
+# --- category dashboard: overview / matrix / per-category sites ---------------
+
+
+@pytest.mark.django_db
+def test_category_overview_counts(client):
+    s1, s2 = SiteFactory(), SiteFactory()
+    root = CategoryFactory(name="Ắc quy")
+    CategoryFactory(name="Ắc quy khô", parent=root)  # live child, unlinked
+    CategoryMappingFactory(category=root, site=s1)
+    CategoryMappingFactory(category=root, site=s2)
+    CategoryFactory(name="Đã xóa", is_deleted=True)
+
+    data = client.get("/api/products/categories/overview/").data
+    assert data["hub_used"] == 2  # root + child (live)
+    assert data["hub_total"] == 3  # + soft-deleted
+    assert data["linked"] == 1  # only root is on a site
+    assert data["unlinked"] == 1
+    assert data["linked_pct"] == 50.0
+    assert data["site_count"] == 2
+    assert data["root_count"] == 1
+    assert data["child_count"] == 1
+    assert data["deleted_count"] == 1
+
+
+@pytest.mark.django_db
+def test_category_matrix_pivots_sites(client):
+    s1 = SiteFactory(name="solarcity.com.vn")
+    s2 = SiteFactory(name="demowp.com")
+    root = CategoryFactory(name="Ắc quy")
+    phoenix = CategoryFactory(name="Ắc quy Phoenix", parent=root)
+    CategoryMappingFactory(
+        category=phoenix, site=s1, woo_category_id=124, woo_name="Ắc Quy Phoenix"
+    )
+    CategoryMappingFactory(
+        category=phoenix, site=s2, woo_category_id=871, woo_name="Ác Quy Phoenix"
+    )
+
+    data = client.get("/api/products/categories/matrix/").data
+    # The response carries every live site as a dynamic column header.
+    assert {s["id"] for s in data["sites"]} == {s1.id, s2.id}
+
+    row = next(r for r in data["results"] if r["name"] == "Ắc quy Phoenix")
+    assert row["parent_name"] == "Ắc quy"
+    assert row["linked_site_count"] == 2
+    assert row["cells"][str(s1.id)] == {"woo_id": 124, "woo_name": "Ắc Quy Phoenix"}
+    assert row["cells"][str(s2.id)]["woo_id"] == 871
+
+    # Root has no mappings → empty cells, count 0.
+    root_row = next(r for r in data["results"] if r["name"] == "Ắc quy")
+    assert root_row["cells"] == {}
+    assert root_row["linked_site_count"] == 0
+
+
+@pytest.mark.django_db
+def test_category_matrix_excludes_soft_deleted_site(client):
+    live = SiteFactory(name="live.vn")
+    gone = SiteFactory(name="gone.vn", is_deleted=True)
+    cat = CategoryFactory(name="Ắc quy")
+    CategoryMappingFactory(category=cat, site=live, woo_category_id=10)
+    CategoryMappingFactory(category=cat, site=gone, woo_category_id=20)
+
+    data = client.get("/api/products/categories/matrix/").data
+    assert {s["id"] for s in data["sites"]} == {live.id}  # soft-deleted site dropped
+    row = data["results"][0]
+    assert list(row["cells"].keys()) == [str(live.id)]
+    assert row["linked_site_count"] == 1  # the gone site's mapping is not counted
+
+
+@pytest.mark.django_db
+def test_category_matrix_search_by_name_or_parent(client):
+    root = CategoryFactory(name="Ắc quy")
+    CategoryFactory(name="Ắc quy khô", parent=root)
+    CategoryFactory(name="Inverter")
+
+    def names(params):
+        return [r["name"] for r in client.get("/api/products/categories/matrix/", params).data["results"]]
+
+    assert names({"search": "khô"}) == ["Ắc quy khô"]  # by own name
+    # "Ắc quy" matches the root by name and the child by parent name.
+    assert set(names({"search": "Ắc quy"})) == {"Ắc quy", "Ắc quy khô"}
+
+
+@pytest.mark.django_db
+def test_category_sites_lists_link_state(client):
+    linked = SiteFactory(name="A-Site", status="up", is_primary=True)
+    SiteFactory(name="B-Site", status="down")
+    cat = CategoryFactory(name="Ắc quy")
+    CategoryMappingFactory(category=cat, site=linked, woo_category_id=872, woo_name="Ắc quy")
+
+    resp = client.get(f"/api/products/categories/{cat.id}/sites/")
+    assert resp.status_code == 200
+    by_name = {r["site_name"]: r for r in resp.data}
+    assert by_name["A-Site"]["linked"] is True
+    assert by_name["A-Site"]["woo_category_id"] == 872
+    assert by_name["A-Site"]["woo_name"] == "Ắc quy"
+    assert by_name["A-Site"]["is_primary"] is True
+    assert by_name["B-Site"]["linked"] is False
+    assert by_name["B-Site"]["woo_category_id"] is None
 
 
 # --- per-product sync status --------------------------------------------------
@@ -262,9 +521,7 @@ def make_image(name="a.png", fmt="PNG", content_type="image/png"):
 @pytest.mark.django_db
 def test_media_upload_returns_absolute_url(client, _media_root, settings):
     settings.MEDIA_PUBLIC_BASE_URL = ""  # isolate from the developer's .env
-    resp = client.post(
-        "/api/products/media/", {"image": make_image("pin.png")}, format="multipart"
-    )
+    resp = client.post("/api/products/media/", {"image": make_image("pin.png")}, format="multipart")
     assert resp.status_code == 201, resp.data
     assert resp.data["original_name"] == "pin.png"
     assert resp.data["url"].startswith("http://testserver/media/products/")
@@ -309,9 +566,7 @@ def test_media_list_newest_first_and_delete_removes_file(client, _media_root):
 @pytest.mark.django_db
 def test_media_url_uses_public_base_when_configured(client, _media_root, settings):
     settings.MEDIA_PUBLIC_BASE_URL = "https://hub.example.com"
-    resp = client.post(
-        "/api/products/media/", {"image": make_image("pin.png")}, format="multipart"
-    )
+    resp = client.post("/api/products/media/", {"image": make_image("pin.png")}, format="multipart")
     assert resp.status_code == 201, resp.data
     assert resp.data["url"].startswith("https://hub.example.com/media/products/")
 

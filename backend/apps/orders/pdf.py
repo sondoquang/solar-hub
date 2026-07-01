@@ -76,6 +76,14 @@ def _money(value, currency: str = "") -> str:
     return f"{grouped} {currency.upper()}"
 
 
+def _title_case_name(value) -> str:
+    """First letter of each word uppercased, the rest lowercased
+    ('nguyễn VĂN an' -> 'Nguyễn Văn An'). The stored value is left as synced;
+    this only formats the name for the export. Mirrors the frontend
+    ``titleCaseName`` so the PDF and UI agree."""
+    return " ".join(w[:1].upper() + w[1:].lower() for w in (value or "").split())
+
+
 def _format_dt(value) -> str:
     """Local 'DD/MM/YYYY HH:MM:SS' for the order's creation time."""
     if not value:
@@ -221,7 +229,7 @@ def _order_flowables(order, st: dict, *, content_width: float) -> list:
         ("Trạng thái", status_label),
     ]
     customer_rows = [
-        ("Khách hàng", order.customer_name),
+        ("Khách hàng", _title_case_name(order.customer_name)),
         ("Điện thoại", order.customer_phone),
         ("Email", order.customer_email),
         ("Địa chỉ giao", order.shipping_address),

@@ -23,7 +23,7 @@ export default function HealthCheckDetailModal({ check, open, onClose }) {
               href={check.base_url}
               target="_blank"
               rel="noreferrer"
-              className="text-blue-600 hover:underline"
+              className="text-brand hover:underline"
             >
               {check.base_url}
             </a>

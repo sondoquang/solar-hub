@@ -70,9 +70,9 @@ export default function Login() {
         <div className="relative z-10 flex flex-1 flex-col justify-center px-10 py-10">
           {/* Logo — directly above headline */}
           <img
-            src="/logo-admin-page.png"
+            src="/logo-v02.png"
             alt="Solar Hub"
-            className="mb-8 w-56 h-auto object-contain object-left"
+            className="mb-8 h-28 w-auto object-contain object-left"
           />
 
           <h1 className="font-display text-4xl font-bold leading-tight text-white">
@@ -108,15 +108,15 @@ export default function Login() {
       </div>
 
       {/* ── Right panel (50%) ─────────────────────────────────────── */}
-      <div className="flex w-full flex-col items-center justify-between bg-white px-8 py-10 lg:w-1/2">
+      <div className="flex w-full flex-col items-center justify-between bg-surface-raised px-8 py-10 lg:w-1/2">
         <div /> {/* top spacer */}
 
         <div className="w-full max-w-sm">
           {/* Mobile logo — directly above heading */}
           <img
-            src="/logo-admin-page.png"
+            src="/logo-v02.png"
             alt="Solar Hub"
-            className="mb-6 h-10 object-contain lg:hidden"
+            className="mb-6 h-14 w-auto object-contain lg:hidden"
           />
 
           <h2 className="text-center font-display text-2xl font-bold text-ink">
@@ -139,7 +139,7 @@ export default function Login() {
               rules={[{ required: true, message: "Vui lòng nhập tên đăng nhập" }]}
             >
               <Input
-                prefix={<User size={15} className="text-slate-400" />}
+                prefix={<User size={15} className="text-muted" />}
                 placeholder="Nhập email hoặc tên đăng nhập"
                 size="large"
               />
@@ -151,7 +151,7 @@ export default function Login() {
               rules={[{ required: true, message: "Vui lòng nhập mật khẩu" }]}
             >
               <Input.Password
-                prefix={<Lock size={15} className="text-slate-400" />}
+                prefix={<Lock size={15} className="text-muted" />}
                 placeholder="Nhập mật khẩu"
                 size="large"
               />
@@ -160,7 +160,7 @@ export default function Login() {
             <Form.Item name="remember" valuePropName="checked" noStyle>
               <div className="flex items-center justify-between">
                 <Checkbox>
-                  <span className="text-sm text-slate-600">Ghi nhớ đăng nhập</span>
+                  <span className="text-sm text-muted">Ghi nhớ đăng nhập</span>
                 </Checkbox>
                 <Button type="link" size="small" className="px-0 font-medium">
                   Quên mật khẩu?
@@ -197,7 +197,7 @@ export default function Login() {
                 <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
               </svg>
             }
-            className="flex items-center justify-center gap-2 border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50"
+            className="flex items-center justify-center gap-2 border-border text-text hover:border-border-strong hover:bg-white/5"
             onClick={() => toast("Tính năng đăng nhập Google chưa khả dụng.", { icon: "ℹ️" })}
           >
             Đăng nhập với Google

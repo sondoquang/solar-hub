@@ -9,17 +9,40 @@ const makeSchema = (mode) =>
   z.object({
     name: z.string().min(1, "Bắt buộc"),
     base_url: z.string().url("URL không hợp lệ"),
+    platform: z.enum(["woocommerce", "sapo"]),
     consumer_key: z.string().min(1, "Bắt buộc"),
     consumer_secret: mode === "edit" ? z.string().optional() : z.string().min(1, "Bắt buộc"),
     hosting: z.number().nullable().optional(),
     is_primary: z.boolean().optional(),
   });
 
+// Per-platform credential labels: the backend stores both pairs in the same
+// consumer_key/consumer_secret fields, only the meaning differs.
+const PLATFORM_OPTIONS = [
+  { value: "woocommerce", label: "WooCommerce" },
+  { value: "sapo", label: "Sapo Web" },
+];
+const PLATFORM_UI = {
+  woocommerce: {
+    urlPlaceholder: "https://shop.example.com",
+    keyLabel: "Consumer key",
+    secretLabel: "Consumer secret",
+    hint: "REST API key của WooCommerce (WooCommerce → Settings → Advanced → REST API).",
+  },
+  sapo: {
+    urlPlaceholder: "https://store.mysapo.net",
+    keyLabel: "API key",
+    secretLabel: "API secret",
+    hint: "Tạo Ứng dụng riêng (Private App) trong Sapo Web của store này để lấy API key/secret.",
+  },
+};
+
 const errCls = "mt-1 text-xs text-danger";
 const Req = () => <span className="ml-0.5 text-danger">*</span>;
 const EMPTY = {
   name: "",
   base_url: "",
+  platform: "woocommerce",
   consumer_key: "",
   consumer_secret: "",
   hosting: null,
@@ -38,11 +61,14 @@ export default function SiteRegisterForm({
     control,
     handleSubmit,
     reset,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(makeSchema(mode)),
     defaultValues: { ...EMPTY, ...defaultValues, consumer_secret: "" },
   });
+
+  const platformUi = PLATFORM_UI[watch("platform")] ?? PLATFORM_UI.woocommerce;
 
   const submit = async (values) => {
     if (mode === "edit" && !values.consumer_secret) delete values.consumer_secret;
@@ -67,6 +93,20 @@ export default function SiteRegisterForm({
       </div>
       <div>
         <label className="mb-1 block text-sm font-medium">
+          Nền tảng
+          <Req />
+        </label>
+        <Controller
+          name="platform"
+          control={control}
+          render={({ field }) => (
+            <Select {...field} className="w-full" options={PLATFORM_OPTIONS} />
+          )}
+        />
+        <p className="mt-1 text-xs text-muted">{platformUi.hint}</p>
+      </div>
+      <div>
+        <label className="mb-1 block text-sm font-medium">
           Base URL
           <Req />
         </label>
@@ -76,7 +116,7 @@ export default function SiteRegisterForm({
           render={({ field }) => (
             <Input
               {...field}
-              placeholder="https://shop.example.com"
+              placeholder={platformUi.urlPlaceholder}
               status={errors.base_url ? "error" : ""}
             />
           )}
@@ -85,7 +125,7 @@ export default function SiteRegisterForm({
       </div>
       <div>
         <label className="mb-1 block text-sm font-medium">
-          Consumer key
+          {platformUi.keyLabel}
           <Req />
         </label>
         <Controller
@@ -97,7 +137,8 @@ export default function SiteRegisterForm({
       </div>
       <div>
         <label className="mb-1 block text-sm font-medium">
-          Consumer secret{mode === "edit" ? " (để trống nếu không đổi)" : <Req />}
+          {platformUi.secretLabel}
+          {mode === "edit" ? " (để trống nếu không đổi)" : <Req />}
         </label>
         <Controller
           name="consumer_secret"

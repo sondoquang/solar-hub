@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import task_postrun
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
@@ -29,5 +30,14 @@ app.conf.beat_schedule = {
     "check-all-sites": {
         "task": "apps.monitoring.tasks.check_all_sites",
         "schedule": _HEALTHCHECK_TICK,  # default 5 min — failed-site retry cadence
+    },
+    # Email the genuine orders synced since the last run on an admin-configurable
+    # daily schedule. This tick fires every minute and the task itself decides
+    # whether a `MailSettings.digest_times` slot (local time, CELERY_TIMEZONE =
+    # Asia/Ho_Chi_Minh) is due — so the times are editable from the UI without a
+    # redeploy, and a missed minute self-heals on the next tick.
+    "mailer-digest-tick": {
+        "task": "apps.mailer.tasks.dispatch_due_digests",
+        "schedule": crontab(minute="*"),
     },
 }

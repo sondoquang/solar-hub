@@ -27,7 +27,7 @@ import { Link } from "react-router-dom";
 import { useDashboard } from "../api/dashboard.js";
 import ErrorState from "../components/ErrorState.jsx";
 import OrderStatusBadge from "../components/OrderStatusBadge.jsx";
-import { formatDateTime, formatResponseTime, formatVND } from "../lib/format.js";
+import { formatDateTime, formatResponseTime, formatVND, titleCaseName } from "../lib/format.js";
 
 const { RangePicker } = DatePicker;
 
@@ -35,7 +35,7 @@ const { RangePicker } = DatePicker;
 function StatCard({ icon: Icon, iconBg, iconColor, label, value, changePct, loading }) {
   if (loading) {
     return (
-      <div className="rounded-lg bg-white p-4 shadow-card">
+      <div className="rounded-lg bg-surface-raised p-4 border border-border">
         <div className="flex items-start gap-4">
           <Skeleton.Avatar active size={52} shape="circle" />
           <div className="flex-1 space-y-2 pt-1">
@@ -47,7 +47,7 @@ function StatCard({ icon: Icon, iconBg, iconColor, label, value, changePct, load
     );
   }
   return (
-    <div className="rounded-lg bg-white p-4 shadow-card">
+    <div className="rounded-lg bg-surface-raised p-4 border border-border">
       <div className="flex items-start gap-4">
         <div
           className={`flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full ${iconBg}`}
@@ -55,7 +55,7 @@ function StatCard({ icon: Icon, iconBg, iconColor, label, value, changePct, load
           <Icon size={24} className={iconColor} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-slate-500">{label}</p>
+          <p className="text-sm text-muted">{label}</p>
           <p className="mt-0.5 text-2xl font-bold text-ink">{value}</p>
           {changePct != null && (
             <div className="mt-1 flex items-center gap-1">
@@ -82,9 +82,9 @@ function StatCard({ icon: Icon, iconBg, iconColor, label, value, changePct, load
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-lg border border-slate-100 bg-white px-3 py-2 shadow-lg">
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className="mt-0.5 text-sm font-semibold text-blue-600">{payload[0].value} đơn</p>
+    <div className="rounded-lg border border-border bg-surface-muted px-3 py-2 shadow-lg">
+      <p className="text-xs text-muted">{label}</p>
+      <p className="mt-0.5 text-sm font-semibold text-brand">{payload[0].value} đơn</p>
     </div>
   );
 }
@@ -92,10 +92,10 @@ function ChartTooltip({ active, payload, label }) {
 // ── Health-check status badge ─────────────────────────────────────────────────
 function HcStatusBadge({ status, label }) {
   const styles = {
-    healthy: "bg-green-50 text-green-700",
-    warning: "bg-amber-50 text-amber-700",
-    critical: "bg-red-50 text-red-700",
-    unknown: "bg-slate-50 text-slate-600",
+    healthy: "bg-green-500/15 text-green-400",
+    warning: "bg-amber-500/15 text-amber-300",
+    critical: "bg-red-500/15 text-red-400",
+    unknown: "bg-white/10 text-slate-300",
   };
   const dots = {
     healthy: "bg-green-500",
@@ -116,10 +116,10 @@ function HcStatusBadge({ status, label }) {
 // ── Notification icon ─────────────────────────────────────────────────────────
 function NotifIcon({ type }) {
   const map = {
-    success: { Icon: CheckCircle, bg: "bg-green-50", color: "text-green-500" },
-    warning: { Icon: AlertTriangle, bg: "bg-amber-50", color: "text-amber-500" },
-    error: { Icon: XCircle, bg: "bg-red-50", color: "text-red-500" },
-    info: { Icon: Info, bg: "bg-blue-50", color: "text-blue-500" },
+    success: { Icon: CheckCircle, bg: "bg-green-500/15", color: "text-green-400" },
+    warning: { Icon: AlertTriangle, bg: "bg-amber-500/15", color: "text-amber-400" },
+    error: { Icon: XCircle, bg: "bg-red-500/15", color: "text-red-400" },
+    info: { Icon: Info, bg: "bg-blue-500/15", color: "text-blue-400" },
   };
   const { Icon, bg, color } = map[type] ?? map.info;
   return (
@@ -149,9 +149,9 @@ function groupChartData(data, period) {
 // ── Section wrapper card ──────────────────────────────────────────────────────
 function SectionCard({ title, linkTo, extra, children }) {
   return (
-    <div className="flex h-full flex-col rounded-lg bg-white shadow-card">
-      <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3.5">
-        <h2 className="text-base font-semibold text-[#1a7fd4]">{title}</h2>
+    <div className="flex h-full flex-col rounded-lg bg-surface-raised border border-border">
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
+        <h2 className="text-base font-semibold text-ink">{title}</h2>
         <div className="flex items-center gap-3">
           {extra}
           {linkTo && (
@@ -182,6 +182,7 @@ const recentOrderCols = [
     dataIndex: "customer_name",
     key: "customer_name",
     ellipsis: true,
+    render: (v) => titleCaseName(v) || "—",
   },
   {
     title: "Tổng tiền",
@@ -200,7 +201,7 @@ const recentOrderCols = [
     title: "Thời gian",
     dataIndex: "date_created_woo",
     key: "time",
-    render: (v) => <span className="text-slate-500">{formatDateTime(v)}</span>,
+    render: (v) => <span className="text-muted">{formatDateTime(v)}</span>,
   },
 ];
 
@@ -217,7 +218,7 @@ const monitorCols = [
     title: "Thời gian kiểm tra cuối",
     dataIndex: "hc_checked_at",
     key: "checked_at",
-    render: (v) => <span className="text-xs text-slate-500">{formatDateTime(v)}</span>,
+    render: (v) => <span className="text-xs text-muted">{formatDateTime(v)}</span>,
   },
   {
     title: "Phản hồi",
@@ -229,7 +230,7 @@ const monitorCols = [
         className={
           row.status === "warning" || row.status === "critical"
             ? "font-medium text-danger"
-            : "text-slate-600"
+            : "text-text"
         }
       >
         {formatResponseTime(v)}
@@ -281,7 +282,7 @@ export default function Dashboard() {
       {/* Page header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#1a7fd4]">Tổng quan</h1>
+          <h1 className="text-2xl font-bold text-ink">Tổng quan</h1>
         </div>
         <RangePicker
           value={dateRange}
@@ -296,8 +297,8 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <StatCard
           icon={ShoppingCart}
-          iconBg="bg-amber-50"
-          iconColor="text-amber-500"
+          iconBg="bg-amber-500/15"
+          iconColor="text-amber-400"
           label="Tổng đơn hàng"
           value={(stats.orders?.total ?? 0).toLocaleString("vi-VN")}
           changePct={stats.orders?.change_pct}
@@ -305,8 +306,8 @@ export default function Dashboard() {
         />
         <StatCard
           icon={DollarSign}
-          iconBg="bg-green-50"
-          iconColor="text-green-500"
+          iconBg="bg-green-500/15"
+          iconColor="text-green-400"
           label="Doanh thu"
           value={formatVND(stats.revenue?.total ?? 0)}
           changePct={stats.revenue?.change_pct}
@@ -314,8 +315,8 @@ export default function Dashboard() {
         />
         <StatCard
           icon={Package}
-          iconBg="bg-blue-50"
-          iconColor="text-blue-500"
+          iconBg="bg-blue-500/15"
+          iconColor="text-blue-400"
           label="Sản phẩm"
           value={(stats.products?.total ?? 0).toLocaleString("vi-VN")}
           changePct={stats.products?.change_pct}
@@ -323,8 +324,8 @@ export default function Dashboard() {
         />
         <StatCard
           icon={Users}
-          iconBg="bg-purple-50"
-          iconColor="text-purple-500"
+          iconBg="bg-purple-500/15"
+          iconColor="text-purple-400"
           label="Khách hàng"
           value={(stats.customers?.total ?? 0).toLocaleString("vi-VN")}
           changePct={stats.customers?.change_pct}
@@ -360,11 +361,11 @@ export default function Dashboard() {
                   <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                     <defs>
                       <linearGradient id="gradOrders" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
-                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#978df8" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#978df8" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2c33" vertical={false} />
                     <XAxis
                       dataKey="date"
                       tickFormatter={xFmt}
@@ -384,7 +385,7 @@ export default function Dashboard() {
                       type="monotone"
                       dataKey="count"
                       name="Số đơn hàng"
-                      stroke="#3b82f6"
+                      stroke="#978df8"
                       strokeWidth={2}
                       fill="url(#gradOrders)"
                       dot={false}
@@ -394,7 +395,7 @@ export default function Dashboard() {
                 </ResponsiveContainer>
 
                 {/* Status summary */}
-                <div className="mt-3 grid grid-cols-4 divide-x divide-slate-100 border-t border-slate-100 pt-3 text-center">
+                <div className="mt-3 grid grid-cols-4 divide-x divide-border border-t border-border pt-3 text-center">
                   {[
                     { label: "Tổng đơn hàng", value: summary.total ?? 0, cls: "text-ink" },
                     {
@@ -417,7 +418,7 @@ export default function Dashboard() {
                     },
                   ].map(({ label, value, pct, cls }) => (
                     <div key={label}>
-                      <p className="text-xs text-slate-500">{label}</p>
+                      <p className="text-xs text-muted">{label}</p>
                       <p className={`mt-0.5 text-base font-bold ${cls}`}>
                         {value.toLocaleString("vi-VN")}
                         {pct != null && (
@@ -470,14 +471,14 @@ export default function Dashboard() {
                       dot: "bg-red-500",
                     },
                   ].map(({ label, value, dot }) => (
-                    <div key={label} className="rounded-lg bg-slate-50 px-3 py-2 text-center">
+                    <div key={label} className="rounded-lg bg-surface-muted px-3 py-2 text-center">
                       <div className="flex items-center justify-center gap-1">
                         {dot && (
                           <span className={`h-2 w-2 rounded-full ${dot}`} />
                         )}
                         <span className="text-xl font-bold text-ink">{value}</span>
                       </div>
-                      <p className="mt-0.5 text-xs text-slate-500">{label}</p>
+                      <p className="mt-0.5 text-xs text-muted">{label}</p>
                     </div>
                   ))}
                 </div>
@@ -514,19 +515,19 @@ export default function Dashboard() {
                 ))}
               </div>
             ) : notifications.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-400">Không có thông báo</p>
+              <p className="py-8 text-center text-sm text-muted">Không có thông báo</p>
             ) : (
-              <ul className="divide-y divide-slate-50">
+              <ul className="divide-y divide-border">
                 {notifications.map((n, i) => (
                   <li key={i} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
                     <NotifIcon type={n.type} />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium leading-tight text-ink">{n.title}</p>
-                      <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+                      <p className="mt-0.5 text-xs leading-relaxed text-muted">
                         {n.message}
                       </p>
                     </div>
-                    <span className="shrink-0 text-xs text-slate-400">
+                    <span className="shrink-0 text-xs text-muted">
                       {formatDateTime(n.time)?.split(" ")[1] ?? ""}
                     </span>
                   </li>

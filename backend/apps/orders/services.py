@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # marketing). Other statuses are synced on demand from the UI.
 POLL_STATUS = "processing"
 
+# SyncLog.operation written for a manual order poll, so the progress banner can
+# group this run's per-site rows. Must match apps.sync.services.PROGRESS_OPERATIONS.
+POLL_OPERATION = "poll_orders"
+
 # Every WooCommerce order status the Hub is allowed to sync. One sync run pulls
 # exactly one status; the API validates the requested status against this set.
 ALLOWED_POLL_STATUSES = (
@@ -43,9 +47,75 @@ COMPLETED_STATUS = "completed"
 CANCELLED_STATUS = "cancelled"
 CANCELLABLE_STATUSES = ("pending", "processing", "on-hold")
 
+# Sapo payment statuses (Order.payment_status, from Sapo's financial_status).
+# An order in one of UNPAID_PAYMENT_STATUSES is "chưa thanh toán" — the set the
+# Sapo poll fetches (financial_status=unpaid) and the dedicated page lists.
+# PAID_PAYMENT_STATUS is the terminal state ``mark_order_paid`` drives to.
+UNPAID_PAYMENT_STATUSES = ("pending", "authorized", "partially_paid")
+PAID_PAYMENT_STATUS = "paid"
+
+# The "unpaid" payment-status group as a query value. ``list_orders_qs`` expands
+# it to UNPAID_PAYMENT_STATUSES (the not-yet-paid set) for the list screen's
+# payment-status filter. The Sapo client also understands it as a financial_status
+# filter, but the order poll no longer pins it — it pulls every payment status.
+UNPAID_POLL_FILTER = "unpaid"
+
 
 class InvalidStatusTransition(Exception):
     """Raised when an order cannot move to the requested status (maps to 409)."""
+
+
+def sites_for_order_poll(site_ids=None, platform=None) -> list[int]:
+    """The site ids the order poll should actually hit (the single source of
+    truth for both the periodic task and the manual ``poll_now`` count).
+
+    WooCommerce sites are independent → all are polled. Sapo is special:
+
+    - **Gated by ``SAPO_ORDER_POLL_ENABLED``** (OFF by default). While off, Sapo
+      sites are excluded entirely — the pause switch.
+    - **Deduplicated by store** when on. Several Sapo Site records can be
+      storefront domains of ONE Sapo backend store — different domains, even
+      different API keys, can resolve to the same ``*.mysapo.net`` host; polling
+      each would pull the same orders once per site and inflate order/revenue
+      counts. So Sapo sites are grouped by ``sapo_store_host`` (the canonical
+      host discovered during health-check) and only the lowest-id site of each
+      store is polled. A site whose host is not resolved yet (blank) is treated
+      as its own store so it is never silently merged with another.
+
+    ``site_ids`` (when given) scopes the candidate set first, so a manual run can
+    still target a subset. ``platform`` (``woocommerce`` | ``sapo``) restricts
+    the run to one platform — the per-platform "Đồng bộ ngay" screens pass it so
+    the WooCommerce screen never pulls Sapo orders and vice versa; ``None`` polls
+    both (the periodic beat).
+    """
+    from django.conf import settings
+
+    from apps.sites.models import Site
+
+    qs = Site.objects.filter(is_deleted=False)
+    if site_ids is not None:
+        qs = qs.filter(id__in=site_ids)
+
+    ids = []
+    if platform in (None, Site.Platform.WOOCOMMERCE):
+        ids = list(
+            qs.filter(platform=Site.Platform.WOOCOMMERCE).values_list("id", flat=True)
+        )
+    include_sapo = platform in (None, Site.Platform.SAPO)
+    if include_sapo and getattr(settings, "SAPO_ORDER_POLL_ENABLED", False):
+        seen_stores: set = set()
+        for row in (
+            qs.filter(platform=Site.Platform.SAPO)
+            .order_by("id")
+            .values("id", "sapo_store_host")
+        ):
+            # Unresolved host → unique key per site (never merge unknowns).
+            store = row["sapo_store_host"] or f"site:{row['id']}"
+            if store in seen_stores:
+                continue
+            seen_stores.add(store)
+            ids.append(row["id"])
+    return ids
 
 
 def _to_aware(value) -> datetime.datetime | None:
@@ -101,6 +171,9 @@ def normalize_order(site, raw: dict) -> dict:
     return {
         "number": str(raw.get("number") or raw.get("id") or ""),
         "status": raw.get("status", ""),
+        # Sapo payment status (``financial_status``, mapped through
+        # ``_sapo_order_to_woo``); absent for Woo payloads → "".
+        "payment_status": raw.get("financial_status", ""),
         "currency": raw.get("currency", ""),
         "total": raw.get("total") or 0,
         "customer_name": _full_name(billing),
@@ -461,6 +534,38 @@ def mark_order_cancelled(order: Order) -> Order:
     return obj
 
 
+def mark_order_paid(order: Order) -> Order:
+    """Mark a Sapo order paid (record a full ``sale`` transaction), then sync.
+
+    Sapo-only: ``client_for_site`` returns a ``WooClient`` for Woo sites, which
+    has no ``mark_order_paid`` — so a non-Sapo order is rejected up front rather
+    than raising ``AttributeError``. Also rejected when the order is already paid
+    or has been cancelled. Writes to Sapo first (the source of truth), then
+    upserts the returned (re-fetched) order so the Hub row matches the site and
+    the advanced ``date_modified_woo`` keeps the next poll coherent.
+
+    Raises ``InvalidStatusTransition`` for a disallowed order; lets
+    ``httpx.HTTPError`` propagate so the caller can map it to a 502.
+    """
+    from apps.sites.models import Site
+    from apps.sites.services import client_for_site
+
+    if order.site.platform != Site.Platform.SAPO:
+        raise InvalidStatusTransition(
+            "Chỉ đơn Sapo mới có thao tác đánh dấu đã thanh toán."
+        )
+    if order.status == CANCELLED_STATUS:
+        raise InvalidStatusTransition("Không thể thanh toán đơn đã hủy.")
+    if order.payment_status == PAID_PAYMENT_STATUS:
+        raise InvalidStatusTransition("Đơn đã được thanh toán.")
+
+    raw = client_for_site(order.site).mark_order_paid(
+        order.woo_order_id, amount=str(order.total)
+    )
+    obj, _ = upsert_order(order.site, raw)
+    return obj
+
+
 def _date_bounds(date_from, date_to) -> tuple[str | None, str | None]:
     """Turn ``YYYY-MM-DD`` strings into Woo ``after`` / ``before`` ISO bounds.
 
@@ -481,7 +586,47 @@ def _date_bounds(date_from, date_to) -> tuple[str | None, str | None]:
     return after, before
 
 
-def poll_site(site, status: str = POLL_STATUS, *, date_from=None, date_to=None) -> dict:
+def _log_poll(
+    site, status, *, started, run_id, triggered_by_id, ok, fetched, created, updated, error
+):
+    """One ``SyncLog`` row recording this site's poll outcome, for the progress
+    banner. Only written when ``run_id`` is set (a manual "Đồng bộ ngay" run) —
+    the periodic beat polls every site every ~3 min and logging each would bloat
+    the audit table for no report. Logs counts only, never order payloads (PII)."""
+    if not run_id:
+        return
+    from apps.sync.models import SyncLog
+
+    hosting = site.hosting if site.hosting_id else None
+    SyncLog.objects.create(
+        site=site,
+        operation=POLL_OPERATION,
+        status=SyncLog.Status.SUCCESS if ok else SyncLog.Status.ERROR,
+        created_count=created,
+        updated_count=updated,
+        error=error or "",
+        run_id=run_id,
+        triggered_by_id=triggered_by_id,
+        started_at=started,
+        detail={
+            "site_name": site.name,
+            "site_url": site.base_url,
+            "hosting": (hosting.provider or hosting.name) if hosting else "",
+            "status_polled": status,
+            "fetched": fetched,
+        },
+    )
+
+
+def poll_site(
+    site,
+    status: str = POLL_STATUS,
+    *,
+    date_from=None,
+    date_to=None,
+    run_id=None,
+    triggered_by_id=None,
+) -> dict:
     """Fetch orders of one ``status`` for one site and upsert them.
 
     Two modes, mutually exclusive:
@@ -499,10 +644,12 @@ def poll_site(site, status: str = POLL_STATUS, *, date_from=None, date_to=None) 
 
     Network errors are caught and returned (never raised) so one bad site does
     not abort the whole fan-out; the site id is logged but never the payload
-    (PII / secrets stay out of logs).
+    (PII / secrets stay out of logs). When ``run_id`` is set (manual run) the
+    outcome is recorded as a ``SyncLog`` row for the progress banner.
     """
     from apps.sites.services import client_for_site
 
+    started = timezone.now()
     after, before = _date_bounds(date_from, date_to)
     if after or before:
         modified_after = None
@@ -515,6 +662,11 @@ def poll_site(site, status: str = POLL_STATUS, *, date_from=None, date_to=None) 
         )
         modified_after = latest.isoformat() if latest else None
 
+    # Sapo orders carry a payment status (``financial_status``) alongside the
+    # lifecycle status, but the poll no longer pins it: it pulls every order of
+    # the requested status — paid and unpaid alike — so the Sapo screen can list
+    # and filter them all (the payment-status filter is applied at query time, in
+    # ``list_orders_qs``). WooClient ignores the payment dimension regardless.
     created = updated = 0
     try:
         orders = client_for_site(site).list_orders(
@@ -529,6 +681,10 @@ def poll_site(site, status: str = POLL_STATUS, *, date_from=None, date_to=None) 
             site.id,
             status,
             exc.__class__.__name__,
+        )
+        _log_poll(
+            site, status, started=started, run_id=run_id, triggered_by_id=triggered_by_id,
+            ok=False, fetched=0, created=0, updated=0, error=exc.__class__.__name__,
         )
         return {
             "site_id": site.id,
@@ -546,6 +702,10 @@ def poll_site(site, status: str = POLL_STATUS, *, date_from=None, date_to=None) 
         else:
             updated += 1
 
+    _log_poll(
+        site, status, started=started, run_id=run_id, triggered_by_id=triggered_by_id,
+        ok=True, fetched=len(orders), created=created, updated=updated, error=None,
+    )
     return {
         "site_id": site.id,
         "status": status,
@@ -571,9 +731,21 @@ def list_orders_qs(qs, params):
     elif hosting:
         qs = qs.filter(site__hosting_id=hosting)
 
+    platform = params.get("platform")
+    if platform:
+        qs = qs.filter(site__platform=platform)
+
     status = params.get("status")
     if status:
         qs = qs.filter(status=status)
+
+    # Payment status (Sapo). "unpaid" is a group → match the not-yet-paid set;
+    # any other value is matched exactly (e.g. "paid").
+    payment_status = params.get("payment_status")
+    if payment_status == UNPAID_POLL_FILTER:
+        qs = qs.filter(payment_status__in=UNPAID_PAYMENT_STATUSES)
+    elif payment_status:
+        qs = qs.filter(payment_status=payment_status)
 
     classification = params.get("classification")
     if classification:

@@ -11,20 +11,30 @@ export default {
   theme: {
     extend: {
       colors: {
-        brand: "var(--color-brand)",
+        // RGB-channel form so Tailwind opacity modifiers work (e.g. bg-brand/15,
+        // ring-brand/40). The hex --color-brand stays for antd/NProgress/inline.
+        brand: "rgb(var(--color-brand-rgb) / <alpha-value>)",
+        "brand-hover": "var(--color-brand-hover)",
+        "brand-active": "var(--color-brand-active)",
         surface: "var(--color-surface)",
+        "surface-raised": "var(--color-surface-raised)",
+        "surface-muted": "var(--color-surface-muted)",
         ink: "var(--color-ink)",
+        text: "var(--color-text)",
         muted: "var(--color-muted)",
+        border: "var(--color-border)",
+        "border-strong": "var(--color-border-strong)",
         success: "var(--color-success)",
         warning: "var(--color-warning)",
         danger: "var(--color-danger)",
       },
       fontFamily: {
-        display: ["Be Vietnam Pro", "ui-sans-serif", "sans-serif"],
-        sans: ["Be Vietnam Pro", "ui-sans-serif", "sans-serif"],
+        display: ["Manrope", "ui-sans-serif", "sans-serif"],
+        sans: ["Manrope", "ui-sans-serif", "sans-serif"],
       },
       borderRadius: {
         DEFAULT: "var(--radius)",
+        lg: "var(--radius-lg)",
       },
       boxShadow: {
         card: "var(--shadow-card)",

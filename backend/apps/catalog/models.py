@@ -35,6 +35,15 @@ class MasterProduct(models.Model):
 
     sku = models.CharField(max_length=120, unique=True, db_index=True)
     name = models.CharField(max_length=255)
+    # The product's name as it was when imported from a site, frozen at import
+    # time and never touched by edits to ``name``. It is the cross-site *name*
+    # matching key: on the first push to a site with no mapping yet, the push
+    # looks the site up by this name and "adopts" the existing product (creates
+    # the mapping + updates it) instead of creating a duplicate. After that one
+    # adoption the stable ProductMapping takes over — name matching never runs
+    # again for that (master, site). Blank for hand-created masters (the push
+    # falls back to ``name``). See services.normalize_match_name / _adopt_by_name.
+    match_name = models.CharField(max_length=255, blank=True, default="", db_index=True)
     type = models.CharField(max_length=20, choices=Type.choices, default=Type.SIMPLE)
     description = models.TextField(blank=True)
     short_description = models.TextField(blank=True)
@@ -47,8 +56,9 @@ class MasterProduct(models.Model):
     weight = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
     # List of image URLs: ["https://...", ...] (pushed as [{"src": url}]).
     images = models.JSONField(default=list)
-    # List of category names: ["Pin mặt trời", ...] (pushed as [{"name": n}] or, when
-    # the name is mapped to a site's woo_category_id via CategoryMapping, [{"id": n}]).
+    # List of category names: ["Pin mặt trời", ...]. Pushed as [{"id": n}] via the
+    # site's CategoryMapping — Woo ignores name-only refs, so the push creates any
+    # unmapped category on the site first (services._ensure_site_categories).
     categories = models.JSONField(default=list)
 
     # --- Type-specific data (all defaulted → simple products are unaffected) -----
@@ -66,6 +76,17 @@ class MasterProduct(models.Model):
     # and their per-site woo ids live on ProductVariationMapping.
     attributes = models.JSONField(default=list)
     variations = models.JSONField(default=list)
+
+    # Where this master was imported from (audit only; SET_NULL so deleting the
+    # site keeps the master). Null for hand-created products.
+    source_site = models.ForeignKey(
+        "sites.Site",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="imported_products",
+    )
+    imported_at = models.DateTimeField(null=True, blank=True)
 
     is_deleted = models.BooleanField(default=False, db_index=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -98,6 +119,49 @@ class ProductImage(models.Model):
 
     def __str__(self) -> str:
         return self.original_name or f"Image #{self.pk}"
+
+
+class SiteMediaAsset(models.Model):
+    """Cache: one Hub media file that has been sideloaded onto one ``Site``.
+
+    Used by the description-image sideload (services._sideload_description_images,
+    WooCommerce only). When a product's description HTML embeds a Hub image
+    (``/media/...``), the push makes Woo download it into the site's own media
+    library and rewrites the description ``src`` to the returned site URL. This
+    row remembers that upload so the SAME image is never re-uploaded to the SAME
+    site on later pushes (Woo's REST sideload does not dedup by source URL — it
+    would create a duplicate attachment every push otherwise).
+
+    Keyed by ``source_path`` (the host-INDEPENDENT ``/media/...`` part, not the
+    full URL) so the cache survives a change of the Hub's public host (new
+    cloudflared tunnel / real deploy — see the set_media_public_url command).
+    UNIQUE ``(site, source_path)`` keeps the sideload idempotent.
+    """
+
+    site = models.ForeignKey(
+        "sites.Site",
+        on_delete=models.CASCADE,
+        related_name="media_assets",
+        db_index=True,
+    )
+    # Host-independent Hub media path, e.g. "/media/products/2026/06/x.png".
+    source_path = models.CharField(max_length=500)
+    # The URL the file resolved to on the SITE after Woo sideloaded it.
+    site_url = models.URLField(max_length=500)
+    # The site's attachment id (kept for audit / future cleanup; nullable because
+    # some Woo responses omit it).
+    woo_media_id = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["site", "source_path"], name="mediaasset_unique_site_path"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source_path}@{self.site_id} → {self.site_url}"
 
 
 class ProductMapping(models.Model):
@@ -198,6 +262,9 @@ class CategoryMapping(models.Model):
         db_index=True,
     )
     woo_category_id = models.BigIntegerField()
+    # Tên RAW trên site (chưa normalize) — để màn hình mapping đối chiếu được
+    # "tên trên site" vs "tên Hub". Refresh mỗi lần pull (mapping rebuild wholesale).
+    woo_name = models.CharField(max_length=255, blank=True, default="")
     last_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

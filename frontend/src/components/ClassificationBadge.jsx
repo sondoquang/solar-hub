@@ -2,15 +2,15 @@
 // OrderStatusBadge so the dashboard reads consistently. Optionally shows the
 // 0–100 risk score next to the label.
 const MAP = {
-  genuine: { bg: "bg-green-50", text: "text-success", label: "Hợp lệ" },
-  suspicious: { bg: "bg-amber-50", text: "text-warning", label: "Nghi ngờ" },
-  spam: { bg: "bg-red-50", text: "text-danger", label: "Spam/Bot" },
+  genuine: { bg: "bg-green-500/15", text: "text-success", label: "Hợp lệ" },
+  suspicious: { bg: "bg-amber-500/15", text: "text-warning", label: "Nghi ngờ" },
+  spam: { bg: "bg-red-500/15", text: "text-danger", label: "Spam/Bot" },
 };
 
 export default function ClassificationBadge({ classification, score }) {
   const { bg, text, label } = MAP[classification] || {
-    bg: "bg-slate-100",
-    text: "text-slate-600",
+    bg: "bg-white/10",
+    text: "text-slate-300",
     label: classification || "—",
   };
   return (

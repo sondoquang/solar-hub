@@ -63,6 +63,11 @@ class SiteSerializer(serializers.ModelSerializer):
         error_messages={"blank": "Không được để trống.", "required": "Bắt buộc."},
     )
     consumer_secret = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    platform = serializers.ChoiceField(
+        choices=Site.Platform.choices,
+        required=False,
+        default=Site.Platform.WOOCOMMERCE,
+    )
     hosting = serializers.PrimaryKeyRelatedField(
         queryset=Hosting.objects.filter(is_deleted=False),
         required=False,
@@ -76,6 +81,7 @@ class SiteSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "base_url",
+            "platform",
             "consumer_key",
             "consumer_secret",
             "hosting",

@@ -1,5 +1,6 @@
-import { Button, DatePicker, Input, Select } from "antd";
-import { Eye, FileDown, Globe, RefreshCw, Send, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, DatePicker, Input, Select } from "antd";
+import { Eye, FileDown, Globe, Mail, RefreshCw, Send, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { useSearchParams } from "react-router-dom";
@@ -13,6 +14,7 @@ import {
   usePollOrders,
 } from "../api/orders.js";
 import { useSites } from "../api/sites.js";
+import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
 import ClassificationBadge from "../components/ClassificationBadge.jsx";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -20,7 +22,8 @@ import ErrorState from "../components/ErrorState.jsx";
 import OrderDetailModal from "../components/OrderDetailModal.jsx";
 import OrderStats from "../components/OrderStats.jsx";
 import OrderStatusBadge from "../components/OrderStatusBadge.jsx";
-import { formatDateTime, formatVND } from "../lib/format.js";
+import SendOrdersEmailModal from "../components/SendOrdersEmailModal.jsx";
+import { formatDateTime, formatVND, titleCaseName } from "../lib/format.js";
 
 const { RangePicker } = DatePicker;
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -77,6 +80,7 @@ export default function Orders() {
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [selectedMap, setSelectedMap] = useState(() => new Map());
   const [exporting, setExporting] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -100,6 +104,9 @@ export default function Orders() {
   const filters = useMemo(() => {
     const [scopeKind, scopeId] = scope.split(":");
     return {
+      // This screen is WooCommerce-only; Sapo orders live in their own
+      // "Đơn Sapo chưa thanh toán" screen and must never mix in here.
+      platform: "woocommerce",
       search: search || undefined,
       status: statusFilter === "all" ? undefined : statusFilter,
       forwarded: forwardedFilter === "all" ? undefined : forwardedFilter,
@@ -119,9 +126,26 @@ export default function Orders() {
   });
   const { data: stats, isLoading: statsLoading } = useOrderStats(filters);
   const { data: hostingData } = useHostings({ page_size: 100 });
-  const { data: siteData } = useSites({ page_size: 100 });
+  // WooCommerce-only screen: the scope picker and the poll target Woo sites only.
+  const { data: siteData } = useSites({ page_size: 100, platform: "woocommerce" });
   const poll = usePollOrders();
   const forwardBulk = useForwardOrdersBulk();
+  const qc = useQueryClient();
+
+  // "Đang đồng bộ đơn hàng… X/Y site" banner: poll the run until every targeted
+  // site reports, then refetch the list/stats so the newly-pulled orders show.
+  const orderRun = useSyncRunProgress(SYNC_OPS.orders, {
+    onFinish: ({ finished, timedOut, expected, errorCount }) => {
+      if (timedOut) {
+        toast("Đồng bộ chạy lâu hơn dự kiến — kiểm tra lại sau.", { icon: "⏳" });
+      } else if (errorCount) {
+        toast(`Đồng bộ xong, ${errorCount}/${expected} site lỗi.`, { icon: "⚠️" });
+      } else if (finished) {
+        toast.success(`Đã đồng bộ đơn hàng từ ${expected} site.`);
+      }
+      qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+  });
 
   const rows = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -154,13 +178,17 @@ export default function Orders() {
       pollSites = sites.filter((s) => String(s.hosting) === scopeId).map((s) => s.id);
     }
     const payload = {
+      platform: "woocommerce", // never pull Sapo from this screen
       status: statusFilter === "all" ? undefined : statusFilter,
       sites: pollSites,
       date_from: range?.[0]?.format("YYYY-MM-DD"),
       date_to: range?.[1]?.format("YYYY-MM-DD"),
     };
     poll.mutate(payload, {
-      onSuccess: () => toast.success("Đã kích hoạt đồng bộ đơn hàng."),
+      onSuccess: (res) => {
+        toast.success("Đã kích hoạt đồng bộ đơn hàng.");
+        orderRun.start({ runId: res.run_id, expected: res.expected });
+      },
       onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
     });
   };
@@ -254,7 +282,7 @@ export default function Orders() {
       width: 200,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
             <Globe size={15} />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
@@ -270,7 +298,7 @@ export default function Orders() {
       width: 200,
       render: (_v, r) => (
         <div className="min-w-0 flex flex-col gap-1">
-          <p className="truncate mb-1">{r.customer_name || "—"}</p>
+          <p className="truncate mb-1">{titleCaseName(r.customer_name) || "—"}</p>
           <p className="truncate text-xs text-muted">{r.customer_phone || ""}</p>
         </div>
       ),
@@ -351,7 +379,7 @@ export default function Orders() {
     <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <div>
-          <h1 className="font-display text-2xl font-bold">Đơn hàng</h1>
+          <h1 className="font-display text-2xl font-bold">Đơn hàng WooCommerce</h1>
         </div>
         <Button
           type="primary"
@@ -362,6 +390,15 @@ export default function Orders() {
           Đồng bộ ngay
         </Button>
       </div>
+
+      {orderRun.activeRun && (
+        <Alert
+          type="info"
+          showIcon
+          className="mb-3"
+          message={`Đang đồng bộ đơn hàng… ${orderRun.doneSites}/${orderRun.activeRun.expected} site hoàn tất.`}
+        />
+      )}
 
       <div className="mb-3">
         <OrderStats stats={stats ?? {}} loading={statsLoading} />
@@ -421,7 +458,7 @@ export default function Orders() {
       {isError ? (
         <ErrorState message="Không tải được danh sách đơn hàng" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={rows}
@@ -461,6 +498,13 @@ export default function Orders() {
                     onClick={exportSelected}
                   >
                     Xuất PDF ({selectedKeys.length})
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<Mail size={14} />}
+                    onClick={() => setSendOpen(true)}
+                  >
+                    Gửi mail ({selectedKeys.length})
                   </Button>
                   <Button size="small" icon={<X size={14} />} onClick={clearSelection}>
                     Bỏ chọn
@@ -503,6 +547,13 @@ export default function Orders() {
       )}
 
       <OrderDetailModal orders={viewOrders} open={viewOpen} onClose={() => setViewOpen(false)} />
+
+      <SendOrdersEmailModal
+        open={sendOpen}
+        orderIds={selectedKeys}
+        onClose={() => setSendOpen(false)}
+        onSent={clearSelection}
+      />
     </section>
   );
 }

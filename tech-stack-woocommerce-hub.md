@@ -9,7 +9,7 @@
 Hub là "single source of truth": bạn thao tác sản phẩm/đơn hàng tại Hub, Hub nói chuyện với từng WooCommerce site qua **REST API** (`/wp-json/wc/v3/...`). Không cần biết PHP/WordPress.
 
 Bốn nguyên tắc cho bản Docker này:
-
+/pp
 1. **Một image duy nhất** chứa frontend (đã build tĩnh) + backend + nginx + gunicorn + Celery. Build một lần, chạy ở đâu cũng vậy.
 2. **Frontend build trước thành file tĩnh**, **nginx phục vụ trực tiếp** và **reverse proxy `/api` về backend**. Frontend và backend **cùng một origin** → không còn vấn đề CORS, cookie cross-site, cấu hình gọn nhất.
 3. **DB local**: mặc định dùng **SQLite** (file trong volume, không pull image gì); khi cần mạnh hơn thì trỏ sang **PostgreSQL cài sẵn trên host** — vẫn không phải pull image Postgres từ registry.

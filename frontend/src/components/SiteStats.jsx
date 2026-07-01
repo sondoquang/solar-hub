@@ -5,17 +5,17 @@ import { AlertCircle, CheckCircle2, Globe, XCircle } from "lucide-react";
 // page (container) and passed in, keeping this component logic-free. While
 // `loading` the values render as skeleton blocks instead of flashing 0.
 const CARDS = [
-  { key: "total", label: "Tổng website", Icon: Globe, tint: "bg-blue-50 text-blue-500" },
-  { key: "up", label: "Đang hoạt động", Icon: CheckCircle2, tint: "bg-green-50 text-success" },
-  { key: "unknown", label: "Tạm dừng", Icon: AlertCircle, tint: "bg-amber-50 text-warning" },
-  { key: "down", label: "Không hoạt động", Icon: XCircle, tint: "bg-red-50 text-danger" },
+  { key: "total", label: "Tổng website", Icon: Globe, tint: "bg-blue-500/15 text-blue-300" },
+  { key: "up", label: "Đang hoạt động", Icon: CheckCircle2, tint: "bg-green-500/15 text-success" },
+  { key: "unknown", label: "Tạm dừng", Icon: AlertCircle, tint: "bg-amber-500/15 text-warning" },
+  { key: "down", label: "Không hoạt động", Icon: XCircle, tint: "bg-red-500/15 text-danger" },
 ];
 
 export default function SiteStats({ counts = {}, loading = false }) {
   return (
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
       {CARDS.map(({ key, label, Icon, tint }) => (
-        <div key={key} className="flex items-center gap-2 rounded bg-white p-2.5 shadow-card">
+        <div key={key} className="flex items-center gap-2 rounded bg-surface-raised p-2.5 border border-border">
           <span className={`flex h-12 w-12 items-center justify-center rounded-full ${tint}`}>
             <Icon size={22} />
           </span>

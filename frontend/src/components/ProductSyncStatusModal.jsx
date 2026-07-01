@@ -1,9 +1,11 @@
-import { Button, Input, Modal, Select, Table, Tag } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Input, Modal, Select, Table, Tag } from "antd";
 import { Star } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
 import { useProductSyncStatus, useSyncProducts } from "../api/products.js";
+import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
 import { formatDate } from "../lib/format.js";
 import StatusDot from "./StatusDot.jsx";
 
@@ -25,6 +27,24 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
   const id = product?.id;
   const { data: rows = [], isLoading } = useProductSyncStatus(id, { enabled: open });
   const sync = useSyncProducts();
+  const qc = useQueryClient();
+
+  // "Đang đồng bộ… X/Y site" banner for the per-product push, so the user sees
+  // it run to completion before closing; refresh this product's sync state at
+  // the end so the đã/chưa-đồng-bộ tags update.
+  const pushRun = useSyncRunProgress(SYNC_OPS.products, {
+    onFinish: ({ finished, timedOut, expected, errorCount }) => {
+      if (timedOut) {
+        toast("Đồng bộ chạy lâu hơn dự kiến — kiểm tra lại sau.", { icon: "⏳" });
+      } else if (errorCount) {
+        toast(`Đồng bộ xong, ${errorCount}/${expected} site lỗi.`, { icon: "⚠️" });
+      } else if (finished) {
+        toast.success(`Đã đồng bộ xuống ${expected} site.`);
+      }
+      qc.invalidateQueries({ queryKey: ["products", "sync_status", id] });
+    },
+  });
+
   const [selected, setSelected] = useState([]);
   const [statusFilter, setStatusFilter] = useState("all"); // "all" | "up" | "down" | "unknown"
   const [primaryFilter, setPrimaryFilter] = useState("all"); // "all" | "true" | "false"
@@ -68,25 +88,28 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     [visible]
   );
 
-  const selectUnsynced = () => setSelected(unsyncedIds);
+  // Add the currently-visible unsynced sites to the selection (union) instead of
+  // replacing it — consistent with the accumulate behavior below.
+  const selectUnsynced = () =>
+    setSelected((prev) => [...new Set([...prev, ...unsyncedIds])]);
 
-  // Changing any filter prunes hidden selections so "Đồng bộ site đã chọn"
-  // never pushes to a site the user can no longer see.
-  useEffect(() => {
-    const ids = new Set(visible.map((r) => r.site_id));
-    setSelected((prev) =>
-      prev.every((sid) => ids.has(sid)) ? prev : prev.filter((sid) => ids.has(sid))
-    );
-  }, [visible]);
+  // Selection accumulates across searches/filters: the user can search, tick a
+  // few sites, search again and tick more, and the earlier picks survive. It's
+  // only reset when the panel reopens or switches product (the effect above).
+  // `hiddenSelectedCount` surfaces in the footer so the user knows the push
+  // includes selected sites the current filter is hiding.
+  const visibleIds = useMemo(() => new Set(visible.map((r) => r.site_id)), [visible]);
+  const hiddenSelectedCount = selected.filter((sid) => !visibleIds.has(sid)).length;
 
   const handleSync = () => {
     if (!selected.length) return;
     sync.mutate(
       { sites: selected, products: [id] },
       {
-        onSuccess: () => {
+        onSuccess: (res) => {
           toast.success("Đã kích hoạt đồng bộ xuống các site đã chọn.");
           setSelected([]);
+          pushRun.start({ runId: res.run_id, expected: res.expected });
         },
         onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
       }
@@ -132,11 +155,18 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     },
     {
       key: "woo",
-      title: "Woo ID",
-      width: 100,
+      title: "ID trên site",
+      width: 110,
       align: "right",
+      // woo_product_id is the generic per-site remote id (WooCommerce or Sapo
+      // product id) — the API field name is kept for compatibility.
       render: (_v, r) => (
-        <span className="tabular-nums text-muted">{r.woo_product_id ?? "—"}</span>
+        <span className="tabular-nums text-muted">
+          {r.woo_product_id ?? "—"}
+          {r.platform === "sapo" && r.woo_product_id != null && (
+            <span className="ml-1 text-xs text-muted">(Sapo)</span>
+          )}
+        </span>
       ),
     },
     {
@@ -157,7 +187,7 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
     <div className="flex items-center gap-2">
       <span>Trạng thái đồng bộ</span>
       {product && (
-        <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-600">
+        <span className="rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-blue-300">
           {syncedCount}/{rows.length} site
         </span>
       )}
@@ -166,14 +196,21 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
 
   const footer = (
     <div className="flex items-center justify-between gap-1.5">
-      <Button
-        type="text"
-        size="small"
-        disabled={!unsyncedIds.length}
-        onClick={selectUnsynced}
-      >
-        Chọn site chưa đồng bộ
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          type="text"
+          size="small"
+          disabled={!unsyncedIds.length}
+          onClick={selectUnsynced}
+        >
+          Chọn site chưa đồng bộ
+        </Button>
+        {hiddenSelectedCount > 0 && (
+          <span className="text-xs text-muted">
+            +{hiddenSelectedCount} site đã chọn đang ẩn bởi bộ lọc
+          </span>
+        )}
+      </div>
       <div className="flex gap-1.5">
         <Button onClick={onClose}>Đóng</Button>
         <Button
@@ -189,40 +226,59 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
   );
 
   return (
-    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={800}>
+    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={1040}>
       {product && (
         <div className="mt-2">
           <p className="mb-2 truncate text-sm text-muted">
             {product.name} — <span className="font-mono">{product.sku}</span>
           </p>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Input
-              size="small"
-              allowClear
-              placeholder="Tìm theo domain..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-56"
+          {pushRun.activeRun && (
+            <Alert
+              type="info"
+              showIcon
+              className="mb-2"
+              message={`Đang đồng bộ… ${pushRun.doneSites}/${pushRun.activeRun.expected} site hoàn tất.`}
             />
-            <div className="ml-auto flex items-center gap-2">
-              <span className="text-sm text-muted">Loại trang:</span>
+          )}
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <div className="min-w-[240px] flex-1">
+              <label className="mb-1.5 block text-sm font-medium text-muted">
+                Tìm theo domain
+              </label>
+              <Input
+                size="large"
+                allowClear
+                placeholder="Tìm theo domain..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full"
+              />
+            </div>
+            <div className="w-full sm:w-52">
+              <label className="mb-1.5 block text-sm font-medium text-muted">
+                Loại trang
+              </label>
               <Select
-                size="small"
+                size="large"
                 value={primaryFilter}
                 onChange={setPrimaryFilter}
-                className="min-w-32"
+                className="w-full"
                 options={[
                   { value: "all", label: "Tất cả" },
                   { value: "true", label: "Trang chính" },
                   { value: "false", label: "Trang thường" },
                 ]}
               />
-              <span className="text-sm text-muted">Trạng thái web:</span>
+            </div>
+            <div className="w-full sm:w-52">
+              <label className="mb-1.5 block text-sm font-medium text-muted">
+                Trạng thái web
+              </label>
               <Select
-                size="small"
+                size="large"
                 value={statusFilter}
                 onChange={setStatusFilter}
-                className="min-w-36"
+                className="w-full"
                 options={[
                   { value: "all", label: "Tất cả" },
                   { value: "up", label: "Hoạt động" },
@@ -239,10 +295,13 @@ export default function ProductSyncStatusModal({ product, open, onClose }) {
             columns={columns}
             dataSource={visible}
             pagination={false}
-            scroll={{ y: 360 }}
+            scroll={{ y: 460 }}
             rowSelection={{
               selectedRowKeys: selected,
               onChange: setSelected,
+              // Keep keys that leave the filtered dataSource so ticking sites
+              // under one search doesn't drop sites ticked under another.
+              preserveSelectedRowKeys: true,
             }}
             locale={{ emptyText: "Không có website phù hợp bộ lọc." }}
           />

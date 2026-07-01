@@ -5,7 +5,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 from rest_framework import serializers
 
-from .models import Category, MasterProduct, ProductImage, ProductMapping
+from .models import Category, CategoryMapping, MasterProduct, ProductImage, ProductMapping
 from .services import normalize_sku
 
 # Upload limits for the product media library (mirrors site-note attachments).
@@ -101,6 +101,76 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ["id", "name", "slug", "parent", "mapping_count"]
 
 
+class CategoryMappingRowSerializer(serializers.ModelSerializer):
+    """One row of the per-site mapping screen: tên RAW trên site ↔ Hub category."""
+
+    category_id = serializers.IntegerField(source="category.id", read_only=True)
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    category_parent_id = serializers.IntegerField(
+        source="category.parent_id", read_only=True, allow_null=True
+    )
+    category_parent_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CategoryMapping
+        fields = [
+            "id",
+            "woo_category_id",
+            "woo_name",
+            "category_id",
+            "category_name",
+            "category_parent_id",
+            "category_parent_name",
+            "last_synced_at",
+        ]
+
+    def get_category_parent_name(self, obj) -> str | None:
+        return obj.category.parent.name if obj.category.parent_id else None
+
+
+class CategoryMatrixRowSerializer(serializers.ModelSerializer):
+    """One row of the cross-site matrix: a Hub category and its per-site cells.
+
+    ``cells`` is keyed by site id (string — JSON object keys) → ``{woo_id,
+    woo_name}`` for sites where this category is mapped; the frontend renders one
+    column per site (from the response's ``sites`` list) and shows ``—`` for a
+    missing key. Only live-site mappings are emitted."""
+
+    parent_name = serializers.CharField(source="parent.name", read_only=True, allow_null=True)
+    linked_site_count = serializers.IntegerField(read_only=True)
+    cells = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Category
+        fields = ["id", "name", "parent_name", "linked_site_count", "cells"]
+
+    def get_cells(self, obj) -> dict:
+        cells = {}
+        for mapping in obj.mappings.all():
+            site = mapping.site
+            if site and not site.is_deleted:
+                cells[str(mapping.site_id)] = {
+                    "woo_id": mapping.woo_category_id,
+                    "woo_name": mapping.woo_name,
+                }
+        return cells
+
+
+class CategorySiteLinkSerializer(serializers.Serializer):
+    """One row of the tree-tab detail panel: a site + this category's link state."""
+
+    site_id = serializers.IntegerField()
+    site_name = serializers.CharField()
+    site_url = serializers.CharField()
+    site_status = serializers.CharField()
+    platform = serializers.CharField()
+    is_primary = serializers.BooleanField()
+    linked = serializers.BooleanField()
+    woo_category_id = serializers.IntegerField(allow_null=True)
+    woo_name = serializers.CharField(allow_blank=True)
+    last_synced_at = serializers.DateTimeField(allow_null=True)
+
+
 class ProductSyncStatusSerializer(serializers.Serializer):
     """One row of the per-product sync panel: a site + its sync state."""
 
@@ -108,6 +178,7 @@ class ProductSyncStatusSerializer(serializers.Serializer):
     site_name = serializers.CharField()
     site_url = serializers.CharField()
     site_status = serializers.CharField()
+    platform = serializers.CharField()
     is_primary = serializers.BooleanField()
     synced = serializers.BooleanField()
     woo_product_id = serializers.IntegerField(allow_null=True)
@@ -116,10 +187,18 @@ class ProductSyncStatusSerializer(serializers.Serializer):
 
 class MasterProductSerializer(serializers.ModelSerializer):
     """Full CRUD product. ``sku`` is normalized + checked unique on write; the
-    per-site ``mappings`` are read-only (populated by the push, not the client)."""
+    per-site ``mappings`` are read-only (populated by the push, not the client).
+
+    ``match_name`` is the frozen import-time name the push adopts existing site
+    products by (editable so a wrong match key can be corrected, defaults to
+    blank → the push falls back to ``name``); ``source_site``/``imported_at`` are
+    read-only audit of where an imported product came from."""
 
     mappings = ProductMappingSerializer(many=True, read_only=True)
     mapping_count = serializers.IntegerField(source="mappings.count", read_only=True)
+    source_site_name = serializers.CharField(
+        source="source_site.name", read_only=True, allow_null=True
+    )
 
     class Meta:
         model = MasterProduct
@@ -127,6 +206,7 @@ class MasterProductSerializer(serializers.ModelSerializer):
             "id",
             "sku",
             "name",
+            "match_name",
             "type",
             "description",
             "short_description",
@@ -144,9 +224,13 @@ class MasterProductSerializer(serializers.ModelSerializer):
             "variations",
             "mappings",
             "mapping_count",
+            "source_site",
+            "source_site_name",
+            "imported_at",
             "created_at",
             "updated_at",
         ]
+        read_only_fields = ["source_site", "imported_at"]
 
     def validate_sku(self, value):
         sku = normalize_sku(value)

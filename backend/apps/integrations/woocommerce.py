@@ -112,6 +112,27 @@ class WooClient:
         r.raise_for_status()
         return r.json()
 
+    def get_product(self, woo_id: int) -> dict:
+        """GET /products/{id} — fetch one product.
+
+        Used by the description-image sideload to learn a product's CURRENT
+        gallery image ids when the product was not part of a batch this run (an
+        already-synced product). Mirrors the other reads: per-call timeout, Basic
+        auth with the query-string fallback on a 401 (some shared hosts strip the
+        ``Authorization`` header), then ``raise_for_status()``.
+        """
+        url = f"{self.base}/products/{woo_id}"
+        r = httpx.get(url, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.get(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r.json()
+
     def batch_products(
         self,
         create: list[dict] | None = None,
@@ -187,6 +208,76 @@ class WooClient:
             )
         r.raise_for_status()
         return r
+
+    def list_products(self, per_page: int = 100, search: str | None = None) -> list[dict]:
+        """GET /products, paginated — list a site's products for name matching.
+
+        Mirrors ``list_categories``: walks every page (``X-WP-TotalPages``),
+        Basic auth with the query-string fallback on a 401. ``status="any"`` so
+        draft/private products are seen too (an existing draft must still be
+        adopted, not duplicated). ``search`` narrows server-side when given, but
+        Woo's search is fuzzy — the caller still matches by exact normalized
+        name. Returns each remote product dict (``{id, name, sku, type, ...}``),
+        which the caller indexes by normalized name to adopt unmapped masters.
+        """
+        base_params: dict = {"per_page": min(per_page, 100), "status": "any"}
+        if search:
+            base_params["search"] = search
+        products: list[dict] = []
+        page = 1
+        while True:
+            r = self._get_products_page({**base_params, "page": page})
+            batch = r.json()
+            if not batch:
+                break
+            products.extend(batch)
+            total_pages = int(r.headers.get("X-WP-TotalPages", 1) or 1)
+            if page >= total_pages:
+                break
+            page += 1
+        return products
+
+    def _get_products_page(self, params: dict) -> httpx.Response:
+        """One page of /products, with the 401 query-string fallback."""
+        url = f"{self.base}/products"
+        r = httpx.get(url, params=params, auth=self._auth, timeout=30)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.get(
+                url,
+                params={**params, "consumer_key": key, "consumer_secret": secret},
+                timeout=30,
+            )
+        r.raise_for_status()
+        return r
+
+    def batch_categories(self, create: list[dict] | None = None) -> dict:
+        """POST /products/categories/batch — create product categories on the site.
+
+        Mirrors ``batch_products`` (60s timeout, Basic auth + query-string
+        fallback on 401, ``raise_for_status()``). The product push uses this to
+        pre-create categories not yet mapped on the site: Woo's products
+        endpoint only honours ``{"id"}`` category refs — ``{"name"}`` refs are
+        silently ignored (no auto-create) — so an unmapped name must become a
+        site term BEFORE the product payload is built. Returns
+        ``{"create": [...]}`` where each item carries ``id`` + ``name``, or an
+        ``error``; a ``term_exists`` reject carries the existing term's id in
+        ``error.data.resource_id``, which the caller maps instead of creating a
+        duplicate. The caller chunks to the ~100-item cap.
+        """
+        url = f"{self.base}/products/categories/batch"
+        payload = {"create": create or []}
+        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        if r.status_code == 401:
+            key, secret = self._auth
+            r = httpx.post(
+                url,
+                params={"consumer_key": key, "consumer_secret": secret},
+                json=payload,
+                timeout=60,
+            )
+        r.raise_for_status()
+        return r.json()
 
     def batch_variations(
         self,

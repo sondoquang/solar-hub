@@ -2,34 +2,79 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens — the single source of raw values (referenced by tailwind.config.js). */
+/* Design tokens — the single source of raw values (referenced by tailwind.config.js).
+   EvonHub dark theme: black surfaces, violet accent, Manrope. antd's darkAlgorithm
+   (src/lib/antdTheme.js) mirrors these so antd components share the palette. */
 :root {
-  --color-brand: #f5a524; /* solar amber */
-  --color-surface: #f8fafc; /* slate-50 */
-  --color-ink: #0f172a; /* slate-900 */
-  --color-muted: #64748b; /* slate-500 */
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-  --color-danger: #dc2626;
-  --radius: 0.25rem;
-  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.1);
+  --color-brand: #978df8; /* EvonHub violet accent (hex — for antd/NProgress/inline) */
+  --color-brand-rgb: 151 141 248; /* channels — lets Tailwind apply /opacity (bg-brand/15) */
+  --color-brand-hover: #a99ffb; /* lighter for hover on dark surfaces */
+  --color-brand-active: #857af5;
+  --color-surface: #000000; /* surface.base — page background */
+  --color-surface-raised: #1a1b1e; /* cards / raised panels */
+  --color-surface-muted: #1f2026; /* inset / muted fills */
+  --color-ink: #f8fafc; /* strongest text (headings, key values) */
+  --color-text: #cbd5e1; /* primary body text (slate-300) */
+  --color-muted: #94a3b8; /* secondary text (slate-400) */
+  --color-border: #2a2c33; /* subtle dividers on dark */
+  --color-border-strong: #3a3d46; /* stronger outline */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --radius: 6px; /* between EvonHub radius.xs (4.88) & sm (9.75) */
+  --radius-lg: 10px; /* EvonHub radius.sm */
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
 }
 
 body {
-  font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
-  color: var(--color-ink);
+  font-family: "Manrope", ui-sans-serif, sans-serif;
+  color: var(--color-text);
   background: var(--color-surface);
 }
 
-/* NProgress top loading bar — recolor from its default blue to solar amber. */
+/* Dark scrollbars so they don't read as bright strips on black surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #4b4f5a;
+  background-clip: padding-box;
+}
+
+/* NProgress loading bar — recolored to solar amber. It mounts inside the
+   topbar (its `parent`), so nprogress.css switches the bar to position:absolute
+   relative to that header: left:0 lands at the sidebar's right edge and the
+   width spans the content column. Pin it to the header's bottom edge instead of
+   the default top so it reads as a thin underline beneath the search bar. */
 #nprogress .bar {
   height: 3px;
   background: var(--color-brand);
-}
-#nprogress .peg {
+  /* Round both ends so the leading/trailing edges read as a polished pill. */
+  border-radius: 9999px;
+  /* Glow softly while loading, without the bar's own backdrop bleeding upward. */
   box-shadow:
-    0 0 10px var(--color-brand),
-    0 0 5px var(--color-brand);
+    0 0 10px color-mix(in srgb, var(--color-brand) 70%, transparent),
+    0 0 4px color-mix(in srgb, var(--color-brand) 50%, transparent);
+}
+#app-topbar #nprogress .bar {
+  top: auto;
+  bottom: 0;
+}
+/* The peg is NProgress's diagonal trailing streak — it bleeds above the bar as a
+   smudge. We carry the glow on the bar itself, so hide the peg entirely. */
+#nprogress .peg {
+  display: none;
 }
 
 /* Reset only NATIVE buttons (nav/layout chrome). Exclude antd's `.ant-btn` —
@@ -53,7 +98,7 @@ button:not(.ant-btn) {
 .ant-input-number-input,
 .ant-select-selector,
 .ant-select-selection-search-input {
-  font-family: "Be Vietnam Pro", ui-sans-serif, sans-serif;
+  font-family: "Manrope", ui-sans-serif, sans-serif;
 }
 
 .ant-input:not(.ant-input-sm),
@@ -158,19 +203,19 @@ button:not(.ant-btn) {
   text-decoration: underline;
 }
 .richtext blockquote {
-  border-left: 3px solid #e2e8f0;
+  border-left: 3px solid var(--color-border-strong);
   padding-left: 0.8em;
   color: var(--color-muted);
   margin: 0.4em 0;
 }
 .richtext code {
-  background: #f1f5f9;
+  background: var(--color-surface-muted);
   padding: 0.1em 0.3em;
   border-radius: 0.2em;
   font-size: 0.9em;
 }
 .richtext pre {
-  background: #f1f5f9;
+  background: var(--color-surface-muted);
   padding: 0.6em 0.8em;
   border-radius: 0.3em;
   overflow-x: auto;
@@ -200,6 +245,6 @@ button:not(.ant-btn) {
   justify-content: flex-start;
 }
 .wp-product-data-tabs .ant-tabs-content-holder {
-  border-left: 1px solid #e2e8f0;
+  border-left: 1px solid var(--color-border);
   padding-left: 12px;
 }

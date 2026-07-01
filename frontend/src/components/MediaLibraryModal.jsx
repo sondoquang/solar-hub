@@ -82,7 +82,7 @@ export default function MediaLibraryModal({
         customRequest={customRequest}
         disabled={uploadingCount > 0}
       >
-        <div className="flex flex-col items-center gap-2 py-8 text-slate-500">
+        <div className="flex flex-col items-center gap-2 py-8 text-muted">
           {uploadingCount > 0 ? (
             <>
               <Spin />
@@ -91,7 +91,7 @@ export default function MediaLibraryModal({
           ) : (
             <>
               <UploadCloud size={36} strokeWidth={1.5} />
-              <p className="font-medium text-slate-700">Thả ảnh vào đây hoặc bấm để chọn tệp</p>
+              <p className="font-medium text-text">Thả ảnh vào đây hoặc bấm để chọn tệp</p>
               <p className="text-xs">PNG / JPG / GIF / WebP, tối đa 5MB mỗi ảnh.</p>
             </>
           )}
@@ -137,7 +137,7 @@ export default function MediaLibraryModal({
                   title={img.original_name}
                   onClick={() => toggle(img)}
                   className={`relative aspect-square overflow-hidden rounded border-2 ${
-                    isSelected ? "border-brand" : "border-transparent hover:border-slate-300"
+                    isSelected ? "border-brand" : "border-transparent hover:border-border-strong"
                   }`}
                 >
                   <img

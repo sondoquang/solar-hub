@@ -100,9 +100,9 @@ const Label = ({ children, required }) => (
 // WP-style metabox: bordered card with a labelled header
 function Postbox({ title, action, children }) {
   return (
-    <div className="rounded border border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
+    <div className="rounded border border-border bg-surface-raised">
+      <div className="flex items-center justify-between border-b border-border bg-surface-muted px-3 py-2">
+        <h3 className="text-sm font-semibold text-ink">{title}</h3>
         {action}
       </div>
       <div className="p-3">{children}</div>
@@ -178,7 +178,7 @@ const sig = (attrsObj) => JSON.stringify(Object.entries(attrsObj || {}).sort());
 
 const comboLabel = (attrsObj) => Object.values(attrsObj || {}).join(" / ") || "—";
 
-export default function ProductRegisterForm({ onSubmit, onCancel, pending, defaultValues }) {
+export default function ProductRegisterForm({ formId, onSubmit, defaultValues }) {
   const {
     control,
     handleSubmit,
@@ -186,7 +186,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
     watch,
     setValue,
     getValues,
-    formState: { errors, isSubmitting },
+    formState: { errors },
   } = useForm({
     resolver: zodResolver(schema),
     defaultValues: toForm(defaultValues),
@@ -210,8 +210,6 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   const submit = async (values) => {
     await onSubmit(values, { onSuccess: () => reset(toForm()) });
   };
-
-  const busy = pending || isSubmitting;
 
   // Build the WooCommerce-style category tree from the flat list the API
   // returns (each row carries its `parent` id; null = root). Node value/title is
@@ -428,7 +426,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Chưa có thuộc tính" />
         )}
         {attrArray.fields.map((f, i) => (
-          <div key={f.id} className="rounded border border-slate-200 p-2">
+          <div key={f.id} className="rounded border border-border p-2">
             <div className="grid grid-cols-[1fr_2fr_auto] items-end gap-2">
               <div>
                 <Label>Tên thuộc tính</Label>
@@ -574,13 +572,13 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           control={control}
           render={({ field }) =>
             field.value ? (
-              <div className="group relative h-10 w-10 overflow-hidden rounded border border-slate-200">
+              <div className="group relative h-10 w-10 overflow-hidden rounded border border-border">
                 <img src={field.value} alt="Ảnh biến thể" className="h-full w-full object-cover" />
                 <button
                   type="button"
                   title="Xóa ảnh"
                   onClick={() => field.onChange("")}
-                  className="absolute inset-0 hidden items-center justify-center bg-white/70 text-danger group-hover:flex"
+                  className="absolute inset-0 hidden items-center justify-center bg-black/60 text-danger group-hover:flex"
                 >
                   <X size={14} />
                 </button>
@@ -660,8 +658,9 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
   const dataTabs = tabsByType[type] ?? [generalTab, inventoryTab];
 
   return (
-    <form onSubmit={handleSubmit(submit)} className="flex flex-col gap-4">
-      {/* Single column — sections stack vertically and the modal body scrolls */}
+    <form id={formId} onSubmit={handleSubmit(submit)} className="flex flex-col gap-4">
+      {/* Single column — sections stack vertically and the modal body scrolls.
+          Action buttons live in the modal footer (submit via the form id). */}
 
       {/* Tên & SKU */}
       <Postbox title="Thông tin chung">
@@ -771,7 +770,7 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
             <img
               src={featuredUrl}
               alt="Ảnh sản phẩm"
-              className="w-full rounded border border-slate-200 object-contain"
+              className="w-full rounded border border-border object-contain"
               style={{ maxHeight: 220 }}
             />
             <div className="flex gap-2">
@@ -820,14 +819,14 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
             {albumUrls.map((url, i) => (
               <div
                 key={`${url}-${i}`}
-                className="group relative aspect-square overflow-hidden rounded border border-slate-200"
+                className="group relative aspect-square overflow-hidden rounded border border-border"
               >
                 <img src={url} alt={`Ảnh phụ ${i + 1}`} className="h-full w-full object-cover" />
                 <button
                   type="button"
                   title="Xóa khỏi album"
                   onClick={() => removeImageAt(i + 1)}
-                  className="absolute right-1 top-1 hidden rounded-full bg-white/90 p-0.5 text-danger shadow group-hover:block"
+                  className="absolute right-1 top-1 hidden rounded-full bg-black/70 p-0.5 text-danger shadow group-hover:block"
                 >
                   <X size={14} />
                 </button>
@@ -866,14 +865,6 @@ export default function ProductRegisterForm({ onSubmit, onCancel, pending, defau
           )}
         />
       </Postbox>
-
-      {/* Action buttons — pinned at the bottom of the popup */}
-      <div className="sticky bottom-0 -mx-6 -mb-5 flex justify-end gap-2 border-t border-slate-200 bg-white px-6 py-3">
-        {onCancel && <Button onClick={onCancel}>Hủy</Button>}
-        <Button type="primary" htmlType="submit" loading={busy}>
-          {busy ? "Đang lưu…" : "Lưu sản phẩm"}
-        </Button>
-      </div>
 
       {/* Media picker (ảnh đại diện / album / ảnh biến thể) */}
       <MediaLibraryModal

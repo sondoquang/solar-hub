@@ -145,7 +145,7 @@ export default function Reports() {
       {isError ? (
         <ErrorState message="Không tải được lịch sử đồng bộ danh mục" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={rows}

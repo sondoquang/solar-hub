@@ -39,6 +39,11 @@ class Order(models.Model):
     woo_order_id = models.BigIntegerField()
     number = models.CharField(max_length=40, blank=True)  # display order number
     status = models.CharField(max_length=30, db_index=True)  # processing/completed/…
+    # Payment status. Sapo's ``financial_status`` (pending/authorized/
+    # partially_paid/paid/…); the Sapo order flow drives off this instead of the
+    # lifecycle ``status``. Blank for WooCommerce orders (Woo has no separate
+    # payment-status field on the order resource).
+    payment_status = models.CharField(max_length=30, blank=True, db_index=True)
     currency = models.CharField(max_length=10, blank=True)
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 

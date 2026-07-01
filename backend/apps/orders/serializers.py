@@ -13,6 +13,8 @@ class OrderSerializer(serializers.ModelSerializer):
     hosting_name = serializers.CharField(
         source="site.hosting.name", read_only=True, default=None
     )
+    # "woocommerce" / "sapo" — the Sapo orders page keys its actions off this.
+    platform = serializers.CharField(source="site.platform", read_only=True)
     classification_display = serializers.CharField(
         source="get_classification_display", read_only=True
     )
@@ -31,9 +33,11 @@ class OrderSerializer(serializers.ModelSerializer):
             "site",
             "site_name",
             "hosting_name",
+            "platform",
             "woo_order_id",
             "number",
             "status",
+            "payment_status",
             "currency",
             "total",
             "customer_name",

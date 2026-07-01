@@ -11,28 +11,28 @@ export default function ProductStats({ stats = {}, loading = false }) {
       label: "Tổng sản phẩm",
       value: (stats.total ?? 0).toLocaleString("vi-VN"),
       Icon: Package,
-      tint: "bg-blue-50 text-blue-500",
+      tint: "bg-blue-500/15 text-blue-300",
     },
     {
       key: "mapped",
       label: "Đã đồng bộ site",
       value: (stats.mapped ?? 0).toLocaleString("vi-VN"),
       Icon: Link2,
-      tint: "bg-green-50 text-success",
+      tint: "bg-green-500/15 text-success",
     },
     {
       key: "unmapped",
       label: "Chưa đồng bộ",
       value: (stats.unmapped ?? 0).toLocaleString("vi-VN"),
       Icon: Unlink,
-      tint: "bg-amber-50 text-warning",
+      tint: "bg-amber-500/15 text-warning",
     },
   ];
 
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
       {cards.map(({ key, label, value, Icon, tint }) => (
-        <div key={key} className="flex items-start gap-3 rounded bg-white p-3 shadow-card">
+        <div key={key} className="flex items-start gap-3 rounded bg-surface-raised p-3 border border-border">
           <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${tint}`}>
             <Icon size={22} />
           </span>

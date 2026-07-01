@@ -9,8 +9,11 @@ from apps.catalog.models import (
     CategoryMapping,
     ProductMapping,
     ProductVariationMapping,
+    SiteMediaAsset,
 )
 from apps.catalog.tests.factories import (
+    CategoryFactory,
+    CategoryMappingFactory,
     MasterProductFactory,
     ProductMappingFactory,
 )
@@ -23,15 +26,31 @@ class _FakeClient:
 
     ``calls`` records every ``batch_products`` invocation so tests can assert how
     the work was split / chunked. ``variation_calls`` does the same for
-    ``batch_variations`` (keyed by parent id). ``categories`` is what
-    ``list_categories`` returns. Created products/variations get incrementing ids.
+    ``batch_variations`` (keyed by parent id), ``category_calls`` for
+    ``batch_categories``. ``categories`` is what ``list_categories`` returns.
+    Created products/variations/categories get incrementing ids.
     """
 
-    def __init__(self, *, raise_error=False, categories=None, error_skus=None, stale_woo_ids=None):
+    def __init__(
+        self,
+        *,
+        raise_error=False,
+        categories=None,
+        products=None,
+        error_skus=None,
+        stale_woo_ids=None,
+        category_error_names=None,
+        existing_term_ids=None,
+        image_error_skus=None,
+    ):
         self.calls = []
         self.variation_calls = []
+        self.category_calls = []
+        self.list_products_calls = 0
         self.raise_error = raise_error
         self.categories = categories or []
+        # What ``list_products`` returns (Woo-shaped {id, name, sku, type}).
+        self.products = products or []
         # SKUs Woo rejects per-item: returned as {"error": ...} with no id, like
         # a duplicate-SKU create against /products/batch (HTTP 200 overall).
         self.error_skus = set(error_skus or [])
@@ -39,8 +58,50 @@ class _FakeClient:
         # Hub): updates against them are rejected like Woo does — the error
         # item still ECHOES the requested id.
         self.stale_woo_ids = set(stale_woo_ids or [])
+        # Category names whose create is rejected per-item (HTTP 200 overall).
+        self.category_error_names = set(category_error_names or [])
+        # name → woo term id that ALREADY exists on the site: the create is
+        # rejected `term_exists` carrying that id in error.data.resource_id,
+        # exactly like Woo when the term was never pulled into the Hub.
+        self.existing_term_ids = existing_term_ids or {}
+        # SKUs Woo rejects with ``woocommerce_product_image_upload_error`` WHEN the
+        # item carries images (URL it cannot sideload) — the same item retried
+        # WITHOUT images succeeds, modelling the real failure/heal.
+        self.image_error_skus = set(image_error_skus or [])
         self._next_id = 9000
         self._next_var_id = 8000
+        self._next_cat_id = 600
+        self._next_media_id = 700
+        # src URLs Woo "sideloaded" across all batch calls — lets a test assert an
+        # image is uploaded once per site, not re-uploaded on a later push.
+        self.media_uploads = []
+        # woo_product_id → images that ``get_product`` returns (an already-synced
+        # product not part of any batch this run).
+        self.product_images = {}
+
+    def _echo_images(self, images):
+        """Mimic Woo's batch response ``images``: keep id-refs, sideload src-refs.
+
+        An ``{"id": n}`` ref is echoed (already in the gallery); an ``{"src": url}``
+        ref is "downloaded" → gets a fresh media id + a site URL (recorded in
+        ``media_uploads``). Order is preserved, like Woo, so the sideload can match
+        appended images by position.
+        """
+        out = []
+        for img in images or []:
+            if img.get("id"):
+                out.append({"id": img["id"], "src": f"https://site.example/uploads/keep-{img['id']}.png"})
+            elif img.get("src"):
+                mid = self._next_media_id
+                self._next_media_id += 1
+                self.media_uploads.append(img["src"])
+                out.append({"id": mid, "src": f"https://site.example/uploads/{mid}.png"})
+        return out
+
+    def get_product(self, woo_id):
+        if self.raise_error:
+            raise httpx.ConnectError("boom")
+        return {"id": woo_id, "images": self.product_images.get(woo_id, [])}
 
     def batch_products(self, create=None, update=None, delete=None):
         create, update, delete = create or [], update or [], delete or []
@@ -51,10 +112,31 @@ class _FakeClient:
         for item in create:
             if item["sku"] in self.error_skus:
                 created.append(
-                    {"error": {"code": "product_invalid_sku", "message": "Invalid or duplicated SKU."}}
+                    {
+                        "error": {
+                            "code": "product_invalid_sku",
+                            "message": "Invalid or duplicated SKU.",
+                        }
+                    }
                 )
                 continue
-            created.append({"id": self._next_id, "sku": item["sku"]})
+            if item["sku"] in self.image_error_skus and item.get("images"):
+                created.append(
+                    {
+                        "error": {
+                            "code": "woocommerce_product_image_upload_error",
+                            "message": "Lỗi khi lấy hình ảnh.",
+                        }
+                    }
+                )
+                continue
+            created.append(
+                {
+                    "id": self._next_id,
+                    "sku": item["sku"],
+                    "images": self._echo_images(item.get("images")),
+                }
+            )
             self._next_id += 1
         updated = []
         for item in update:
@@ -69,7 +151,24 @@ class _FakeClient:
                     }
                 )
                 continue
-            updated.append({"id": item["id"], "sku": item["sku"]})
+            if item.get("sku") in self.image_error_skus and item.get("images"):
+                updated.append(
+                    {
+                        "id": item["id"],
+                        "error": {
+                            "code": "woocommerce_product_image_upload_error",
+                            "message": "Lỗi khi lấy hình ảnh.",
+                        },
+                    }
+                )
+                continue
+            updated.append(
+                {
+                    "id": item["id"],
+                    "sku": item.get("sku"),
+                    "images": self._echo_images(item.get("images")),
+                }
+            )
         deleted = [{"id": woo_id} for woo_id in delete]
         return {"create": created, "update": updated, "delete": deleted}
 
@@ -92,6 +191,40 @@ class _FakeClient:
         if self.raise_error:
             raise httpx.ConnectError("boom")
         return self.categories
+
+    def list_products(self, per_page=100, search=None):
+        self.list_products_calls += 1
+        if self.raise_error:
+            raise httpx.ConnectError("boom")
+        return self.products
+
+    def batch_categories(self, create=None):
+        create = create or []
+        self.category_calls.append({"create": create})
+        if self.raise_error:
+            raise httpx.ConnectError("boom")
+        created = []
+        for item in create:
+            name = item["name"]
+            if name in self.category_error_names:
+                created.append(
+                    {"error": {"code": "woocommerce_rest_cannot_create", "message": "nope"}}
+                )
+            elif name in self.existing_term_ids:
+                created.append(
+                    {
+                        "id": 0,
+                        "error": {
+                            "code": "term_exists",
+                            "message": "A term with the name provided already exists.",
+                            "data": {"status": 400, "resource_id": self.existing_term_ids[name]},
+                        },
+                    }
+                )
+            else:
+                created.append({"id": self._next_cat_id, "name": name})
+                self._next_cat_id += 1
+        return {"create": created}
 
 
 def _patch_client(monkeypatch, fake):
@@ -128,11 +261,13 @@ def test_build_product_payload_maps_fields():
     assert payload["images"] == [{"src": "https://x/1.jpg"}]
 
 
-def test_build_product_payload_omits_optional_when_unset():
+def test_build_product_payload_sends_empty_string_when_unset():
+    # Woo only clears sale_price/weight when it receives "" — omitting the key
+    # would leave the old value on the site after an update.
     master = MasterProductFactory.build(sale_price=None, weight=None)
     payload = services.build_product_payload(master)
-    assert "sale_price" not in payload
-    assert "weight" not in payload
+    assert payload["sale_price"] == ""
+    assert payload["weight"] == ""
 
 
 # --- push_products_to_site ---------------------------------------------------
@@ -257,7 +392,12 @@ def test_push_per_item_error_does_not_false_succeed(monkeypatch):
     assert log.status == SyncLog.Status.ERROR
     assert log.created_count == 0
     assert log.detail["failed"] == [
-        {"sku": "SP-1", "op": "create", "code": "product_invalid_sku", "message": "Invalid or duplicated SKU."}
+        {
+            "sku": "SP-1",
+            "op": "create",
+            "code": "product_invalid_sku",
+            "message": "Invalid or duplicated SKU.",
+        }
     ]
 
 
@@ -300,6 +440,41 @@ def test_push_noop_when_nothing_to_do(monkeypatch):
     }
     assert fake.calls == []
     assert not SyncLog.objects.filter(site=site).exists()
+
+
+@pytest.mark.django_db
+def test_push_stamps_run_id_for_progress(monkeypatch):
+    """A tracked run threads run_id/triggered_by/started_at onto the SyncLog row
+    so the progress banner can group and poll it."""
+    import uuid
+
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-RUN")
+    _patch_client(monkeypatch, _FakeClient())
+    run_id = uuid.uuid4()
+
+    services.push_products_to_site(site, masters=[master], run_id=run_id, triggered_by_id=None)
+
+    log = SyncLog.objects.get(site=site)
+    assert str(log.run_id) == str(run_id)
+    assert log.started_at is not None
+
+
+@pytest.mark.django_db
+def test_push_noop_logs_only_when_tracked(monkeypatch):
+    """A no-op push writes nothing untracked, but a tracked run records a SUCCESS
+    row so the banner's done count reaches expected even for in-sync sites."""
+    import uuid
+
+    site = SiteFactory()
+    _patch_client(monkeypatch, _FakeClient())
+    run_id = uuid.uuid4()
+
+    services.push_products_to_site(site, masters=[], run_id=run_id)
+
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.SUCCESS
+    assert str(log.run_id) == str(run_id)
 
 
 # --- product types: payload shape --------------------------------------------
@@ -481,6 +656,125 @@ def test_deleting_variable_parent_cascades_variation_mappings(monkeypatch):
     assert not ProductVariationMapping.objects.filter(master=master, site=site).exists()
 
 
+# --- push: ensure categories exist on the site --------------------------------
+# Woo's products endpoint IGNORES name-only category refs (no auto-create), so
+# the push must create unmapped categories on the site before building payloads
+# — otherwise a re-categorized product silently keeps its old categories there.
+
+
+@pytest.mark.django_db
+def test_push_creates_unmapped_categories_before_products(monkeypatch):
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", categories=["Pin mặt trời"])
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert fake.category_calls == [{"create": [{"name": "Pin mặt trời"}]}]
+    mapping = CategoryMapping.objects.get(site=site, category__name="Pin mặt trời")
+    assert mapping.woo_name == "Pin mặt trời"
+    assert mapping.last_synced_at is not None
+    # The product payload referenced the fresh id — a name ref would be ignored.
+    assert fake.calls[0]["create"][0]["categories"] == [{"id": mapping.woo_category_id}]
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.SUCCESS
+    assert log.detail["categories"] == {"created": ["Pin mặt trời"], "linked": [], "failed": []}
+
+
+@pytest.mark.django_db
+def test_push_skips_category_call_when_all_mapped(monkeypatch):
+    site = SiteFactory()
+    category = CategoryFactory(name="Pin mặt trời")
+    CategoryMappingFactory(category=category, site=site, woo_category_id=42)
+    master = MasterProductFactory(sku="SP-1", categories=["Pin mặt trời"])
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert fake.category_calls == []
+    assert fake.calls[0]["create"][0]["categories"] == [{"id": 42}]
+
+
+@pytest.mark.django_db
+def test_push_maps_existing_site_term_on_term_exists(monkeypatch):
+    """The site already has the term (never pulled) → Woo rejects the create with
+    ``term_exists`` + the existing id; the Hub maps that id instead of failing."""
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", categories=["Pin mặt trời"])
+    fake = _FakeClient(existing_term_ids={"Pin mặt trời": 321})
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    mapping = CategoryMapping.objects.get(site=site, category__name="Pin mặt trời")
+    assert mapping.woo_category_id == 321
+    assert fake.calls[0]["create"][0]["categories"] == [{"id": 321}]
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.SUCCESS
+    assert log.detail["categories"]["linked"] == ["Pin mặt trời"]
+
+
+@pytest.mark.django_db
+def test_push_creates_parent_category_before_child(monkeypatch):
+    """An unmapped category with an unmapped Hub parent → the parent is created
+    first (its own wave), then the child references the parent's new woo id."""
+    site = SiteFactory()
+    parent = CategoryFactory(name="Inverter")
+    CategoryFactory(name="Inverter Hybrid", parent=parent)
+    master = MasterProductFactory(sku="SP-1", categories=["Inverter Hybrid"])
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert fake.category_calls[0] == {"create": [{"name": "Inverter"}]}
+    parent_woo = CategoryMapping.objects.get(site=site, category__name="Inverter").woo_category_id
+    assert fake.category_calls[1] == {"create": [{"name": "Inverter Hybrid", "parent": parent_woo}]}
+    child_woo = CategoryMapping.objects.get(
+        site=site, category__name="Inverter Hybrid"
+    ).woo_category_id
+    assert fake.calls[0]["create"][0]["categories"] == [{"id": child_woo}]
+
+
+@pytest.mark.django_db
+def test_push_category_create_failure_marks_partial(monkeypatch):
+    """A category create rejected per-item must not pass silently: the product
+    still pushes (name ref, which Woo ignores) but the run is flagged PARTIAL
+    with the gap in detail — this is exactly the silent-miss the ensure step
+    exists to surface."""
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", categories=["Danh mục hỏng"])
+    fake = _FakeClient(category_error_names=["Danh mục hỏng"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["error"] is None
+    assert fake.calls[0]["create"][0]["categories"] == [{"name": "Danh mục hỏng"}]
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.detail["categories"]["failed"] == [
+        {"name": "Danh mục hỏng", "code": "woocommerce_rest_cannot_create", "message": "nope"}
+    ]
+
+
+@pytest.mark.django_db
+def test_push_registers_hand_typed_category_in_hub(monkeypatch):
+    """A product can carry a name no pull has seen — the ensure step creates the
+    Hub ``Category`` row too, so the picker and later pulls converge on it."""
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", categories=["  Tên   gõ tay "])
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    category = Category.objects.get(name="Tên gõ tay")  # normalized before storing
+    assert CategoryMapping.objects.filter(site=site, category=category).exists()
+
+
 # --- category pull -----------------------------------------------------------
 
 
@@ -489,7 +783,7 @@ def test_pull_categories_upserts_idempotently(monkeypatch):
     site = SiteFactory()
     fake = _FakeClient(
         categories=[
-            {"id": 10, "name": "Pin mặt trời", "slug": "pin", "parent": 0},
+            {"id": 10, "name": " Pin  mặt trời ", "slug": "pin", "parent": 0},
             {"id": 11, "name": "Inverter", "slug": "inv", "parent": 10},
         ]
     )
@@ -503,11 +797,18 @@ def test_pull_categories_upserts_idempotently(monkeypatch):
     assert inverter.parent_id == pin.id  # woo parent id 10 → "Pin mặt trời"
     assert pin.parent_id is None  # parent 0 = root
     assert CategoryMapping.objects.filter(site=site).count() == 2
+    # The mapping keeps the RAW site name (un-normalized) for the mapping screen.
+    assert CategoryMapping.objects.get(site=site, woo_category_id=10).woo_name == (
+        " Pin  mặt trời "
+    )
 
-    # Re-pull: same data → no duplicates.
+    # Re-pull: same data → no duplicates, woo_name survives.
     services.pull_categories_for_site(site)
     assert Category.objects.count() == 2
     assert CategoryMapping.objects.filter(site=site).count() == 2
+    assert CategoryMapping.objects.get(site=site, woo_category_id=10).woo_name == (
+        " Pin  mặt trời "
+    )
     assert SyncLog.objects.filter(site=site, operation="pull_categories").count() == 2
 
 
@@ -658,14 +959,80 @@ def test_pull_categories_error_and_empty_rows_carry_run_id(monkeypatch):
     assert empty_log.detail["pulled"] == 0
 
 
+# --- clear_category_sync_data ------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_clear_category_sync_keeps_in_use_and_ancestors():
+    """A category a live product uses is kept, together with its ancestors so the
+    kept tree stays connected; every other live category is soft-deleted."""
+    site = SiteFactory()
+    root = CategoryFactory(name="Sản phẩm")
+    used = CategoryFactory(name="Pin mặt trời", parent=root)
+    orphan = CategoryFactory(name="Rác")
+    # Live product references the leaf by name (matched after normalize).
+    MasterProductFactory(sku="SP-1", categories=[" Pin mặt trời "])
+    # A soft-deleted product must NOT protect its categories.
+    MasterProductFactory(sku="SP-2", categories=["Rác"], is_deleted=True)
+    for cat in (root, used, orphan):
+        CategoryMappingFactory(category=cat, site=site)
+
+    result = services.clear_category_sync_data()
+
+    used.refresh_from_db()
+    root.refresh_from_db()
+    orphan.refresh_from_db()
+    assert used.is_deleted is False  # in use → kept
+    assert root.is_deleted is False  # ancestor of in-use → kept
+    assert orphan.is_deleted is True  # not used → cleared
+    assert result["categories_kept"] == 2
+    assert result["categories_cleared"] == 1
+    # Kept categories keep their mappings; the cleared one loses its mapping.
+    assert CategoryMapping.objects.filter(category=used).exists()
+    assert CategoryMapping.objects.filter(category=root).exists()
+    assert not CategoryMapping.objects.filter(category=orphan).exists()
+    assert result["mappings_cleared"] == 1
+
+
+@pytest.mark.django_db
+def test_clear_category_sync_soft_deletes_history():
+    """The pull history is soft-deleted (rows kept, but hidden from the report)."""
+    site = SiteFactory()
+    SyncLog.objects.create(
+        site=site, operation="pull_categories", status=SyncLog.Status.SUCCESS,
+        run_id=uuid.uuid4(),
+    )
+    # An unrelated operation is left untouched.
+    SyncLog.objects.create(site=site, operation="push_products", status=SyncLog.Status.SUCCESS)
+
+    result = services.clear_category_sync_data()
+
+    assert result["history_cleared"] == 1
+    assert SyncLog.objects.get(operation="pull_categories").is_deleted is True
+    assert SyncLog.objects.get(operation="push_products").is_deleted is False
+
+
+@pytest.mark.django_db
+def test_pull_revives_soft_deleted_category(monkeypatch):
+    """After a clear soft-deletes a category, re-pulling its name revives it
+    (is_deleted reset to False) instead of leaving it hidden forever."""
+    site = SiteFactory()
+    dead = CategoryFactory(name="Inverter", is_deleted=True)
+
+    _patch_client(monkeypatch, _FakeClient(categories=[{"id": 5, "name": "Inverter"}]))
+    services.pull_categories_for_site(site)
+
+    dead.refresh_from_db()
+    assert dead.is_deleted is False
+    assert CategoryMapping.objects.filter(site=site, category=dead).exists()
+
+
 # --- product_sync_status -----------------------------------------------------
 
 
 @pytest.mark.django_db
 def test_product_sync_status_lists_all_sites(monkeypatch):
-    synced_site = SiteFactory(
-        name="A-Site", base_url="https://a-site.example.com", is_primary=True
-    )
+    synced_site = SiteFactory(name="A-Site", base_url="https://a-site.example.com", is_primary=True)
     SiteFactory(name="B-Site")  # active, not synced
     master = MasterProductFactory(sku="SP-1")
     ProductMappingFactory(master=master, site=synced_site, woo_product_id=321)
@@ -714,3 +1081,189 @@ def test_push_recreates_product_when_mapping_is_stale(monkeypatch, settings):
     assert log.detail["recreated_stale"] == 1
     assert log.detail["failed"] == []
     assert log.created_count == 1 and log.updated_count == 0
+
+
+# --- description-image sideload (pure helpers) -------------------------------
+
+
+def test_extract_description_media_finds_hub_images_only():
+    html = (
+        '<img src="https://hub/media/a.png">'
+        "<img src='/media/b.jpg'>"
+        '<img src="https://cdn.other.com/x.png">'  # external → ignored
+    )
+    assert services._extract_description_media(html) == {
+        "https://hub/media/a.png": "/media/a.png",
+        "/media/b.jpg": "/media/b.jpg",
+    }
+
+
+def test_media_path_strips_host_and_query():
+    assert services._media_path("https://h/media/p/x.png?v=2#frag") == "/media/p/x.png"
+    assert services._media_path("https://cdn/x.png") is None
+    assert services._media_path("") is None
+
+
+def test_apply_media_map_rewrites_only_known_paths():
+    html = '<img src="https://hub/media/a.png"><img src="https://hub/media/b.png">'
+    out = services._apply_media_map(html, {"/media/a.png": "https://site/a.png"})
+    assert "https://site/a.png" in out
+    assert "https://hub/media/b.png" in out  # unknown path left untouched
+
+
+def test_absolute_media_url_handles_relative_and_absolute(settings):
+    settings.MEDIA_PUBLIC_BASE_URL = "https://hub.example"
+    assert services._absolute_media_url("https://x/media/a.png") == "https://x/media/a.png"
+    assert services._absolute_media_url("/media/a.png") == "https://hub.example/media/a.png"
+    settings.MEDIA_PUBLIC_BASE_URL = ""
+    assert services._absolute_media_url("/media/a.png") is None
+
+
+# --- description-image sideload (push) ---------------------------------------
+
+
+@pytest.mark.django_db
+def test_push_sideloads_description_image_and_rewrites(monkeypatch, settings):
+    """A Hub image embedded in the description is sideloaded into the site's media
+    (round 1), the gallery is restored clean (round 2), and the description is
+    rewritten to the site URL. The mapping is cached in SiteMediaAsset."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    hub_img = "https://hub.example/media/products/desc.png"
+    master = MasterProductFactory(
+        sku="SP-1",
+        images=["https://hub.example/media/products/main.png"],
+        description=f'<p>Xem ảnh:</p><img src="{hub_img}" />',
+    )
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["created"] == 1
+    asset = SiteMediaAsset.objects.get(site=site)
+    assert asset.source_path == "/media/products/desc.png"
+    assert asset.site_url.startswith("https://site.example/uploads/")
+    # 3 batch calls: main create, round-1 (append desc image), round-2 (rewrite).
+    assert len(fake.calls) == 3
+    final_update = fake.calls[-1]["update"][0]
+    assert hub_img not in final_update["description"]
+    assert asset.site_url in final_update["description"]
+    # Round 2 gallery keeps the real image by id only (desc image left the gallery).
+    assert final_update["images"] and all("src" not in img for img in final_update["images"])
+    log = SyncLog.objects.get(site=site)
+    assert log.detail["description_images"]["uploaded"] == 1
+
+
+@pytest.mark.django_db
+def test_push_sideload_cached_on_second_push(monkeypatch, settings):
+    """The second push finds the image already in SiteMediaAsset → it rewrites in
+    the MAIN batch with no extra rounds and no re-upload."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    hub_img = "https://hub.example/media/products/desc.png"
+    master = MasterProductFactory(sku="SP-1", images=[], description=f'<img src="{hub_img}">')
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+    uploads_after_first = list(fake.media_uploads)
+    calls_after_first = len(fake.calls)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert SiteMediaAsset.objects.filter(site=site).count() == 1
+    assert fake.media_uploads == uploads_after_first  # nothing re-uploaded
+    second_push_calls = fake.calls[calls_after_first:]
+    assert len(second_push_calls) == 1  # only the main update, no sideload rounds
+    update_item = second_push_calls[0]["update"][0]
+    assert hub_img not in update_item["description"]
+    assert SiteMediaAsset.objects.get(site=site).site_url in update_item["description"]
+
+
+@pytest.mark.django_db
+def test_push_sideload_disabled_keeps_hotlink(monkeypatch, settings):
+    settings.PRODUCT_SIDELOAD_DESCRIPTION_IMAGES = False
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    hub_img = "https://hub.example/media/products/desc.png"
+    master = MasterProductFactory(sku="SP-1", images=[], description=f'<img src="{hub_img}">')
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    assert SiteMediaAsset.objects.filter(site=site).count() == 0
+    assert len(fake.calls) == 1  # only the main batch
+    assert hub_img in fake.calls[0]["create"][0]["description"]  # left as a hot-link
+
+
+@pytest.mark.django_db
+def test_push_sideload_absolutizes_relative_media_url(monkeypatch, settings):
+    """A root-relative ``/media/...`` src is sideloaded using the absolute
+    MEDIA_PUBLIC_BASE_URL so the remote site can download it."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    settings.MEDIA_PUBLIC_BASE_URL = "https://hub.example"
+    site = SiteFactory()
+    master = MasterProductFactory(
+        sku="SP-1", images=[], description='<img src="/media/products/rel.png">'
+    )
+    fake = _FakeClient()
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+
+    asset = SiteMediaAsset.objects.get(site=site)
+    assert asset.source_path == "/media/products/rel.png"
+    assert "https://hub.example/media/products/rel.png" in fake.media_uploads
+
+
+# --- image-upload-error self-heal (retry without images) ---------------------
+
+
+@pytest.mark.django_db
+def test_push_update_retries_without_images_on_image_error(monkeypatch, settings):
+    """Woo rejects the update because it cannot sideload the product image →
+    the push retries the SAME update without ``images`` so the price still lands;
+    the SKU is flagged in ``image_skipped`` and the run is PARTIAL (not ERROR)."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    m = MasterProductFactory(
+        sku="SP-1", images=["https://ecopower.vn/x.png"], regular_price="999000.00"
+    )
+    ProductMappingFactory(master=m, site=site, woo_product_id=13716)
+    fake = _FakeClient(image_error_skus=["SP-1"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[m])
+
+    assert result["error"] is None
+    assert result["updated"] == 1  # price landed on the image-less retry
+    update_calls = [c for c in fake.calls if c["update"]]
+    assert "images" in update_calls[0]["update"][0]  # first try carried images (rejected)
+    assert "images" not in update_calls[-1]["update"][0]  # retry omitted images
+    assert update_calls[-1]["update"][0]["id"] == 13716  # still targets the mapped product
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.detail["image_skipped"] == ["SP-1"]
+    assert log.detail["failed"] == []  # healed, not a hard failure
+
+
+@pytest.mark.django_db
+def test_push_create_retries_without_images_on_image_error(monkeypatch, settings):
+    """A CREATE rejected for image upload is re-created without images, so the
+    product (and its mapping) still lands; the image is left for re-hosting."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    m = MasterProductFactory(sku="SP-NEW", images=["https://ecopower.vn/x.png"])
+    fake = _FakeClient(image_error_skus=["SP-NEW"])
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[m])
+
+    assert result["created"] == 1
+    assert ProductMapping.objects.filter(master=m, site=site).exists()
+    log = SyncLog.objects.get(site=site)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.detail["image_skipped"] == ["SP-NEW"]
+    assert log.detail["failed"] == []

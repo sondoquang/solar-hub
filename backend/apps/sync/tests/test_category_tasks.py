@@ -16,7 +16,7 @@ def test_pull_all_categories_chunks_into_batches(monkeypatch):
     monkeypatch.setattr(
         tasks.pull_categories_batch_task,
         "delay",
-        lambda chunk, run_id=None: dispatched.append(chunk),
+        lambda chunk, run_id=None, triggered_by_id=None: dispatched.append(chunk),
     )
 
     result = tasks.pull_all_categories()
@@ -38,7 +38,7 @@ def test_pull_all_categories_filters_to_selected_sites(monkeypatch):
     monkeypatch.setattr(
         tasks.pull_categories_batch_task,
         "delay",
-        lambda chunk, run_id=None: dispatched.append(chunk),
+        lambda chunk, run_id=None, triggered_by_id=None: dispatched.append(chunk),
     )
 
     result = tasks.pull_all_categories(site_ids=[keep.id])
@@ -53,16 +53,17 @@ def test_pull_all_categories_threads_run_id_to_batches(monkeypatch):
 
     [SiteFactory() for _ in range(3)]
     monkeypatch.setattr(tasks, "_batch_size", lambda: 2)
-    seen_run_ids = []
+    seen = []
     monkeypatch.setattr(
         tasks.pull_categories_batch_task,
         "delay",
-        lambda chunk, run_id=None: seen_run_ids.append(run_id),
+        lambda chunk, run_id=None, triggered_by_id=None: seen.append((run_id, triggered_by_id)),
     )
 
-    result = tasks.pull_all_categories(run_id="run-abc")
+    result = tasks.pull_all_categories(run_id="run-abc", triggered_by_id=42)
     assert result["run_id"] == "run-abc"
-    assert seen_run_ids == ["run-abc", "run-abc"]
+    # run_id AND the clicking user reach every dispatched batch unchanged.
+    assert seen == [("run-abc", 42), ("run-abc", 42)]
 
 
 @pytest.mark.django_db
@@ -73,7 +74,9 @@ def test_pull_all_categories_skips_if_already_running(monkeypatch):
     SiteFactory()
     monkeypatch.setattr(tasks, "_batch_size", lambda: 8)
     monkeypatch.setattr(
-        tasks.pull_categories_batch_task, "delay", lambda chunk, run_id=None: None
+        tasks.pull_categories_batch_task,
+        "delay",
+        lambda chunk, run_id=None, triggered_by_id=None: None,
     )
 
     result1 = tasks.pull_all_categories()
@@ -91,12 +94,12 @@ def test_pull_categories_batch_task_pulls_each_site(monkeypatch):
     s1, s2 = SiteFactory(), SiteFactory()
     calls = []
 
-    def _fake_pull(site, run_id=None):
-        calls.append((site.id, run_id))
+    def _fake_pull(site, run_id=None, triggered_by_id=None):
+        calls.append((site.id, run_id, triggered_by_id))
         return {"site_id": site.id, "pulled": 1}
 
     monkeypatch.setattr("apps.catalog.services.pull_categories_for_site", _fake_pull)
 
-    result = tasks.pull_categories_batch_task([s1.id, s2.id], run_id="run-abc")
+    result = tasks.pull_categories_batch_task([s1.id, s2.id], run_id="run-abc", triggered_by_id=7)
     assert result["pulled"] == 2
-    assert sorted(calls) == sorted([(s1.id, "run-abc"), (s2.id, "run-abc")])
+    assert sorted(calls) == sorted([(s1.id, "run-abc", 7), (s2.id, "run-abc", 7)])

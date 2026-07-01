@@ -124,13 +124,15 @@ def test_poll_now_dispatches_default_status(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.data["task_id"] == "task-123"
     assert resp.data["status"] == "processing"
+    # run_id + expected drive the progress banner; run_id is threaded to the task.
+    assert resp.data["run_id"] == called["run_id"]
+    assert resp.data["expected"] == 0  # no sites in this test DB
     # No body → default status, whole fleet, no date window.
-    assert called == {
-        "status": "processing",
-        "site_ids": None,
-        "date_from": None,
-        "date_to": None,
-    }
+    assert called["status"] == "processing"
+    assert called["site_ids"] is None
+    assert called["date_from"] is None
+    assert called["date_to"] is None
+    assert "triggered_by_id" in called  # threaded from request.user
 
 
 @pytest.mark.django_db
@@ -152,12 +154,12 @@ def test_poll_now_passes_status_and_sites(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.data["status"] == "completed"
-    assert called == {
-        "status": "completed",
-        "site_ids": [1, 2],
-        "date_from": None,
-        "date_to": None,
-    }
+    assert resp.data["run_id"] == called["run_id"]
+    assert called["status"] == "completed"
+    assert called["site_ids"] == [1, 2]
+    assert called["date_from"] is None
+    assert called["date_to"] is None
+    assert "triggered_by_id" in called  # threaded from request.user
 
 
 @pytest.mark.django_db
@@ -178,12 +180,45 @@ def test_poll_now_passes_date_range(client, monkeypatch):
         format="json",
     )
     assert resp.status_code == 200
-    assert called == {
-        "status": "completed",
-        "site_ids": None,
-        "date_from": "2026-06-01",
-        "date_to": "2026-06-03",
-    }
+    assert resp.data["run_id"] == called["run_id"]
+    assert called["status"] == "completed"
+    assert called["site_ids"] is None
+    assert called["date_from"] == "2026-06-01"
+    assert called["date_to"] == "2026-06-03"
+    assert "triggered_by_id" in called  # threaded from request.user
+
+
+@pytest.mark.django_db
+def test_poll_now_passes_platform(client, monkeypatch):
+    class _Result:
+        id = "task-p"
+
+    called = {}
+
+    def _delay(**kwargs):
+        called.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _delay)
+    resp = client.post(
+        "/api/orders/poll_now/",
+        {"platform": "woocommerce"},
+        format="json",
+    )
+    assert resp.status_code == 200
+    assert called["platform"] == "woocommerce"
+
+
+@pytest.mark.django_db
+def test_poll_now_rejects_unknown_platform(client, monkeypatch):
+    def _boom(**kwargs):  # pragma: no cover - must not be reached
+        raise AssertionError("delay should not be called for an invalid platform")
+
+    monkeypatch.setattr("apps.sync.tasks.poll_all_orders.delay", _boom)
+    resp = client.post(
+        "/api/orders/poll_now/", {"platform": "shopify"}, format="json"
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.django_db
@@ -357,3 +392,80 @@ def test_stats_by_classification(client):
     OrderFactory(classification="spam")
     resp = client.get("/api/orders/stats/")
     assert resp.data["by_classification"] == {"genuine": 1, "spam": 2}
+
+
+# --- Sapo payment status -----------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_mark_paid_records_payment_and_returns_order(client, monkeypatch):
+    from apps.sites.models import Site
+
+    site = SiteFactory(platform=Site.Platform.SAPO)
+    order = OrderFactory(
+        site=site, woo_order_id=44, status="processing", payment_status="pending"
+    )
+
+    class _Client:
+        def mark_order_paid(self, woo_order_id, *, amount):
+            return {
+                "id": woo_order_id,
+                "number": "44",
+                "status": "processing",
+                "financial_status": "paid",
+            }
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", lambda s: _Client())
+    resp = client.post(f"/api/orders/{order.id}/mark_paid/")
+    assert resp.status_code == 200
+    assert resp.data["payment_status"] == "paid"
+    assert resp.data["platform"] == "sapo"
+    order.refresh_from_db()
+    assert order.payment_status == "paid"
+
+
+@pytest.mark.django_db
+def test_mark_paid_rejects_non_sapo(client, monkeypatch):
+    order = OrderFactory(payment_status="pending")  # WooCommerce site
+
+    def _boom(s):  # pragma: no cover - must not be reached
+        raise AssertionError("client must not be built for a non-Sapo order")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", _boom)
+    resp = client.post(f"/api/orders/{order.id}/mark_paid/")
+    assert resp.status_code == 409
+
+
+@pytest.mark.django_db
+def test_mark_paid_maps_network_error_to_502(client, monkeypatch):
+    import httpx
+
+    from apps.sites.models import Site
+
+    site = SiteFactory(platform=Site.Platform.SAPO)
+    order = OrderFactory(site=site, status="processing", payment_status="pending")
+
+    class _Client:
+        def mark_order_paid(self, woo_order_id, *, amount):
+            raise httpx.ConnectError("down")
+
+    monkeypatch.setattr("apps.sites.services.client_for_site", lambda s: _Client())
+    resp = client.post(f"/api/orders/{order.id}/mark_paid/")
+    assert resp.status_code == 502
+
+
+@pytest.mark.django_db
+def test_filter_by_platform_and_payment_status(client):
+    from apps.sites.models import Site
+
+    woo = SiteFactory()
+    sapo_site = SiteFactory(platform=Site.Platform.SAPO)
+    OrderFactory(site=woo, payment_status="")
+    OrderFactory(site=sapo_site, payment_status="pending")
+    OrderFactory(site=sapo_site, payment_status="paid")
+
+    resp = client.get(
+        "/api/orders/", {"platform": "sapo", "payment_status": "unpaid"}
+    )
+    assert resp.data["count"] == 1
+    assert resp.data["results"][0]["payment_status"] == "pending"

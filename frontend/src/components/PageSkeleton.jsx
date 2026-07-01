@@ -24,7 +24,7 @@ export default function PageSkeleton({ stats = 4, filters = true, rows = 8 }) {
       {stats > 0 && (
         <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
           {Array.from({ length: stats }, (_, i) => (
-            <div key={i} className="flex items-center gap-3 rounded bg-white p-3 shadow-card">
+            <div key={i} className="flex items-center gap-3 rounded bg-surface-raised p-3 border border-border">
               <Skeleton.Avatar active size={48} shape="circle" />
               <div className="min-w-0 flex-1 space-y-1.5">
                 <Skeleton.Input active size="small" block style={{ height: 14 }} />
@@ -45,7 +45,7 @@ export default function PageSkeleton({ stats = 4, filters = true, rows = 8 }) {
       )}
 
       {/* Table block — toolbar + a stack of shimmering rows. */}
-      <div className="rounded bg-white p-2.5 shadow-card">
+      <div className="rounded bg-surface-raised p-2.5 border border-border">
         <div className="flex items-center justify-between gap-2 px-1 pb-2.5">
           <Skeleton.Input active size="small" style={{ width: 160 }} />
           <div className="flex gap-1.5">
@@ -53,7 +53,7 @@ export default function PageSkeleton({ stats = 4, filters = true, rows = 8 }) {
             <Skeleton.Button active size="small" style={{ width: 90 }} />
           </div>
         </div>
-        <div className="divide-y divide-slate-100">
+        <div className="divide-y divide-border">
           {Array.from({ length: rows }, (_, i) => (
             <div key={i} className="py-3">
               <Skeleton.Input active size="small" block style={{ height: 18 }} />

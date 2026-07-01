@@ -12,18 +12,22 @@ the request cycle.
 """
 
 from django.utils import timezone
-from rest_framework import mixins
+from rest_framework import mixins, viewsets
 from rest_framework import status as http_status
-from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
+from config.pagination import StandardPagination
+
 from . import services
 from .models import Category, MasterProduct, ProductImage
 from .serializers import (
+    CategoryMappingRowSerializer,
+    CategoryMatrixRowSerializer,
     CategorySerializer,
+    CategorySiteLinkSerializer,
     MasterProductSerializer,
     ProductImageSerializer,
     ProductSyncStatusSerializer,
@@ -62,6 +66,9 @@ class MasterProductViewSet(viewsets.ModelViewSet):
         omitted) and ``products`` (list of MasterProduct ids; the whole catalog
         when omitted). Validation only — the heavy per-site push runs in the task.
         """
+        import uuid
+
+        from apps.sites.services import sites_for_product_push
         from apps.sync.tasks import push_all_products
 
         sites = request.data.get("sites")
@@ -82,8 +89,65 @@ class MasterProductViewSet(viewsets.ModelViewSet):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        result = push_all_products.delay(site_ids=sites or None, master_ids=products or None)
-        return Response({"task_id": result.id})
+        # ``run_id`` groups this push's per-site SyncLog rows so the progress
+        # banner can poll "X/Y site hoàn tất"; ``expected`` is the count of sites
+        # the task will actually push to — ``sites_for_product_push`` (the same
+        # helper push_all_products uses) so a Sapo store reachable under several
+        # domains counts once, matching the rows written. Each site writes exactly
+        # one row (including no-op sites), so ``done`` reaches ``expected``.
+        run_id = str(uuid.uuid4())
+        triggered_by_id = request.user.id if request.user.is_authenticated else None
+        expected = len(sites_for_product_push(sites or None))
+
+        result = push_all_products.delay(
+            site_ids=sites or None,
+            master_ids=products or None,
+            run_id=run_id,
+            triggered_by_id=triggered_by_id,
+        )
+        return Response({"task_id": result.id, "run_id": run_id, "expected": expected})
+
+    @action(detail=False, methods=["post"])
+    def import_from_site(self, request):
+        """Import a site's products into the Hub catalog (the "Nhập từ website chính").
+
+        Body: ``site`` (required, the source site id). Runs async in Celery
+        (listing + upserting many products is heavy). Returns the ``run_id`` so
+        the UI can poll the progress banner (``expected`` is always 1 — import
+        targets a single site) and ``task_id``. Validation only here.
+        """
+        import uuid
+
+        from apps.sites.models import Site
+        from apps.sync.tasks import import_products_task
+
+        site_id = request.data.get("site")
+        if not isinstance(site_id, int):
+            return Response(
+                {"detail": "site phải là id (số nguyên) của website nguồn."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        site = Site.objects.filter(id=site_id, is_deleted=False).first()
+        if site is None:
+            return Response(
+                {"detail": "Không tìm thấy website nguồn."},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+        # v1 imports only from WooCommerce sites — Sapo (shared-DB, Shopify-like
+        # field model) is handled separately later. Block it here so a Sapo store
+        # cannot flood the Hub catalog with products shaped for another platform.
+        if site.platform != Site.Platform.WOOCOMMERCE:
+            return Response(
+                {"detail": "Hiện chỉ hỗ trợ nhập từ website WooCommerce."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        run_id = str(uuid.uuid4())
+        triggered_by_id = request.user.id if request.user.is_authenticated else None
+        result = import_products_task.delay(
+            site_id, run_id=run_id, triggered_by_id=triggered_by_id
+        )
+        return Response({"task_id": result.id, "run_id": run_id, "expected": 1})
 
     @action(detail=True, methods=["get"])
     def sync_status(self, request, pk=None):
@@ -126,11 +190,25 @@ class ProductImageViewSet(
         instance.delete()
 
 
+class CategoryPickerPagination(StandardPagination):
+    """The form picker loads the WHOLE catalog in one go (hàng trăm danh mục);
+    the default cap (max 100/trang) silently truncated it, making existing
+    categories unfindable in the picker."""
+
+    page_size = 1000
+    max_page_size = 1000
+
+
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     """Read-only category catalog for the form picker, plus a manual pull trigger.
 
     - ``GET  /api/products/categories/``          — list known categories (search).
+    - ``GET  /api/products/categories/overview/`` — stat-card counts (dashboard).
+    - ``GET  /api/products/categories/matrix/``   — cross-site matrix (Hub × sites).
+    - ``GET  /api/products/categories/{id}/sites/`` — one category's per-site links.
+    - ``GET  /api/products/categories/mappings/`` — per-site mapping (site → Hub).
     - ``POST /api/products/categories/pull_now/`` — pull categories from the sites.
+    - ``POST /api/products/categories/clear_all/`` — reset the catalog (soft-delete).
 
     Categories are created/synced *down* implicitly through the product push
     (a product carrying a new category name makes Woo create it); this viewset is
@@ -139,10 +217,61 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
     queryset = Category.objects.filter(is_deleted=False)
     serializer_class = CategorySerializer
+    pagination_class = CategoryPickerPagination
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ["name"]
     ordering_fields = ["name"]
     ordering = ["name"]
+
+    @action(detail=False, methods=["get"])
+    def overview(self, request):
+        """Counts for the Tổng quan + Cây danh mục Hub stat cards (cards only —
+        independent of any paging/list)."""
+        return Response(services.category_overview())
+
+    @action(detail=False, methods=["get"])
+    def matrix(self, request):
+        """Cross-site matrix (paginated). One row per live Hub category with its
+        per-site cells; the response carries ``sites`` (the column headers — every
+        live site) so the frontend can render the dynamic per-site columns.
+
+        ``GET /api/products/categories/matrix/?search=&ordering=&page=&page_size=``
+        """
+        qs = services.category_matrix_qs(request.query_params)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        response = paginator.get_paginated_response(
+            CategoryMatrixRowSerializer(page, many=True).data
+        )
+        response.data["sites"] = services.active_sites_columns()
+        return response
+
+    @action(detail=True, methods=["get"])
+    def sites(self, request, pk=None):
+        """Every live site annotated with this category's link state (đã/chưa
+        liên kết + woo id/tên RAW/last_synced_at) — the tree-tab detail panel."""
+        category = self.get_object()
+        rows = services.category_site_links(category)
+        return Response(CategorySiteLinkSerializer(rows, many=True).data)
+
+    @action(detail=False, methods=["get"])
+    def mappings(self, request):
+        """Per-site category mapping (read-only, paginated).
+
+        ``GET /api/products/categories/mappings/?site=<id>[&search=&ordering=&page=&page_size=]``
+        — mỗi row là một category trên site đó: ``woo_category_id`` + ``woo_name``
+        (tên RAW trên site) và Hub category nó map về. ``site`` là bắt buộc.
+        """
+        site_id = request.query_params.get("site")
+        if not site_id or not str(site_id).isdigit():
+            return Response(
+                {"detail": "Thiếu hoặc sai tham số site."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        qs = services.list_category_mappings_qs(int(site_id), request.query_params)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        return paginator.get_paginated_response(CategoryMappingRowSerializer(page, many=True).data)
 
     @action(detail=False, methods=["post"])
     def pull_now(self, request):
@@ -166,5 +295,20 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
         run_id = str(uuid.uuid4())
-        result = pull_all_categories.delay(site_ids=sites or None, run_id=run_id)
+        triggered_by_id = request.user.id if request.user.is_authenticated else None
+        result = pull_all_categories.delay(
+            site_ids=sites or None, run_id=run_id, triggered_by_id=triggered_by_id
+        )
         return Response({"task_id": result.id, "run_id": run_id})
+
+    @action(detail=False, methods=["post"])
+    def clear_all(self, request):
+        """Reset the category catalog so it can be re-pulled from scratch.
+
+        Soft-deletes Hub categories + clears their mappings and the pull history,
+        keeping any category a live product still uses (and its ancestors). Pure
+        DB work (bounded), so it runs synchronously and returns the counts for the
+        toast. The intended workflow: clear, then pull the primary sites first so
+        their tree becomes the canonical base (a re-pull revives kept names).
+        """
+        return Response(services.clear_category_sync_data())

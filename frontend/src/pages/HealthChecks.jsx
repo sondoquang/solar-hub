@@ -132,7 +132,7 @@ export default function HealthChecks() {
       width: 240,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
             <Globe size={15} />
           </span>
           <div className="min-w-0">
@@ -187,7 +187,7 @@ export default function HealthChecks() {
       width: 150,
       render: (v) => (
         <span className="inline-flex items-center gap-1.5 text-muted">
-          <Server size={14} className="text-slate-400" />
+          <Server size={14} className="text-muted" />
           {v}
         </span>
       ),
@@ -278,7 +278,7 @@ export default function HealthChecks() {
       {isError ? (
         <ErrorState message="Không tải được lịch sử kiểm tra" onRetry={refetch} />
       ) : (
-        <div className="rounded bg-white p-2.5 shadow-card">
+        <div className="rounded bg-surface-raised p-2.5 border border-border">
           <DataTable
             columns={columns}
             dataSource={rows}

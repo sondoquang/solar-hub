@@ -16,35 +16,35 @@ export default function OrderStats({ stats = {}, loading = false }) {
       label: "Tổng số đơn",
       value: (total).toLocaleString("vi-VN"),
       Icon: ShoppingCart,
-      tint: "bg-blue-50 text-blue-500",
+      tint: "bg-blue-500/15 text-blue-300",
     },
     {
       key: "revenue",
       label: "Tổng doanh thu",
       value: formatVND(stats.revenue ?? 0),
       Icon: Banknote,
-      tint: "bg-green-50 text-success",
+      tint: "bg-green-500/15 text-success",
     },
     {
       key: "not_forwarded",
       label: "Chưa chuyển marketing",
       value: (stats.not_forwarded ?? 0).toLocaleString("vi-VN"),
       Icon: Send,
-      tint: "bg-amber-50 text-warning",
+      tint: "bg-amber-500/15 text-warning",
     },
     {
       key: "flagged",
       label: "Nghi ngờ / Spam",
       value: flagged.toLocaleString("vi-VN"),
       Icon: ShieldAlert,
-      tint: "bg-red-50 text-danger",
+      tint: "bg-red-500/15 text-danger",
     },
   ];
 
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
       {cards.map(({ key, label, value, Icon, tint }) => (
-        <div key={key} className="flex items-start gap-3 rounded bg-white p-3 shadow-card">
+        <div key={key} className="flex items-start gap-3 rounded bg-surface-raised p-3 border border-border">
           <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ${tint}`}>
             <Icon size={22} />
           </span>

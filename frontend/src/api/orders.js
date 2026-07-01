@@ -10,16 +10,19 @@ import { api } from "./client.js";
 // Endpoints (Hub backend only) — orders are pulled in by the poll, read-only here:
 //   GET  /orders/          -> getOrders / useOrders
 //       params: ?page, ?page_size, ?ordering, ?search,
-//               ?status, ?classification, ?site, ?hosting, ?forwarded,
-//               ?date_from, ?date_to
+//               ?status, ?payment_status, ?platform, ?classification,
+//               ?site, ?hosting, ?forwarded, ?date_from, ?date_to
 //   GET  /orders/{id}/     -> getOrder / useOrder
 //   GET  /orders/stats/    -> getOrderStats / useOrderStats
 //   POST /orders/poll_now/ -> pollOrdersNow / usePollOrders (kick the Celery fan-out)
-//       body: { status?, sites?: number[], date_from?, date_to? }
-//   POST /orders/{id}/complete/ -> completeOrder / useCompleteOrder (push 'completed' to Woo)
-//   POST /orders/{id}/cancel/   -> cancelOrder / useCancelOrder (push 'cancelled' to Woo)
+//       body: { status?, sites?: number[], date_from?, date_to?, platform? }
+//   POST /orders/{id}/complete/  -> completeOrder / useCompleteOrder (push 'completed' to Woo)
+//   POST /orders/{id}/cancel/    -> cancelOrder / useCancelOrder (push 'cancelled' to Woo/Sapo)
+//   POST /orders/{id}/mark_paid/ -> markOrderPaid / useMarkOrderPaid (Sapo: record a paid transaction)
 //   POST /orders/forward_bulk/  -> forwardOrdersBulk / useForwardOrdersBulk (Hub-internal, one-way)
 //       body: { ids: number[] }
+//   POST /orders/send_email/   -> sendOrdersEmail / useSendOrdersEmail (HTML + PDF to one address)
+//       body: { recipient: string, ids: number[] }
 //   GET  /orders/export_pdf/ -> exportOrdersPdf (PDF blob download)
 //       params: ?ids=1,2,3 (selected orders) — or the active list filters when omitted
 
@@ -67,14 +70,23 @@ export const pollOrdersNow = (body = {}) =>
 export const completeOrder = (id) =>
   api.post(`/orders/${id}/complete/`).then((r) => r.data);
 
-// Cancel one order on its WooCommerce site (only pending/processing/on-hold).
+// Cancel one order on its WooCommerce/Sapo site (only pending/processing/on-hold).
 export const cancelOrder = (id) =>
   api.post(`/orders/${id}/cancel/`).then((r) => r.data);
+
+// Mark one Sapo order paid (backend records a 'sale' transaction on Sapo).
+export const markOrderPaid = (id) =>
+  api.post(`/orders/${id}/mark_paid/`).then((r) => r.data);
 
 // Forward many selected orders to marketing at once; returns { forwarded: <count> }.
 // Hub-internal, one-way (a completed order is forwarded automatically server-side).
 export const forwardOrdersBulk = (ids) =>
   api.post("/orders/forward_bulk/", { ids }).then((r) => r.data);
+
+// Email the selected orders to one address (HTML body + PDF attachment), built
+// server-side from the saved SMTP config. Returns { sent: <count>, recipient }.
+export const sendOrdersEmail = ({ recipient, ids }) =>
+  api.post("/orders/send_email/", { recipient, ids }).then((r) => r.data);
 
 const KEY = ["orders"];
 
@@ -130,11 +142,20 @@ export function useCompleteOrder() {
   });
 }
 
-// Cancel one order (backend pushes 'cancelled' to WooCommerce), then refetch.
+// Cancel one order (backend pushes 'cancelled' to WooCommerce/Sapo), then refetch.
 export function useCancelOrder() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: cancelOrder,
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+  });
+}
+
+// Mark one Sapo order paid (backend records a transaction on Sapo), then refetch.
+export function useMarkOrderPaid() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: markOrderPaid,
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   });
 }
@@ -146,4 +167,10 @@ export function useForwardOrdersBulk() {
     mutationFn: forwardOrdersBulk,
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   });
+}
+
+// Email the ticked orders to an address. Read-only for order data (sending
+// changes nothing in the Hub), so no cache invalidation.
+export function useSendOrdersEmail() {
+  return useMutation({ mutationFn: sendOrdersEmail });
 }
