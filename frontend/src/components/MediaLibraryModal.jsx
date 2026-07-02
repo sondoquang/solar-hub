@@ -5,7 +5,7 @@ import toast from "react-hot-toast";
 
 import { useMediaImages, useUploadMedia } from "../api/media.js";
 
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 48;
 const ACCEPT = "image/png,image/jpeg,image/gif,image/webp";
 
 // WP-style media picker: upload new files or tick from the Hub's library.
@@ -18,7 +18,7 @@ export default function MediaLibraryModal({
   multiple = false,
   title = "Thư viện ảnh",
 }) {
-  const [tab, setTab] = useState("upload");
+  const [tab, setTab] = useState("library");
   const [selected, setSelected] = useState([]); // [{id, url}]
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -33,7 +33,7 @@ export default function MediaLibraryModal({
       setSelected([]);
       setSearch("");
       setPage(1);
-      setTab("upload");
+      setTab("library");
     }
   }, [open]);
 
@@ -127,7 +127,7 @@ export default function MediaLibraryModal({
             description={search ? "Không có ảnh khớp tìm kiếm" : "Chưa có ảnh — hãy tải lên"}
           />
         ) : (
-          <div className="grid max-h-80 grid-cols-4 gap-2 overflow-y-auto sm:grid-cols-6">
+          <div className="grid max-h-[60vh] grid-cols-5 gap-2 overflow-y-auto sm:grid-cols-8">
             {rows.map((img) => {
               const isSelected = selected.some((s) => s.id === img.id);
               return (
@@ -176,7 +176,8 @@ export default function MediaLibraryModal({
       open={open}
       onCancel={onClose}
       title={title}
-      width={720}
+      width="80vw"
+      style={{ maxWidth: 1200, top: 24 }}
       footer={
         <div className="flex items-center justify-between">
           <span className="text-xs text-muted">

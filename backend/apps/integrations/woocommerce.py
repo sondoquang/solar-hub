@@ -10,6 +10,33 @@ Design notes (see tech-stack §4.4 and docs/backend/ARCHITECTURE.md):
 """
 
 import httpx
+from django.conf import settings
+
+
+def _build_pool() -> httpx.Client:
+    """A process-wide, connection-pooled ``httpx.Client`` for all Woo traffic.
+
+    Reusing one client keeps TCP+TLS connections alive across every page, batch
+    chunk and retry (keyed per host), instead of a fresh handshake per call —
+    the dominant hidden cost on high-latency shared hosts. ``httpx.Client`` is
+    thread-safe, so the push/poll fan-out (ThreadPoolExecutor per batch task)
+    shares this single pool. Auth/params/timeout are still passed per request
+    (each site has its own key), so the 401 query-string fallback is unaffected.
+    ``follow_redirects`` stays False to match the previous per-call behaviour.
+    """
+    return httpx.Client(
+        follow_redirects=False,
+        limits=httpx.Limits(
+            max_connections=getattr(settings, "HTTP_POOL_MAX_CONNECTIONS", 100),
+            max_keepalive_connections=getattr(settings, "HTTP_POOL_MAX_KEEPALIVE", 20),
+            keepalive_expiry=getattr(settings, "HTTP_POOL_KEEPALIVE_EXPIRY", 30.0),
+        ),
+    )
+
+
+# Module-level so connections are reused across calls AND across runs. Tests
+# monkeypatch this object's ``get``/``post``/``put`` to intercept without network.
+_POOL = _build_pool()
 
 
 class WooClient:
@@ -79,10 +106,10 @@ class WooClient:
 
     def _get_orders_page(self, params: dict) -> httpx.Response:
         """One page of /orders, with the query-string-auth fallback on 401."""
-        r = httpx.get(f"{self.base}/orders", params=params, auth=self._auth, timeout=30)
+        r = _POOL.get(f"{self.base}/orders", params=params, auth=self._auth, timeout=30)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.get(
+            r = _POOL.get(
                 f"{self.base}/orders",
                 params={**params, "consumer_key": key, "consumer_secret": secret},
                 timeout=30,
@@ -100,10 +127,10 @@ class WooClient:
         """
         url = f"{self.base}/orders/{woo_order_id}"
         payload = {"status": status}
-        r = httpx.put(url, json=payload, auth=self._auth, timeout=30)
+        r = _POOL.put(url, json=payload, auth=self._auth, timeout=30)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.put(
+            r = _POOL.put(
                 url,
                 params={"consumer_key": key, "consumer_secret": secret},
                 json=payload,
@@ -122,10 +149,10 @@ class WooClient:
         ``Authorization`` header), then ``raise_for_status()``.
         """
         url = f"{self.base}/products/{woo_id}"
-        r = httpx.get(url, auth=self._auth, timeout=30)
+        r = _POOL.get(url, auth=self._auth, timeout=30)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.get(
+            r = _POOL.get(
                 url,
                 params={"consumer_key": key, "consumer_secret": secret},
                 timeout=30,
@@ -159,10 +186,10 @@ class WooClient:
             "update": update or [],
             "delete": delete or [],
         }
-        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        r = _POOL.post(url, json=payload, auth=self._auth, timeout=60)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.post(
+            r = _POOL.post(
                 url,
                 params={"consumer_key": key, "consumer_secret": secret},
                 json=payload,
@@ -198,10 +225,10 @@ class WooClient:
     def _get_categories_page(self, params: dict) -> httpx.Response:
         """One page of /products/categories, with the 401 query-string fallback."""
         url = f"{self.base}/products/categories"
-        r = httpx.get(url, params=params, auth=self._auth, timeout=30)
+        r = _POOL.get(url, params=params, auth=self._auth, timeout=30)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.get(
+            r = _POOL.get(
                 url,
                 params={**params, "consumer_key": key, "consumer_secret": secret},
                 timeout=30,
@@ -240,10 +267,10 @@ class WooClient:
     def _get_products_page(self, params: dict) -> httpx.Response:
         """One page of /products, with the 401 query-string fallback."""
         url = f"{self.base}/products"
-        r = httpx.get(url, params=params, auth=self._auth, timeout=30)
+        r = _POOL.get(url, params=params, auth=self._auth, timeout=30)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.get(
+            r = _POOL.get(
                 url,
                 params={**params, "consumer_key": key, "consumer_secret": secret},
                 timeout=30,
@@ -267,10 +294,10 @@ class WooClient:
         """
         url = f"{self.base}/products/categories/batch"
         payload = {"create": create or []}
-        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        r = _POOL.post(url, json=payload, auth=self._auth, timeout=60)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.post(
+            r = _POOL.post(
                 url,
                 params={"consumer_key": key, "consumer_secret": secret},
                 json=payload,
@@ -303,10 +330,10 @@ class WooClient:
             "update": update or [],
             "delete": delete or [],
         }
-        r = httpx.post(url, json=payload, auth=self._auth, timeout=60)
+        r = _POOL.post(url, json=payload, auth=self._auth, timeout=60)
         if r.status_code == 401:
             key, secret = self._auth
-            r = httpx.post(
+            r = _POOL.post(
                 url,
                 params={"consumer_key": key, "consumer_secret": secret},
                 json=payload,
@@ -321,6 +348,6 @@ class WooClient:
         Timeout is ``status_timeout`` (constructor arg, default 15s) so the
         periodic health-check can tune it via SITE_HEALTHCHECK_TIMEOUT_SECONDS.
         """
-        r = httpx.get(f"{self.base}/system_status", auth=self._auth, timeout=self._status_timeout)
+        r = _POOL.get(f"{self.base}/system_status", auth=self._auth, timeout=self._status_timeout)
         r.raise_for_status()
         return r.json()

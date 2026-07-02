@@ -9,7 +9,7 @@ import uuid
 import pytest
 
 from apps.catalog import services
-from apps.catalog.models import MasterProduct, ProductMapping
+from apps.catalog.models import MasterProduct, ProductAdoptionScan, ProductMapping
 from apps.catalog.tests.factories import MasterProductFactory, ProductMappingFactory
 from apps.catalog.tests.test_services import _FakeClient, _patch_client
 from apps.sites.tests.factories import SiteFactory
@@ -143,6 +143,75 @@ def test_adopt_runs_once_then_relies_on_mapping(monkeypatch):
     services.push_products_to_site(site, masters=[master])
 
     assert fake.list_products_calls == 1  # second run had no unmapped candidate
+
+
+@pytest.mark.django_db
+def test_adopt_ambiguous_persists_and_is_not_relisted(monkeypatch):
+    """An ambiguous master is scanned ONCE: a second push does not re-list the
+    site, keeps excluding it from create (never duplicates), and still reports it
+    ambiguous — the outcome is remembered on the ProductAdoptionScan row."""
+    site = SiteFactory()
+    run2 = uuid.uuid4()
+    master = MasterProductFactory(sku="SP-1", match_name="Pin", categories=[])
+    fake = _FakeClient(
+        products=[
+            {"id": 1, "name": "Pin", "sku": "A", "type": "simple"},
+            {"id": 2, "name": "PIN", "sku": "B", "type": "simple"},
+        ]
+    )
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+    result = services.push_products_to_site(site, masters=[master], run_id=run2)
+
+    assert fake.list_products_calls == 1  # second push skipped the whole-catalog list
+    assert result["created"] == 0  # still not created → no duplicate
+    assert not ProductMapping.objects.filter(master=master, site=site).exists()
+    scan = ProductAdoptionScan.objects.get(master=master, site=site)
+    assert scan.ambiguous is True
+    log = SyncLog.objects.get(site=site, run_id=run2)
+    assert log.status == SyncLog.Status.PARTIAL
+    assert log.detail["ambiguous"] == ["SP-1"]
+
+
+@pytest.mark.django_db
+def test_adopt_scanned_master_not_relisted_even_if_create_fails(monkeypatch):
+    """A no-match master whose create keeps failing stays unmapped, but having
+    been scanned once it is never re-listed on later pushes."""
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", match_name="Khác", categories=[])
+    fake = _FakeClient(
+        products=[{"id": 7, "name": "Hoàn toàn khác", "sku": "Y", "type": "simple"}],
+        error_skus=["SP-1"],  # Woo rejects the create every time
+    )
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[master])
+    services.push_products_to_site(site, masters=[master])
+
+    assert fake.list_products_calls == 1  # scanned once, not re-listed
+    assert not ProductMapping.objects.filter(master=master, site=site).exists()
+    scan = ProductAdoptionScan.objects.get(master=master, site=site)
+    assert scan.ambiguous is False
+
+
+@pytest.mark.django_db
+def test_adopt_new_master_triggers_fresh_scan(monkeypatch):
+    """A master never scanned on the site re-triggers a list — the scan-once gate
+    is per (master, site), not a one-shot per site."""
+    site = SiteFactory()
+    a = MasterProductFactory(sku="SP-A", match_name="Pin", categories=[])
+    fake = _FakeClient(products=[{"id": 99, "name": "Pin", "sku": "A", "type": "simple"}])
+    _patch_client(monkeypatch, fake)
+
+    services.push_products_to_site(site, masters=[a])  # adopts A → mapped, scanned
+    assert fake.list_products_calls == 1
+
+    b = MasterProductFactory(sku="SP-B", match_name="Khác", categories=[])
+    services.push_products_to_site(site, masters=[a, b])  # B is new/unscanned
+
+    assert fake.list_products_calls == 2  # listed again for the new master B
+    assert ProductAdoptionScan.objects.filter(site=site).count() == 2
 
 
 @pytest.mark.django_db
@@ -377,6 +446,28 @@ def test_import_downloads_a_shared_image_once(monkeypatch, _media_root):
 
 
 @pytest.mark.django_db
+def test_import_downloads_shared_image_across_products_once(monkeypatch, _media_root):
+    """The concurrent prefetch dedups by URL across ALL new products, so an image
+    shared by two products is downloaded a single time."""
+    site = SiteFactory()
+    shared = "https://site-a.example/wp-content/uploads/common.jpg"
+    fake = _FakeClient(
+        products=[
+            _woo_product(id=11, sku="PIN-1", images=[{"src": shared}]),
+            _woo_product(id=12, sku="PIN-2", images=[{"src": shared}]),
+        ]
+    )
+    _patch_client(monkeypatch, fake)
+    calls = []
+    monkeypatch.setattr(services, "_fetch_image_bytes", _fake_fetcher(calls))
+
+    result = services.import_products_from_site(site)
+
+    assert calls == [shared]  # one download, shared by both products
+    assert result["created"] == 2
+
+
+@pytest.mark.django_db
 def test_import_keeps_source_url_when_download_fails(monkeypatch, _media_root):
     site = SiteFactory()
     src = "https://site-a.example/wp-content/uploads/main.jpg"
@@ -444,7 +535,7 @@ def test_fetch_image_bytes_swallows_invalid_url(monkeypatch):
     def _boom(*a, **k):
         raise services.httpx.InvalidURL("URL too long")
 
-    monkeypatch.setattr(services.httpx, "get", _boom)
+    monkeypatch.setattr(services._IMG_POOL, "get", _boom)
     assert services._fetch_image_bytes("https://x.example/huge.jpg") is None
 
 

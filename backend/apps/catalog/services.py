@@ -10,6 +10,7 @@ import logging
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -23,6 +24,7 @@ from .models import (
     Category,
     CategoryMapping,
     MasterProduct,
+    ProductAdoptionScan,
     ProductImage,
     ProductMapping,
     ProductVariationMapping,
@@ -30,6 +32,20 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Connection-pooled client for import-time image downloads (gallery + images
+# embedded in description HTML). Reuses keep-alive connections to the source
+# site instead of a fresh TCP+TLS handshake per image — the dominant cost when a
+# product carries many images. Follows redirects (image CDNs commonly 301/302).
+# Tests monkeypatch ``_fetch_image_bytes`` (or this object's ``get``).
+_IMG_POOL = httpx.Client(
+    follow_redirects=True,
+    limits=httpx.Limits(
+        max_connections=getattr(settings, "HTTP_POOL_MAX_CONNECTIONS", 100),
+        max_keepalive_connections=getattr(settings, "HTTP_POOL_MAX_KEEPALIVE", 20),
+        keepalive_expiry=getattr(settings, "HTTP_POOL_KEEPALIVE_EXPIRY", 30.0),
+    ),
+)
 
 OPERATION = "push_products"
 CATEGORY_OPERATION = "pull_categories"
@@ -504,16 +520,21 @@ def _adopt_by_name(site, client, masters) -> dict:
     indexes them by normalized name, and on a UNIQUE match against the master's
     frozen ``match_name`` (falling back to ``name``) creates the mapping — so the
     master falls into ``_plan_site_push``'s UPDATE branch instead of duplicating
-    the product. The match runs ONCE per ``(master, site)``: the moment a mapping
-    exists it is never re-run, so a rename on the Hub afterwards never breaks the
-    link, and stable runs that have nothing to adopt never even call the API
-    (the candidate list is empty → early return).
+    the product.
+
+    Listing a site's whole catalog is expensive, so it is done at most ONCE per
+    ``(master, site)``: every considered master gets a ``ProductAdoptionScan``
+    row (adopted, ambiguous, or no-match), and a later push only calls
+    ``list_products`` when at least one candidate has NEVER been scanned here. A
+    stable re-push (all masters mapped or already scanned) never touches the API.
 
     Ambiguous matches (two site products share the normalized name) are NOT
     adopted AND NOT created — adopting either could clobber the wrong product and
-    creating would duplicate. Their master ids are returned so the caller drops
-    them from this run and the SyncLog reports them for a human to resolve.
-    Returns ``{"adopted": [sku], "ambiguous": [sku], "ambiguous_master_ids": set}``.
+    creating would duplicate. Their ambiguity is persisted on the scan row, so
+    later pushes keep excluding them from create (via the returned
+    ``ambiguous_master_ids``) without re-listing the site, until someone resolves
+    the duplicate and clears the scan data. Returns
+    ``{"adopted": [sku], "ambiguous": [sku], "ambiguous_master_ids": set}``.
     """
     report: dict = {"adopted": [], "ambiguous": [], "ambiguous_master_ids": set()}
     mapped_ids = set(
@@ -524,6 +545,23 @@ def _adopt_by_name(site, client, masters) -> dict:
     candidates = [m for m in masters if not m.is_deleted and m.id not in mapped_ids]
     if not candidates:
         return report
+
+    # Outcomes of any prior scan for these candidates on this site.
+    prior_scan = {
+        row["master_id"]: row["ambiguous"]
+        for row in ProductAdoptionScan.objects.filter(
+            site=site, master_id__in=[m.id for m in candidates]
+        ).values("master_id", "ambiguous")
+    }
+    # Keep excluding masters flagged ambiguous by a prior scan (never re-create),
+    # without re-listing the site — until scan data is cleared for a re-scan.
+    for master in candidates:
+        if prior_scan.get(master.id):
+            report["ambiguous"].append(master.sku)
+            report["ambiguous_master_ids"].add(master.id)
+    to_scan = [m for m in candidates if m.id not in prior_scan]
+    if not to_scan:
+        return report  # nothing new to scan → skip the whole-catalog list call
 
     index: dict = {}
     for p in client.list_products():
@@ -537,11 +575,11 @@ def _adopt_by_name(site, client, masters) -> dict:
     claimed = set(
         ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True)
     )
-    for master in candidates:
+    scans: list = []
+    for master in to_scan:
         key = normalize_match_name(master.match_name or master.name)
-        if not key:
-            continue
-        ids = [i for i in index.get(key, []) if i not in claimed]
+        ambiguous = False
+        ids = [i for i in index.get(key, []) if i not in claimed] if key else []
         if len(ids) == 1:
             ProductMapping.objects.update_or_create(
                 master=master,
@@ -551,8 +589,12 @@ def _adopt_by_name(site, client, masters) -> dict:
             claimed.add(ids[0])
             report["adopted"].append(master.sku)
         elif len(ids) > 1:
+            ambiguous = True
             report["ambiguous"].append(master.sku)
             report["ambiguous_master_ids"].add(master.id)
+        # Record the scan (adopted / ambiguous / no-match) so it is not re-listed.
+        scans.append(ProductAdoptionScan(master=master, site=site, ambiguous=ambiguous))
+    ProductAdoptionScan.objects.bulk_create(scans, ignore_conflicts=True)
     return report
 
 
@@ -1836,7 +1878,7 @@ def _fetch_image_bytes(url: str) -> tuple[bytes, str] | None:
     from urllib.parse import urlsplit
 
     try:
-        resp = httpx.get(url, timeout=30, follow_redirects=True)
+        resp = _IMG_POOL.get(url, timeout=30)
         resp.raise_for_status()
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         # InvalidURL ("URL too long", malformed) is NOT an httpx.HTTPError — catch
@@ -1963,6 +2005,91 @@ def _internalize_imported_media(fields: dict, cache: dict) -> dict:
     return fields
 
 
+def _import_image_workers() -> int:
+    """Max images downloaded concurrently during import (settings, default 4)."""
+    return max(1, getattr(settings, "PRODUCT_IMPORT_IMAGE_WORKERS", 4))
+
+
+def _remote_image_urls(item: dict) -> list[str]:
+    """Every image src a remote product references: gallery + description ``<img>``.
+
+    Raw srcs (pre-normalization); the caller applies the same normalize/guard as
+    ``_internalize_remote_image`` before deciding what to download."""
+    urls = [
+        img["src"]
+        for img in (item.get("images") or [])
+        if isinstance(img, dict) and img.get("src")
+    ]
+    for html in (item.get("description") or "", item.get("short_description") or ""):
+        urls += [m.group("src") for m in _IMG_SRC_RE.finditer(html)]
+    return urls
+
+
+def _prefetch_import_images(site, products, mapped_woo_ids, media_cache) -> None:
+    """Warm ``media_cache`` by downloading (CONCURRENTLY) every remote image a
+    NEW master would internalize, so the per-item internalize in the import loop
+    is a pure cache lookup instead of a serial network call.
+
+    Only items that will CREATE a master are considered — importable type, not
+    already mapped, and no live master with the same SKU (those LINK and reuse
+    the existing master's Hub images). Unique remote http(s) srcs (Hub/relative/
+    data URLs skipped, same guard as ``_internalize_remote_image``) are fetched
+    with a bounded ``ThreadPoolExecutor`` (network only — no ORM in the threads),
+    then stored SEQUENTIALLY on the main thread so DB writes stay single-threaded.
+    ``media_cache`` ends up ``{normalized_url: hub_url or original_url}``, the
+    exact shape ``_internalize_remote_image`` reads back (it normalizes before
+    the cache lookup), so a failed download stays a hot-link and is counted.
+    """
+    # SKUs that would CREATE a new master (skip the loop's non-create items).
+    new_items: list[dict] = []
+    real_skus: list[str] = []
+    for item in products:
+        woo_id = item.get("id")
+        if not woo_id or woo_id in mapped_woo_ids:
+            continue
+        if (item.get("type") or MasterProduct.Type.SIMPLE) not in _IMPORTABLE_TYPES:
+            continue
+        sku = normalize_sku(item.get("sku", ""))
+        new_items.append(item)
+        if sku:
+            real_skus.append(sku)
+    existing_skus = (
+        set(
+            MasterProduct.objects.filter(sku__in=real_skus, is_deleted=False).values_list(
+                "sku", flat=True
+            )
+        )
+        if real_skus
+        else set()
+    )
+
+    to_fetch: dict = {}  # normalized_url → None (ordered unique set)
+    for item in new_items:
+        sku = normalize_sku(item.get("sku", ""))
+        if sku and sku in existing_skus:
+            continue  # links to an existing master → reuses its Hub images
+        for raw in _remote_image_urls(item):
+            url = _normalize_remote_image_url(raw)
+            if not url or _is_hub_media_url(url) or not url.startswith(("http://", "https://")):
+                continue
+            to_fetch.setdefault(url, None)
+    if not to_fetch:
+        return
+
+    urls = list(to_fetch)
+    workers = min(_import_image_workers(), len(urls))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        fetched = list(executor.map(_fetch_image_bytes, urls))
+    for url, result in zip(urls, fetched, strict=False):
+        if url in media_cache:
+            continue
+        hub_url = None
+        if result is not None:
+            data, content_type = result
+            hub_url = _store_hub_image(data, _image_filename(url, content_type), content_type)
+        media_cache[url] = hub_url or url
+
+
 def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dict:
     """Import one site's products into the Hub catalog (the "lấy data chuẩn từ
     website chính về" bootstrap).
@@ -1988,7 +2115,9 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
     them (the source is often unreachable from the target), dropping the images.
     The downloads run OUTSIDE the per-item transaction (network I/O must not hold
     one open) and are deduped across the run; a failed download keeps the original
-    URL and is counted in ``image_download_failures``.
+    URL and is counted in ``image_download_failures``. They are prefetched
+    CONCURRENTLY up front (``_prefetch_import_images``) so the per-item loop only
+    reads the warmed cache instead of downloading images one at a time.
     """
     from django.db import transaction
 
@@ -2020,6 +2149,10 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
     now = timezone.now()
     internalize = _internalize_imported_images_enabled()
     media_cache: dict = {}  # remote src → Hub url, deduped across this run
+    # Download all new masters' images concurrently up front so the loop below
+    # only reads the warmed cache (no serial per-image network call).
+    if internalize:
+        _prefetch_import_images(site, products, mapped_woo_ids, media_cache)
     for item in products:
         woo_id = item.get("id")
         if not woo_id:

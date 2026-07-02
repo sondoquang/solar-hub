@@ -28,8 +28,10 @@ class _FakeSapoHttp:
             return _Resp(200, {"custom_collections": []})
         if method == "POST" and "/custom_collections.json" in url:
             self._next_id += 1
-            title = json["custom_collection"]["title"]
-            return _Resp(201, {"custom_collection": {"id": self._next_id, "title": title}})
+            # Sapo custom_collection carries the name in ``name`` (NOT Shopify's
+            # ``title``); match the real SapoClient.batch_categories payload.
+            name = json["custom_collection"]["name"]
+            return _Resp(201, {"custom_collection": {"id": self._next_id, "name": name}})
         if method == "POST" and "/products.json" in url:
             self._next_id += 1
             return _Resp(201, {"product": {"id": self._next_id}})
@@ -62,7 +64,7 @@ def test_push_to_sapo_site_maps_simple_and_reports_grouped_as_failure(
     grouped = MasterProductFactory(sku="SP-GROUPED", type="grouped", grouped_skus=["SP-SIMPLE"])
 
     fake = _FakeSapoHttp()
-    monkeypatch.setattr(sapo.httpx, "request", fake)
+    monkeypatch.setattr(sapo._POOL, "request", fake)
 
     result = services.push_products_to_site(site, masters=[simple, grouped])
 

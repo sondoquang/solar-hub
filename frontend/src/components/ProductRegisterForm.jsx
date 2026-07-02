@@ -520,7 +520,7 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
         <Controller
           name={`variations.${i}.sku`}
           control={control}
-          render={({ field }) => <Input {...field} size="small" />}
+          render={({ field }) => <Input {...field} />}
         />
       ),
     },
@@ -532,7 +532,7 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
         <Controller
           name={`variations.${i}.regular_price`}
           control={control}
-          render={({ field }) => <InputNumber {...field} {...priceProps} size="small" />}
+          render={({ field }) => <InputNumber {...field} {...priceProps} />}
         />
       ),
     },
@@ -544,7 +544,7 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
         <Controller
           name={`variations.${i}.sale_price`}
           control={control}
-          render={({ field }) => <InputNumber {...field} {...priceProps} size="small" />}
+          render={({ field }) => <InputNumber {...field} {...priceProps} />}
         />
       ),
     },
@@ -557,7 +557,7 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
           name={`variations.${i}.stock_status`}
           control={control}
           render={({ field }) => (
-            <Select {...field} size="small" className="w-full" options={STOCK_OPTIONS} />
+            <Select {...field} className="w-full" options={STOCK_OPTIONS} />
           )}
         />
       ),

@@ -1,6 +1,6 @@
 """Unit tests for SapoClient — the Woo-shaped adapter over the Sapo admin API.
 
-No network: ``httpx.request`` is monkeypatched with a recording fake, so the
+No network: the pooled client's ``request`` is monkeypatched with a recording fake, so the
 tests assert both the Sapo-bound requests (URLs, wrapped bodies) and the
 Woo-shaped responses the catalog service consumes.
 """
@@ -65,7 +65,8 @@ def _client():
 
 
 def _patch(monkeypatch, fake):
-    monkeypatch.setattr(sapo.httpx, "request", fake)
+    # All Sapo traffic goes through the module-level pooled client's ``request``.
+    monkeypatch.setattr(sapo._POOL, "request", fake)
 
 
 # ----------------------------------------------------------- pure translators

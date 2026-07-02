@@ -325,3 +325,46 @@ class ProductVariationMapping(models.Model):
 
     def __str__(self) -> str:
         return f"{self.master_id}/{self.variation_sku}@{self.site_id}"
+
+
+class ProductAdoptionScan(models.Model):
+    """Records that a ``(master, site)`` pair has been name-scanned for adoption.
+
+    On push, ``services._adopt_by_name`` lists a site's products to "adopt" a
+    master that already exists there under a (possibly hand-typed) name — but
+    that list is the WHOLE remote catalog, so re-running it every push (whenever
+    ANY master is still unmapped) is a heavy, repeated read. A scan row is
+    written for every master considered in a scan (adopted, ambiguous, OR no
+    match), so the next push only lists the site again when a master has NEVER
+    been scanned there. A successful adoption also creates a ``ProductMapping``;
+    ambiguous / no-match masters have none, which is exactly why this separate
+    marker is needed. ``ambiguous`` remembers a master that matched >1 site
+    product by name so later pushes keep EXCLUDING it from create (never
+    duplicate) without re-listing the site. Cleared by
+    ``clear_product_sync_data --products`` so a re-import re-scans from scratch.
+    """
+
+    master = models.ForeignKey(
+        MasterProduct,
+        on_delete=models.CASCADE,
+        related_name="adoption_scans",
+    )
+    site = models.ForeignKey(
+        "sites.Site",
+        on_delete=models.CASCADE,
+        related_name="adoption_scans",
+        db_index=True,
+    )
+    # True when the scan found >1 site product with the master's name: it was
+    # neither adopted nor created, and must stay excluded from create on later
+    # pushes until a human resolves it (then clears scan data to re-scan).
+    ambiguous = models.BooleanField(default=False)
+    scanned_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["master", "site"], name="adoptscan_unique_master_site"),
+        ]
+
+    def __str__(self) -> str:
+        return f"scan {self.master_id}@{self.site_id}"

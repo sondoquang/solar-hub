@@ -32,6 +32,9 @@ import { formatDate, formatVND } from "../lib/format.js";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
+// Type-to-confirm keyword guarding the heavy "push catalog to ALL sites" action.
+const SYNC_CONFIRM_WORD = "PUSH";
+
 const STATUS_FILTER = [{ value: "all", label: "Tất cả trạng thái" }, ...FORM_STATUS];
 const STOCK_FILTER = [{ value: "all", label: "Tất cả kho" }, ...FORM_STOCK];
 const STOCK_LABEL = Object.fromEntries(FORM_STOCK.map((o) => [o.value, o.label]));
@@ -53,6 +56,8 @@ export default function Products() {
   const [lastPushRunId, setLastPushRunId] = useState(null); // run to summarize on finish
   const [summaryRunId, setSummaryRunId] = useState(null); // end-of-run summary modal
   const [detailRunId, setDetailRunId] = useState(null); // full per-site detail modal
+  const [syncConfirmOpen, setSyncConfirmOpen] = useState(false); // push-to-all-sites gate
+  const [syncConfirmText, setSyncConfirmText] = useState(""); // type-to-confirm input
 
   // Debounce the search box so we re-query once the user pauses.
   useEffect(() => {
@@ -150,9 +155,12 @@ export default function Products() {
     }
   };
 
-  // Push the whole catalog to every site (async Celery job). The filters scope
-  // the *view*, not the push — sync_now always pushes the full catalog/fleet.
+  // Push the whole catalog to every site (async Celery job). Gated behind a
+  // type-to-confirm modal (gõ "PUSH") because it fans out to ALL sites — heavy
+  // and slow. The filters scope the *view*, not the push — sync_now always
+  // pushes the full catalog/fleet.
   const handleSync = () => {
+    if (syncConfirmText.trim() !== SYNC_CONFIRM_WORD) return;
     sync.mutate(
       {},
       {
@@ -160,6 +168,8 @@ export default function Products() {
           toast.success("Đã kích hoạt đồng bộ sản phẩm xuống các site.");
           setLastPushRunId(res.run_id);
           productRun.start({ runId: res.run_id, expected: res.expected });
+          setSyncConfirmOpen(false);
+          setSyncConfirmText("");
         },
         onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
       }
@@ -335,7 +345,10 @@ export default function Products() {
           <Button
             icon={<RefreshCw size={16} />}
             loading={sync.isPending}
-            onClick={handleSync}
+            onClick={() => {
+              setSyncConfirmText("");
+              setSyncConfirmOpen(true);
+            }}
           >
             Đồng bộ ngay
           </Button>
@@ -524,6 +537,41 @@ export default function Products() {
               value: site.id,
               label: site.is_primary ? `${site.name} (trang chính)` : site.name,
             }))}
+        />
+      </Modal>
+
+      <Modal
+        open={syncConfirmOpen}
+        onCancel={() => setSyncConfirmOpen(false)}
+        title="Xác nhận đồng bộ toàn bộ"
+        okText="Đồng bộ ngay"
+        cancelText="Hủy"
+        okButtonProps={{
+          danger: true,
+          loading: sync.isPending,
+          disabled: syncConfirmText.trim() !== SYNC_CONFIRM_WORD,
+        }}
+        onOk={handleSync}
+        maskClosable={false}
+        destroyOnClose
+      >
+        <Alert
+          type="warning"
+          showIcon
+          className="mb-3"
+          message="Thao tác nặng — đẩy toàn bộ sản phẩm xuống TẤT CẢ website."
+          description="Lệnh này chạy nền và có thể mất nhiều thời gian khi có nhiều site. Nếu chỉ cần đồng bộ vài site, hãy dùng nút “Đồng bộ” trên từng sản phẩm để chọn site."
+        />
+        <p className="mb-2 text-sm text-muted">
+          Nhập <span className="font-mono font-semibold">{SYNC_CONFIRM_WORD}</span> để xác nhận
+          đẩy toàn bộ catalog xuống mọi site.
+        </p>
+        <Input
+          autoFocus
+          value={syncConfirmText}
+          placeholder={SYNC_CONFIRM_WORD}
+          onChange={(e) => setSyncConfirmText(e.target.value)}
+          onPressEnter={handleSync}
         />
       </Modal>
 
