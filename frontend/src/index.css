@@ -117,6 +117,20 @@ button:not(.ant-btn) {
   font-size: 1rem;
 }
 
+/* Chiều cao chuẩn 40px cho MỌI form control được đặt ở antd theme token
+   (controlHeight/controlHeightLG = 40 cho Input/Select/InputNumber/TreeSelect/
+   DatePicker… trong src/lib/antdTheme.js). antd tự tính padding + căn giữa dọc
+   đúng cho từng biến thể (Select đơn/nhiều tag, affix, InputNumber) — điều mà
+   `min-height` thô không làm được (nó kéo giãn Select nhiều-tag vượt 40px). Input
+   thêm mới không cần đặt size vẫn cao 40px; chỉ size="small" giữ 24px (gọn).
+
+   Riêng Input.Search render một Button icon (🔍) cạnh ô nhập trong một Space.Compact;
+   antd lấy chiều cao từ token Button (32px) nên lệch so với ô nhập 40px. Ép nút
+   search về 40px để cả cụm thẳng hàng; search size="small" giữ nút nhỏ. */
+.ant-input-search .ant-btn:not(.ant-btn-sm) {
+  height: 40px;
+}
+
 /* Order carousel (OrderDetailModal) — direction-aware slide + fade when the
    shown order changes. The content wrapper is keyed on the index so it remounts
    and re-runs the animation; the direction class picks which side it enters from. */

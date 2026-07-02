@@ -43,8 +43,34 @@ import time
 from datetime import UTC, datetime
 
 import httpx
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _build_pool() -> httpx.Client:
+    """Process-wide, connection-pooled ``httpx.Client`` for all Sapo traffic.
+
+    Reuses TCP+TLS connections across the (necessarily sequential) per-product
+    requests instead of a fresh handshake each time — the main lever we have on
+    Sapo, which has no batch endpoint. Thread-safe, so the push fan-out shares
+    one pool. ``follow_redirects`` is False because ``_send`` follows the
+    ``*.mysapo.net`` redirect itself (re-applying Basic auth, which httpx drops
+    across hosts); auth/params/timeout stay per-request.
+    """
+    return httpx.Client(
+        follow_redirects=False,
+        limits=httpx.Limits(
+            max_connections=getattr(settings, "HTTP_POOL_MAX_CONNECTIONS", 100),
+            max_keepalive_connections=getattr(settings, "HTTP_POOL_MAX_KEEPALIVE", 20),
+            keepalive_expiry=getattr(settings, "HTTP_POOL_KEEPALIVE_EXPIRY", 30.0),
+        ),
+    )
+
+
+# Module-level so connections are reused across calls AND runs. Tests
+# monkeypatch this object's ``request`` to intercept without network.
+_POOL = _build_pool()
 
 # A datetime string already carrying a timezone: ends with ``Z`` or a ``±HH:MM``
 # (or ``±HHMM``) offset. Used to decide whether a Sapo date filter needs a tz
@@ -414,7 +440,7 @@ class SapoClient:
         strips the auth header cross-host and turns a 302'd POST into a GET).
         Only follows toward a ``*.mysapo.net`` or same host — see the module
         constants — so credentials never reach an unrelated redirect target."""
-        r = httpx.request(method, url, json=json, params=params, auth=self._auth, timeout=timeout)
+        r = _POOL.request(method, url, json=json, params=params, auth=self._auth, timeout=timeout)
         if _redirects > 0 and r.status_code in _REDIRECT_CODES:
             location = r.headers.get("Location")
             if location:

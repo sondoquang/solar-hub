@@ -7,6 +7,20 @@
 // read CSS variables).
 import { theme as antdTheme } from "antd";
 
+// Unified control height for every form control (Input, Select, InputNumber,
+// pickers…). We pin all three size steps so antd derives padding + vertical
+// centering itself for each variant — single/multiple Select, affix inputs,
+// InputNumber, TreeSelect — which a raw CSS `min-height` cannot do (it stretched
+// multiple-mode selects past 40px). Default == large == 40px so an input added
+// without a `size` prop is already 40px; only size="small" stays compact (24px)
+// for deliberately dense controls (variation table, filter bars). controlHeightLG
+// is pinned so antd doesn't re-derive it to 50px from the bumped controlHeight.
+const FORM_CONTROL_SIZE = {
+  controlHeight: 40,
+  controlHeightLG: 40,
+  controlHeightSM: 24,
+};
+
 /** @type {import("antd").ThemeConfig} */
 export const theme = {
   algorithm: antdTheme.darkAlgorithm,
@@ -31,15 +45,24 @@ export const theme = {
     // (white on #978df8 is ~2.8:1 — fails AA; dark ink is ~6.5:1 — passes).
     Button: { primaryColor: "#16171a" },
     Input: {
+      ...FORM_CONTROL_SIZE,
       activeBorderColor: "#978df8",
       hoverBorderColor: "#a99ffb",
       activeShadow: "0 0 0 3px rgba(151, 141, 248, 0.18)",
       errorActiveShadow: "0 0 0 3px rgba(239, 68, 68, 0.18)",
     },
+    InputNumber: { ...FORM_CONTROL_SIZE },
     Select: {
+      ...FORM_CONTROL_SIZE,
       optionActiveBg: "rgba(151, 141, 248, 0.12)",
       optionSelectedBg: "rgba(151, 141, 248, 0.22)",
     },
+    TreeSelect: { ...FORM_CONTROL_SIZE },
+    Cascader: { ...FORM_CONTROL_SIZE },
+    AutoComplete: { ...FORM_CONTROL_SIZE },
+    Mentions: { ...FORM_CONTROL_SIZE },
+    DatePicker: { ...FORM_CONTROL_SIZE },
+    TimePicker: { ...FORM_CONTROL_SIZE },
     Table: {
       headerBg: "#1f2026",
       headerColor: "#cbd5e1",

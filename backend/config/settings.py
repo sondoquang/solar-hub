@@ -181,6 +181,22 @@ PRODUCT_PUSH_BATCH_SIZE = env.int("PRODUCT_PUSH_BATCH_SIZE", default=8)
 PRODUCT_BATCH_ITEM_LIMIT = env.int("PRODUCT_BATCH_ITEM_LIMIT", default=100)
 PRODUCT_PUSH_THROTTLE_SECONDS = env.float("PRODUCT_PUSH_THROTTLE_SECONDS", default=0.5)
 
+# Shared connection-pool limits for the platform clients (WooClient/SapoClient)
+# and the import image downloader. One process-wide ``httpx.Client`` keeps
+# TCP+TLS connections alive across pages/batch-chunks/images instead of a fresh
+# handshake per call — the dominant hidden cost on high-latency shared hosts.
+# These bound the pool, NOT how many requests we fire concurrently (that stays
+# governed by *_BATCH_SIZE / throttle), so raising them does not add site load.
+HTTP_POOL_MAX_CONNECTIONS = env.int("HTTP_POOL_MAX_CONNECTIONS", default=100)
+HTTP_POOL_MAX_KEEPALIVE = env.int("HTTP_POOL_MAX_KEEPALIVE", default=20)
+HTTP_POOL_KEEPALIVE_EXPIRY = env.float("HTTP_POOL_KEEPALIVE_EXPIRY", default=30.0)
+
+# Import (site→Hub): how many product images are downloaded CONCURRENTLY into the
+# Hub media library. Bounded and low by default because the downloads hit the
+# single SOURCE site being imported from (a one-time bootstrap); raise only if
+# that site tolerates it. See apps.catalog.services.import_products_from_site.
+PRODUCT_IMPORT_IMAGE_WORKERS = env.int("PRODUCT_IMPORT_IMAGE_WORKERS", default=4)
+
 # Description-image sideloading (WooCommerce only): images embedded in a product's
 # description/short_description HTML that live on the Hub (``/media/...``) are
 # normally just hot-linked back to the Hub. When this is ON, the push makes Woo
