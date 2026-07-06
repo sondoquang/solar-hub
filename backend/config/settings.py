@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "apps.monitoring",
     "apps.integrations",
     "apps.mailer",
+    "apps.domains",
 ]
 
 MIDDLEWARE = [
@@ -127,7 +128,7 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.IsAuthenticated",
+        "config.permissions.RBACPermission",
     ],
 }
 
@@ -181,6 +182,13 @@ PRODUCT_PUSH_BATCH_SIZE = env.int("PRODUCT_PUSH_BATCH_SIZE", default=8)
 PRODUCT_BATCH_ITEM_LIMIT = env.int("PRODUCT_BATCH_ITEM_LIMIT", default=100)
 PRODUCT_PUSH_THROTTLE_SECONDS = env.float("PRODUCT_PUSH_THROTTLE_SECONDS", default=0.5)
 
+# Age (seconds) after which a still-RUNNING push notification is marked "timeout"
+# (its run stalled or the worker is down). Generous so a full-fleet push to many
+# sites is not flagged prematurely. See apps.sync.services.finalize_notification.
+PUSH_NOTIFICATION_TIMEOUT_SECONDS = env.int(
+    "PUSH_NOTIFICATION_TIMEOUT_SECONDS", default=1800
+)
+
 # Shared connection-pool limits for the platform clients (WooClient/SapoClient)
 # and the import image downloader. One process-wide ``httpx.Client`` keeps
 # TCP+TLS connections alive across pages/batch-chunks/images instead of a fresh
@@ -220,6 +228,15 @@ PRODUCT_INTERNALIZE_IMPORTED_IMAGES = env.bool(
     "PRODUCT_INTERNALIZE_IMPORTED_IMAGES", default=True
 )
 
+# On import, when a product's SKU matches no existing master, LINK it to an
+# existing master by NORMALIZED NAME (normalize_match_name — trim/lowercase/fold
+# Vietnamese diacritics) instead of creating a duplicate. Needed because SKUs are
+# often inconsistent/missing across sites, so name is the only reliable cross-site
+# key. Only a UNIQUE name match links (>1 = ambiguous → create + report); a master
+# already mapped to the SAME site is excluded so two products of one site never
+# collapse. Off → SKU-only matching (old behaviour). See import_products_from_site.
+PRODUCT_IMPORT_MATCH_BY_NAME = env.bool("PRODUCT_IMPORT_MATCH_BY_NAME", default=True)
+
 # Sapo Web has no batch endpoints — one "batch" becomes many sequential
 # requests, so SapoClient paces itself (THROTTLE between requests) and retries
 # HTTP 429 honoring Retry-After (RETRY_AFTER_DEFAULT when the header is absent).
@@ -247,6 +264,43 @@ SITE_HEALTHCHECK_OK_INTERVAL_SECONDS = env.int(
 SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS = env.int(
     "SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS", default=300
 )  # 5 min
+
+# Domain info (apps.domains): WHOIS / DNS / SSL / DNSBL blacklist / Google
+# index snapshots per site. Beat ticks hourly (DOMAIN_INFO_TICK_SECONDS,
+# config/celery.py); the dispatcher itself only refreshes sites whose snapshot
+# is older than REFRESH_INTERVAL, in batches of BATCH_SIZE with WORKERS
+# concurrent lookups per batch. Facts change on the order of months, so daily
+# is plenty and keeps registry/RDAP request rates trivial.
+DOMAIN_INFO_REFRESH_INTERVAL_SECONDS = env.int(
+    "DOMAIN_INFO_REFRESH_INTERVAL_SECONDS", default=86400
+)
+DOMAIN_INFO_BATCH_SIZE = env.int("DOMAIN_INFO_BATCH_SIZE", default=10)
+DOMAIN_INFO_WORKERS = env.int("DOMAIN_INFO_WORKERS", default=4)
+DOMAIN_LOOKUP_TIMEOUT_SECONDS = env.float("DOMAIN_LOOKUP_TIMEOUT_SECONDS", default=10.0)
+# DNS resolver for record lookups + DNSBL queries. Empty = system resolver.
+# Spamhaus refuses public resolvers (8.8.8.8/1.1.1.1) — blacklist results stay
+# "Không xác định" until this points at a resolver allowed to query them.
+DOMAIN_DNS_RESOLVER = env.str("DOMAIN_DNS_RESOLVER", default="")
+# Google index check: needs a Custom Search API key + engine id. Empty key =
+# check is skipped. Own cadence (default 7 days) keeps ~100 domains far under
+# the free 100-queries/day quota.
+DOMAIN_GINDEX_INTERVAL_SECONDS = env.int(
+    "DOMAIN_GINDEX_INTERVAL_SECONDS", default=604800
+)
+GOOGLE_CSE_API_KEY = env.str("GOOGLE_CSE_API_KEY", default="")
+GOOGLE_CSE_CX = env.str("GOOGLE_CSE_CX", default="")
+
+# WHOIS provider for .vn — VNNIC has no public RDAP and blocks port-43 whois
+# from outside Vietnam, so .vn expiry can't be looked up by the generic path.
+# TENTEN (GMO) is an official VNNIC-connected registrar; its reseller API
+# (register at tenten.vn) returns registrar + expiry for managed domains. Gate:
+# both key AND user must be set, else WHOIS uses only RDAP/port-43 and .vn stays
+# "unsupported".
+TENTEN_API_BASE_URL = env.str(
+    "TENTEN_API_BASE_URL", default="https://api-reseller.tenten.vn/v1/Domains/"
+)
+TENTEN_API_KEY = env.str("TENTEN_API_KEY", default="")
+TENTEN_API_USER = env.str("TENTEN_API_USER", default="")
 
 # --- Mail / order digest ------------------------------------------------
 # The SMTP account (host/port/login/app-password) is stored in the DB

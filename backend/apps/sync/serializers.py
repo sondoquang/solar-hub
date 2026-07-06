@@ -3,6 +3,8 @@ roll-up over SyncLog rows, not a model; the dicts come from services.py)."""
 
 from rest_framework import serializers
 
+from .models import Notification
+
 
 class RunCategorySerializer(serializers.Serializer):
     """One Woo category of one site and the Hub Category it converged to."""
@@ -75,6 +77,9 @@ class ProductRunSiteSerializer(serializers.Serializer):
     site_name = serializers.CharField(allow_blank=True)
     site_url = serializers.CharField(allow_blank=True)
     hosting = serializers.CharField(allow_blank=True)
+    # Split hosting fields (name + account username) for grouping in the report.
+    hosting_name = serializers.CharField(allow_blank=True)
+    hosting_username = serializers.CharField(allow_blank=True)
     status = serializers.CharField()
     error = serializers.CharField(allow_blank=True)
     created = serializers.IntegerField()
@@ -112,3 +117,39 @@ class ProductRunDetailSerializer(ProductRunListSerializer):
     """Run summary + its per-site rows (detail modal / export source)."""
 
     sites = ProductRunSiteSerializer(many=True)
+
+
+# --- Push notifications -------------------------------------------------------
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    """One notification for the bell/center. ``read`` is a convenience flag over
+    ``read_at``; ``triggered_by`` is the clicking admin's display name. ``summary``
+    (compact roll-up) and ``run_id`` let the UI render the row and reopen the full
+    product-run detail modal."""
+
+    triggered_by = serializers.SerializerMethodField()
+    read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id",
+            "run_id",
+            "operation",
+            "status",
+            "expected",
+            "summary",
+            "triggered_by",
+            "read",
+            "created_at",
+            "completed_at",
+            "read_at",
+        ]
+
+    def get_read(self, obj) -> bool:
+        return obj.read_at is not None
+
+    def get_triggered_by(self, obj):
+        user = obj.created_by
+        return (user.get_full_name() or user.get_username()) if user else None

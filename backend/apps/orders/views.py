@@ -41,6 +41,17 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ["number", "customer_name", "customer_phone", "site__name"]
     ordering_fields = ["date_created_woo", "total", "status", "risk_score"]
     ordering = ["-date_created_woo"]
+    # Business @actions map to custom perms — the default method-based map
+    # (POST → add_order) would be wrong for them (config.permissions).
+    action_perms = {
+        "poll_now": ["orders.sync_order"],
+        "forward": ["orders.forward_order"],
+        "forward_bulk": ["orders.forward_order"],
+        "send_email": ["orders.email_order"],
+        "complete": ["orders.change_order"],
+        "cancel": ["orders.change_order"],
+        "mark_paid": ["orders.change_order"],
+    }
 
     def get_queryset(self):
         qs = Order.objects.select_related("site", "site__hosting")

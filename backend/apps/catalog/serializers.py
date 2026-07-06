@@ -6,7 +6,7 @@ from PIL import Image
 from rest_framework import serializers
 
 from .models import Category, CategoryMapping, MasterProduct, ProductImage, ProductMapping
-from .services import normalize_sku
+from .services import create_category, normalize_sku, update_category
 
 # Upload limits for the product media library (mirrors site-note attachments).
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -101,6 +101,43 @@ class CategorySerializer(serializers.ModelSerializer):
         fields = ["id", "name", "slug", "parent", "mapping_count"]
 
 
+class CategoryWriteSerializer(serializers.ModelSerializer):
+    """Create/update a Hub category (the tree-management surface).
+
+    Name uniqueness, soft-deleted revive, and the parent-cycle guard live in the
+    service layer (``services.create_category`` / ``update_category``). The
+    model's UNIQUE on ``name`` also spans soft-deleted rows, so the auto
+    ``UniqueValidator`` is dropped here — otherwise re-creating a deleted
+    category's name would 400 instead of reviving it.
+    """
+
+    mapping_count = serializers.IntegerField(source="mappings.count", read_only=True)
+
+    class Meta:
+        model = Category
+        fields = ["id", "name", "slug", "parent", "mapping_count"]
+        extra_kwargs = {
+            "name": {"validators": []},  # uniqueness handled in the service (revive-aware)
+            "slug": {"required": False},
+        }
+
+    def validate_parent(self, value):
+        # Only a live category can be a parent (a soft-deleted one is not in the tree).
+        if value is not None and value.is_deleted:
+            raise serializers.ValidationError("Danh mục cha không hợp lệ.")
+        return value
+
+    def create(self, validated_data):
+        return create_category(
+            name=validated_data["name"],
+            parent=validated_data.get("parent"),
+            slug=validated_data.get("slug", ""),
+        )
+
+    def update(self, instance, validated_data):
+        return update_category(instance, validated_data)
+
+
 class CategoryMappingRowSerializer(serializers.ModelSerializer):
     """One row of the per-site mapping screen: tên RAW trên site ↔ Hub category."""
 
@@ -180,6 +217,9 @@ class ProductSyncStatusSerializer(serializers.Serializer):
     site_status = serializers.CharField()
     platform = serializers.CharField()
     is_primary = serializers.BooleanField()
+    # Hosting account (null if unassigned); labelled by account_username in the UI.
+    hosting_id = serializers.IntegerField(allow_null=True)
+    hosting_username = serializers.CharField(allow_blank=True)
     synced = serializers.BooleanField()
     woo_product_id = serializers.IntegerField(allow_null=True)
     last_synced_at = serializers.DateTimeField(allow_null=True)

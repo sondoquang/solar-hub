@@ -36,6 +36,7 @@ Quy tắc code cho **backend** Solar Hub. Mục tiêu: nhất quán, an toàn, d
 - Bật **pagination** mặc định cho list (đơn hàng có thể rất nhiều). FE sẽ dựa vào pagination này.
 - Validate input ở serializer, không ở view.
 - Không trả raw exception/traceback ra response. Lỗi nghiệp vụ → mã lỗi + message gọn.
+- **Phân quyền (RBAC):** `DEFAULT_PERMISSION_CLASSES = RBACPermission` (`config/permissions.py`) enforce quyền model chuẩn (`view/add/change/delete`) trên mọi API. Mọi `@action` **non-GET** mới **PHẢI** khai `action_perms = {"<action>": ["<app>.<perm>"]}` trên ViewSet — nếu không, map method→perm mặc định sẽ đòi sai `add_<model>` cho POST. View mới **không có queryset** (APIView/`viewsets.ViewSet`) phải khai `required_perms = {"POST": [...]}`, nếu không âm thầm thành auth-only. Quyền nghiệp vụ mới khai qua `Meta.permissions` (tên tiếng Việt). Chi tiết: ARCHITECTURE §8f.
 
 ## 5. Celery & job nền
 

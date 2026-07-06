@@ -23,13 +23,22 @@ from apps.orders.models import GENUINE, Order
 from apps.orders.pdf import build_orders_pdf
 
 from .models import MailSettings
-from .render import render_orders_email_html, render_orders_email_text
+from .render import (
+    render_orders_email_html,
+    render_orders_email_text,
+    render_product_sync_report_html,
+    render_product_sync_report_text,
+)
 
 logger = logging.getLogger(__name__)
 
 # Cap how many orders one email carries — keeps the body/PDF a sane size and
 # avoids a single send timing out. A digest with more than this is unusual.
 MAX_EMAIL_ORDERS = 200
+
+XLSX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 # Smtp backend used to actually send. Overridable (tests point it at locmem).
 _DEFAULT_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
@@ -70,6 +79,17 @@ def normalize_recipients(value) -> list[str]:
         if addr and addr not in out:
             out.append(addr)
     return out
+
+
+def resolve_product_sync_recipients(s: MailSettings) -> list[str]:
+    """Who receives the product-sync report email.
+
+    The dedicated ``product_sync_recipients`` list when set, otherwise a fallback
+    to the order-digest ``recipients`` — so a Hub that only configured one list
+    still gets the report."""
+    return normalize_recipients(s.product_sync_recipients) or normalize_recipients(
+        s.recipients
+    )
 
 
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
@@ -160,6 +180,64 @@ def send_orders_email(
         "mailer: sent %s order(s) to %s recipient(s)", count, len(recipients)
     )
     return count
+
+
+def send_product_sync_report(
+    detail: dict,
+    xlsx_bytes: bytes,
+    *,
+    recipients,
+    title: str | None = None,
+    settings_obj: MailSettings | None = None,
+) -> int:
+    """Email one product-push run report (HTML body + .xlsx attachment).
+
+    ``detail`` is ``apps.sync.services.product_run_detail`` output; ``xlsx_bytes``
+    the ``build_product_run_workbook`` export. Returns the recipient count. Raises
+    :class:`MailNotConfigured` when the SMTP account or recipients are incomplete;
+    SMTP errors propagate (the task retries)."""
+    from apps.sync.services import product_run_export_filename
+
+    s = settings_obj or MailSettings.load()
+    recipients = normalize_recipients(recipients)
+
+    if not s.is_configured:
+        raise MailNotConfigured("Chưa cấu hình tài khoản SMTP (email/mật khẩu).")
+    if not recipients:
+        raise MailNotConfigured("Chưa có địa chỉ email người nhận báo cáo đồng bộ.")
+
+    started = detail.get("started_at")
+    when = timezone.localtime(started).strftime("%d/%m/%Y %H:%M") if started else ""
+    if title is None:
+        title = f"Báo cáo đồng bộ sản phẩm {when}".strip()
+    subject = f"[Solar Hub] {title}"
+
+    html_body = render_product_sync_report_html(detail, title=title, meta=detail.get("meta"))
+    text_body = render_product_sync_report_text(detail)
+    filename = product_run_export_filename(detail)
+
+    from_header = (
+        f"{s.from_name} <{s.effective_from_email}>"
+        if s.from_name
+        else s.effective_from_email
+    )
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=from_header,
+        to=recipients,
+        connection=build_connection(s),
+    )
+    message.attach_alternative(html_body, "text/html")
+    message.attach(filename, xlsx_bytes, XLSX_CONTENT_TYPE)
+    message.send()
+
+    logger.info(
+        "mailer: sent product-sync report run_id=%s to %s recipient(s)",
+        detail.get("run_id"),
+        len(recipients),
+    )
+    return len(recipients)
 
 
 def send_test_email(recipients, *, settings_obj: MailSettings | None = None) -> None:

@@ -80,7 +80,7 @@ export default function SiteImport({ onImport, pending, hostings = [] }) {
 
           <div>
             <label className="mb-1 block text-sm font-medium">File Excel (.xlsx)</label>
-            <label className="flex cursor-pointer items-center gap-2 rounded border border-dashed border-border-strong px-3 py-2 text-sm hover:bg-white/5">
+            <label className="flex cursor-pointer items-center gap-2 rounded border border-dashed border-border-strong px-3 py-2 text-sm hover:bg-overlay/5">
               <Upload size={16} className="text-brand" />
               <span className="font-medium text-brand">Chọn file</span>
               <input

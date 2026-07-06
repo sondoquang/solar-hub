@@ -13,6 +13,9 @@ openpyxl==3.1.*           # parse .xlsx site imports
 reportlab==4.2.*          # render order PDFs for the sales team
 Pillow==11.*              # ImageField for site-note attachments
 nh3==0.2.*                # sanitize site-note rich-text HTML (anti stored-XSS)
+dnspython==2.6.*          # DNS record lookups + DNSBL blacklist checks (apps.domains)
+python-whois==0.9.*       # port-43 WHOIS fallback when a TLD has no RDAP (apps.domains)
+tldextract==5.*           # registrable-domain extraction via bundled PSL (apps.domains)
 gunicorn==23.*            # unused in dev compose; here for the deferred prod image
 
 # --- dev / test ---

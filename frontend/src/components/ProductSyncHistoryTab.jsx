@@ -79,7 +79,7 @@ export default function ProductSyncHistoryTab() {
       value: (s.total ?? 0).toLocaleString("vi-VN"),
       sub: "Trong khoảng đã lọc",
       Icon: ListChecks,
-      tint: "bg-blue-500/15 text-blue-300",
+      tint: "bg-blue-500/15 text-info",
     },
     {
       key: "success",

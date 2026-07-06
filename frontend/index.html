@@ -9,6 +9,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <!-- Set data-theme before first paint so light-theme users don't see a dark
+       flash. Mirrors the init logic in src/lib/ThemeContext.jsx. -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("solar_hub_theme");
+        var mode = saved === "light" || saved === "dark" ? saved
+          : (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        document.documentElement.setAttribute("data-theme", mode);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    })();
+  </script>
 </head>
 
 <body>

@@ -92,10 +92,10 @@ function ChartTooltip({ active, payload, label }) {
 // ── Health-check status badge ─────────────────────────────────────────────────
 function HcStatusBadge({ status, label }) {
   const styles = {
-    healthy: "bg-green-500/15 text-green-400",
-    warning: "bg-amber-500/15 text-amber-300",
-    critical: "bg-red-500/15 text-red-400",
-    unknown: "bg-white/10 text-slate-300",
+    healthy: "bg-green-500/15 text-success",
+    warning: "bg-amber-500/15 text-warning",
+    critical: "bg-red-500/15 text-danger",
+    unknown: "bg-overlay/10 text-muted",
   };
   const dots = {
     healthy: "bg-green-500",
@@ -116,10 +116,10 @@ function HcStatusBadge({ status, label }) {
 // ── Notification icon ─────────────────────────────────────────────────────────
 function NotifIcon({ type }) {
   const map = {
-    success: { Icon: CheckCircle, bg: "bg-green-500/15", color: "text-green-400" },
-    warning: { Icon: AlertTriangle, bg: "bg-amber-500/15", color: "text-amber-400" },
-    error: { Icon: XCircle, bg: "bg-red-500/15", color: "text-red-400" },
-    info: { Icon: Info, bg: "bg-blue-500/15", color: "text-blue-400" },
+    success: { Icon: CheckCircle, bg: "bg-green-500/15", color: "text-success" },
+    warning: { Icon: AlertTriangle, bg: "bg-amber-500/15", color: "text-warning" },
+    error: { Icon: XCircle, bg: "bg-red-500/15", color: "text-danger" },
+    info: { Icon: Info, bg: "bg-blue-500/15", color: "text-info" },
   };
   const { Icon, bg, color } = map[type] ?? map.info;
   return (
@@ -298,7 +298,7 @@ export default function Dashboard() {
         <StatCard
           icon={ShoppingCart}
           iconBg="bg-amber-500/15"
-          iconColor="text-amber-400"
+          iconColor="text-warning"
           label="Tổng đơn hàng"
           value={(stats.orders?.total ?? 0).toLocaleString("vi-VN")}
           changePct={stats.orders?.change_pct}
@@ -307,7 +307,7 @@ export default function Dashboard() {
         <StatCard
           icon={DollarSign}
           iconBg="bg-green-500/15"
-          iconColor="text-green-400"
+          iconColor="text-success"
           label="Doanh thu"
           value={formatVND(stats.revenue?.total ?? 0)}
           changePct={stats.revenue?.change_pct}
@@ -316,7 +316,7 @@ export default function Dashboard() {
         <StatCard
           icon={Package}
           iconBg="bg-blue-500/15"
-          iconColor="text-blue-400"
+          iconColor="text-info"
           label="Sản phẩm"
           value={(stats.products?.total ?? 0).toLocaleString("vi-VN")}
           changePct={stats.products?.change_pct}

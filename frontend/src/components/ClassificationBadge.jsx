@@ -9,8 +9,8 @@ const MAP = {
 
 export default function ClassificationBadge({ classification, score }) {
   const { bg, text, label } = MAP[classification] || {
-    bg: "bg-white/10",
-    text: "text-slate-300",
+    bg: "bg-overlay/10",
+    text: "text-muted",
     label: classification || "—",
   };
   return (

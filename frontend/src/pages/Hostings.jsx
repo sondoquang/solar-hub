@@ -11,6 +11,7 @@ import {
   useImportHostings,
   useUpdateHosting,
 } from "../api/hostings.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
@@ -70,6 +71,10 @@ export default function Hostings() {
   const deleteHosting = useDeleteHosting();
   const checkHosting = useCheckHosting();
   const importHostings = useImportHostings();
+  const can = useCan();
+  const canAdd = can("sites.add_hosting");
+  const canChange = can("sites.change_hosting");
+  const canDelete = can("sites.delete_hosting");
 
   const hostings = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -149,7 +154,7 @@ export default function Hostings() {
       width: 220,
       render: (name) => (
         <span className="inline-flex items-center gap-2.5 font-medium">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-info">
             <Server size={15} />
           </span>
           <span className="truncate">{name}</span>
@@ -203,29 +208,35 @@ export default function Hostings() {
         const checking = checkingId === h.id;
         return (
           <div className="flex items-center justify-end gap-1">
-            <Button
-              size="small"
-              icon={<Play size={14} />}
-              loading={checking}
-              disabled={h.site_count === 0}
-              onClick={() => handleCheck(h)}
-            >
-              {checking ? "Đang kiểm tra…" : "Check ngay"}
-            </Button>
-            <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(h)}>
-              Sửa
-            </Button>
-            <Popconfirm
-              title="Xóa hosting này?"
-              description="Các site sẽ được gỡ khỏi nhóm nhưng không bị xóa."
-              okText="Xóa"
-              cancelText="Hủy"
-              onConfirm={() => handleDelete(h)}
-            >
-              <Button size="small" danger icon={<Trash2 size={14} />}>
-                Xóa
+            {canChange && (
+              <Button
+                size="small"
+                icon={<Play size={14} />}
+                loading={checking}
+                disabled={h.site_count === 0}
+                onClick={() => handleCheck(h)}
+              >
+                {checking ? "Đang kiểm tra…" : "Check ngay"}
               </Button>
-            </Popconfirm>
+            )}
+            {canChange && (
+              <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(h)}>
+                Sửa
+              </Button>
+            )}
+            {canDelete && (
+              <Popconfirm
+                title="Xóa hosting này?"
+                description="Các site sẽ được gỡ khỏi nhóm nhưng không bị xóa."
+                okText="Xóa"
+                cancelText="Hủy"
+                onConfirm={() => handleDelete(h)}
+              >
+                <Button size="small" danger icon={<Trash2 size={14} />}>
+                  Xóa
+                </Button>
+              </Popconfirm>
+            )}
           </div>
         );
       },
@@ -238,21 +249,25 @@ export default function Hostings() {
         <div>
           <h1 className="font-display text-2xl font-bold">Quản lý hosting</h1>
         </div>
-        <Button
-          type="primary"
-          icon={<Plus size={16} />}
-          onClick={() => {
-            setEditing(null);
-            setShowForm(true);
-          }}
-        >
-          Thêm hosting
-        </Button>
+        {canAdd && (
+          <Button
+            type="primary"
+            icon={<Plus size={16} />}
+            onClick={() => {
+              setEditing(null);
+              setShowForm(true);
+            }}
+          >
+            Thêm hosting
+          </Button>
+        )}
       </div>
 
-      <div className="mb-2.5">
-        <HostingImport onImport={handleImport} pending={importHostings.isPending} />
-      </div>
+      {canAdd && (
+        <div className="mb-2.5">
+          <HostingImport onImport={handleImport} pending={importHostings.isPending} />
+        </div>
+      )}
 
       {isError ? (
         <ErrorState message="Không tải được danh sách hosting" onRetry={refetch} />

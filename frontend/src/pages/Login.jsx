@@ -5,30 +5,50 @@ import toast from "react-hot-toast";
 import { useNavigate, useLocation } from "react-router-dom";
 
 import { useAuth } from "../lib/AuthContext.jsx";
+import { useTheme } from "../lib/ThemeContext.jsx";
 
 const FEATURES = [
   {
     icon: TrendingUp,
-    color: "bg-blue-500/20 text-blue-300",
+    tone: "info",
     title: "Giám sát thời gian thực",
     desc: "Theo dõi hiệu suất hệ thống 24/7",
   },
   {
     icon: ShieldCheck,
-    color: "bg-green-500/20 text-green-300",
+    tone: "success",
     title: "Bảo mật tuyệt đối",
     desc: "Dữ liệu được bảo vệ an toàn và tin cậy",
   },
   {
     icon: BarChart2,
-    color: "bg-amber-500/20 text-amber-300",
+    tone: "warning",
     title: "Báo cáo trực quan",
     desc: "Phân tích và báo cáo chi tiết, dễ hiểu",
   },
 ];
 
+// Feature-card icon chip colours. The left hero is a dark photo in dark mode
+// (brighter 300-shade text pops on it) but a light brand gradient in light mode
+// (semantic tokens keep the text legible on the pale tint).
+const CHIP = {
+  dark: {
+    info: "bg-blue-500/20 text-blue-300",
+    success: "bg-green-500/20 text-green-300",
+    warning: "bg-amber-500/20 text-amber-300",
+  },
+  light: {
+    info: "bg-blue-500/15 text-info",
+    success: "bg-green-500/15 text-success",
+    warning: "bg-amber-500/15 text-warning",
+  },
+};
+
 export default function Login() {
   const { login, isAuthenticated } = useAuth();
+  const { mode } = useTheme();
+  const light = mode === "light";
+  const chip = CHIP[light ? "light" : "dark"];
   const navigate = useNavigate();
   const location = useLocation();
   const [form] = Form.useForm();
@@ -55,16 +75,27 @@ export default function Login() {
   return (
     <div className="flex min-h-screen">
       {/* ── Left panel (50%) ──────────────────────────────────────── */}
+      {/* Dark: brand photo with a scrim. Light: soft brand gradient (no photo)
+          so the hero stays on-brand without needing a light background image. */}
       <div
-        className="relative hidden w-1/2 flex-col overflow-hidden lg:flex"
-        style={{
-          backgroundImage: "url('/login-background.png')",
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-        }}
+        className={[
+          "relative hidden w-1/2 flex-col overflow-hidden lg:flex",
+          light ? "bg-gradient-to-br from-brand/20 via-surface-muted to-surface" : "",
+        ].join(" ")}
+        style={
+          light
+            ? undefined
+            : {
+                backgroundImage: "url('/login-background.png')",
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+              }
+        }
       >
-        {/* dark gradient overlay */}
-        <div className="absolute inset-0 bg-gradient-to-br from-slate-900/75 via-slate-800/60 to-slate-900/50" />
+        {/* dark gradient overlay — only over the photo (dark mode) */}
+        {!light && (
+          <div className="absolute inset-0 bg-gradient-to-br from-slate-900/75 via-slate-800/60 to-slate-900/50" />
+        )}
 
         {/* Main content — vertically centered */}
         <div className="relative z-10 flex flex-1 flex-col justify-center px-10 py-10">
@@ -75,31 +106,38 @@ export default function Login() {
             className="mb-8 h-28 w-auto object-contain object-left"
           />
 
-          <h1 className="font-display text-4xl font-bold leading-tight text-white">
+          <h1
+            className={`font-display text-4xl font-bold leading-tight ${light ? "text-ink" : "text-white"}`}
+          >
             Quản lý hệ thống
             <br />
             điện mặt trời hiệu quả
           </h1>
-          <p className="mt-4 text-base text-white/75">
+          <p className={`mt-4 text-base ${light ? "text-muted" : "text-white/75"}`}>
             Solar Hub giúp bạn giám sát, quản lý và tối ưu hiệu suất hệ thống
             điện mặt trời mọi lúc, mọi nơi.
           </p>
 
           {/* Feature cards */}
           <div className="mt-8 space-y-4">
-            {FEATURES.map(({ icon: Icon, color, title, desc }) => (
+            {FEATURES.map(({ icon: Icon, tone, title, desc }) => (
               <div
                 key={title}
-                className="flex items-center gap-4 rounded-xl bg-white/10 p-4 backdrop-blur-sm"
+                className={[
+                  "flex items-center gap-4 rounded-xl p-4",
+                  light
+                    ? "border border-border bg-surface-raised"
+                    : "bg-white/10 backdrop-blur-sm",
+                ].join(" ")}
               >
                 <span
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${color}`}
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${chip[tone]}`}
                 >
                   <Icon size={20} />
                 </span>
                 <div>
-                  <p className="font-semibold text-white">{title}</p>
-                  <p className="text-sm text-white/65">{desc}</p>
+                  <p className={`font-semibold ${light ? "text-ink" : "text-white"}`}>{title}</p>
+                  <p className={`text-sm ${light ? "text-muted" : "text-white/65"}`}>{desc}</p>
                 </div>
               </div>
             ))}
@@ -197,7 +235,7 @@ export default function Login() {
                 <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
               </svg>
             }
-            className="flex items-center justify-center gap-2 border-border text-text hover:border-border-strong hover:bg-white/5"
+            className="flex items-center justify-center gap-2 border-border text-text hover:border-border-strong hover:bg-overlay/5"
             onClick={() => toast("Tính năng đăng nhập Google chưa khả dụng.", { icon: "ℹ️" })}
           >
             Đăng nhập với Google

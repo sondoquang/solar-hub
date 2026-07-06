@@ -119,7 +119,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
       {isCarousel && (
         <span
           key={safeIndex}
-          className="animate-order-next rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-blue-300"
+          className="animate-order-next rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-info"
         >
           Đơn {safeIndex + 1}/{count}
         </span>
@@ -194,7 +194,7 @@ export default function OrderDetailModal({ orders, open, onClose }) {
                     className={`rounded-full transition-all duration-200 ${
                       i === safeIndex
                         ? "h-2 w-5 bg-blue-500"
-                        : "h-2 w-2 bg-white/25 hover:scale-125 hover:bg-white/50"
+                        : "h-2 w-2 bg-overlay/25 hover:scale-125 hover:bg-overlay/40"
                     }`}
                   />
                 ))}

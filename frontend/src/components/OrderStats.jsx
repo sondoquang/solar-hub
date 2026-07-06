@@ -16,7 +16,7 @@ export default function OrderStats({ stats = {}, loading = false }) {
       label: "Tổng số đơn",
       value: (total).toLocaleString("vi-VN"),
       Icon: ShoppingCart,
-      tint: "bg-blue-500/15 text-blue-300",
+      tint: "bg-blue-500/15 text-info",
     },
     {
       key: "revenue",

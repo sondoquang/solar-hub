@@ -2,10 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useNavigate } from "react-router-dom";
 
 import { getMe, loginUser, refreshAccessToken } from "../api/auth.js";
+import { can } from "./permissions.js";
 
 const REFRESH_KEY = "solar_hub_refresh";
 
-const AuthContext = createContext(null);
+// Exported so tests can inject a restricted `hasPerm` via AuthContext.Provider.
+export const AuthContext = createContext(null);
 
 // Module-level ref so the axios interceptor can read the token without
 // needing to be inside a React component.
@@ -96,9 +98,23 @@ export function AuthProvider({ children }) {
   // Replace the cached user (e.g. after a profile update) so the UI reflects it.
   const updateUser = useCallback((next) => setUser(next), []);
 
+  // RBAC gate for the UI: hasPerm("orders.view_order") — superusers pass all.
+  // Permissions come from /auth/me/ and refresh on login/reload; the backend
+  // stays the real enforcement boundary.
+  const hasPerm = useCallback((...perms) => can(user, ...perms), [user]);
+
   return (
     <AuthContext.Provider
-      value={{ user, isAuthenticated: !!user, isLoading, login, logout, updateUser, silentRefresh }}
+      value={{
+        user,
+        isAuthenticated: !!user,
+        isLoading,
+        login,
+        logout,
+        updateUser,
+        silentRefresh,
+        hasPerm,
+      }}
     >
       {children}
     </AuthContext.Provider>
@@ -109,4 +125,13 @@ export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
   return ctx;
+}
+
+// Permission gate for hiding UI a user can't act on. Returns the `hasPerm`
+// function; safe to call outside AuthProvider (isolated component tests) where
+// it defaults to permissive — the app shell always wraps AuthProvider, so real
+// use always gets the true check, and the backend enforces regardless.
+export function useCan() {
+  const ctx = useContext(AuthContext);
+  return ctx?.hasPerm ?? (() => true);
 }

@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from django.core import mail
 from django.utils import timezone
@@ -51,6 +53,161 @@ def test_send_orders_email_builds_html_and_pdf(configured_settings):
     assert name.endswith(".pdf")
     assert mimetype == "application/pdf"
     assert content[:4] == b"%PDF"
+
+
+def _run_detail(**over):
+    """A minimal product_run_detail-shaped dict for the report email/xlsx."""
+    site = {
+        "site_id": 1,
+        "site_name": "A-Site",
+        "site_url": "https://a-site.example",
+        "hosting": "TenTen",
+        "hosting_name": "TenTen",
+        "hosting_username": "acc_01",
+        "status": "partial",
+        "error": "",
+        "created": 3,
+        "updated": 1,
+        "deleted": 0,
+        "planned": 4,
+        "adopted_count": 1,
+        "adopted": [],
+        "ambiguous": [],
+        "recreated_stale": 0,
+        "variations": {},
+        "failed": [
+            {"sku": "SP-1", "op": "create", "code": "x", "message": "boom", "kind": "error"}
+        ],
+        "created_at": timezone.now(),
+    }
+    detail = {
+        "run_id": "11111111-1111-1111-1111-111111111111",
+        "started_at": timezone.now(),
+        "site_count": 1,
+        "total_created": 3,
+        "total_updated": 1,
+        "total_deleted": 0,
+        "total_adopted": 1,
+        "total_failed": 1,
+        "error_count": 0,
+        "status": "partial",
+        "duration_seconds": 5,
+        "triggered_by": "Admin",
+        "site_label": None,
+        "meta": {"all_products": True},
+        "sites": [site],
+    }
+    detail.update(over)
+    return detail
+
+
+@pytest.mark.django_db
+def test_send_product_sync_report_builds_html_and_xlsx(configured_settings):
+    from apps.sync.services import build_product_run_workbook
+
+    detail = _run_detail()
+    xlsx = build_product_run_workbook(detail)
+    sent = services.send_product_sync_report(
+        detail, xlsx, recipients=["ops@example.com"], settings_obj=configured_settings
+    )
+
+    assert sent == 1
+    assert len(mail.outbox) == 1
+    msg = mail.outbox[0]
+    assert msg.to == ["ops@example.com"]
+    assert any(ct == "text/html" for _, ct in msg.alternatives)
+    # A single .xlsx attachment with the spreadsheet mimetype.
+    assert len(msg.attachments) == 1
+    name, content, mimetype = msg.attachments[0]
+    assert name.endswith(".xlsx")
+    assert mimetype == services.XLSX_CONTENT_TYPE
+    # A real zip-based xlsx starts with the PK signature.
+    assert content[:2] == b"PK"
+
+
+@pytest.mark.django_db
+def test_send_product_sync_report_requires_configuration():
+    with pytest.raises(services.MailNotConfigured):
+        services.send_product_sync_report(_run_detail(), b"x", recipients=["a@b.com"])
+
+
+@pytest.mark.django_db
+def test_send_product_sync_report_requires_recipients(configured_settings):
+    with pytest.raises(services.MailNotConfigured):
+        services.send_product_sync_report(
+            _run_detail(), b"x", recipients=[], settings_obj=configured_settings
+        )
+
+
+@pytest.mark.django_db
+def test_resolve_product_sync_recipients_prefers_dedicated_then_falls_back():
+    s = MailSettings.load()
+    s.recipients = ["digest@example.com"]
+    s.product_sync_recipients = []
+    s.save()
+    # Empty dedicated list → fall back to the order-digest recipients.
+    assert services.resolve_product_sync_recipients(s) == ["digest@example.com"]
+
+    s.product_sync_recipients = ["sync@example.com"]
+    s.save()
+    # Set → the dedicated list wins.
+    assert services.resolve_product_sync_recipients(s) == ["sync@example.com"]
+
+
+@pytest.mark.django_db
+def test_product_sync_report_task_sends_once_and_claims(configured_settings, monkeypatch):
+    from apps.sites.tests.factories import SiteFactory
+    from apps.sync.models import Notification, SyncLog
+    from apps.sync.tasks import send_product_sync_report_task
+
+    # The task closes its DB connection in a finally; no-op it so it doesn't tear
+    # down the test's wrapping transaction.
+    monkeypatch.setattr("apps.sync.tasks.connection.close", lambda: None)
+
+    configured_settings.product_sync_recipients = ["ops@example.com"]
+    configured_settings.save()
+
+    run_id = uuid.uuid4()
+    site = SiteFactory(name="A-Site")
+    SyncLog.objects.create(
+        site=site,
+        operation="push_products",
+        status=SyncLog.Status.SUCCESS,
+        run_id=run_id,
+        created_count=2,
+        detail={"site_name": site.name},
+    )
+    notif = Notification.objects.create(
+        run_id=run_id, operation="push_products", expected=1, summary={"all_products": True}
+    )
+
+    res = send_product_sync_report_task.apply(args=[str(run_id)]).get()
+    assert res["status"] == "sent"
+    assert len(mail.outbox) == 1
+    notif.refresh_from_db()
+    assert notif.report_emailed_at is not None
+
+    # Re-running is claimed out (already sent) — no duplicate email.
+    res2 = send_product_sync_report_task.apply(args=[str(run_id)]).get()
+    assert res2["status"] == "already_sent"
+    assert len(mail.outbox) == 1
+
+
+@pytest.mark.django_db
+def test_product_sync_report_task_skips_when_disabled(configured_settings, monkeypatch):
+    from apps.sync.models import Notification
+    from apps.sync.tasks import send_product_sync_report_task
+
+    monkeypatch.setattr("apps.sync.tasks.connection.close", lambda: None)
+    configured_settings.product_sync_report_enabled = False
+    configured_settings.save()
+
+    run_id = uuid.uuid4()
+    Notification.objects.create(run_id=run_id, operation="push_products", expected=1)
+
+    res = send_product_sync_report_task.apply(args=[str(run_id)]).get()
+    assert res["status"] == "disabled"
+    assert len(mail.outbox) == 0
 
 
 @pytest.mark.django_db

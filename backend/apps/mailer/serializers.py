@@ -23,6 +23,11 @@ class MailSettingsSerializer(serializers.ModelSerializer):
     recipients = serializers.ListField(
         child=serializers.EmailField(), required=False, allow_empty=True
     )
+    # Recipients of the product-sync report email (falls back to ``recipients``
+    # when empty — see apps.mailer.services.product_sync_recipients).
+    product_sync_recipients = serializers.ListField(
+        child=serializers.EmailField(), required=False, allow_empty=True
+    )
     # Daily send times ("HH:MM"); stored normalized (zero-padded, deduped, sorted).
     digest_times = serializers.ListField(
         child=serializers.CharField(), required=False, allow_empty=True
@@ -45,6 +50,8 @@ class MailSettingsSerializer(serializers.ModelSerializer):
             "from_email",
             "from_name",
             "recipients",
+            "product_sync_recipients",
+            "product_sync_report_enabled",
             "digest_enabled",
             "digest_times",
             "password",

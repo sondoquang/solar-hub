@@ -5,7 +5,7 @@ import { AlertCircle, CheckCircle2, Globe, XCircle } from "lucide-react";
 // page (container) and passed in, keeping this component logic-free. While
 // `loading` the values render as skeleton blocks instead of flashing 0.
 const CARDS = [
-  { key: "total", label: "Tổng website", Icon: Globe, tint: "bg-blue-500/15 text-blue-300" },
+  { key: "total", label: "Tổng website", Icon: Globe, tint: "bg-blue-500/15 text-info" },
   { key: "up", label: "Đang hoạt động", Icon: CheckCircle2, tint: "bg-green-500/15 text-success" },
   { key: "unknown", label: "Tạm dừng", Icon: AlertCircle, tint: "bg-amber-500/15 text-warning" },
   { key: "down", label: "Không hoạt động", Icon: XCircle, tint: "bg-red-500/15 text-danger" },

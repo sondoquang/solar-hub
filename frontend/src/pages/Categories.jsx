@@ -6,6 +6,7 @@ import toast from "react-hot-toast";
 
 import { useClearCategorySync, useSyncCategories } from "../api/products.js";
 import { useCategoryRun } from "../api/syncReports.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import CategoryOverviewTab from "../components/CategoryOverviewTab.jsx";
 import CategoryPullModal from "../components/CategoryPullModal.jsx";
 import CategorySyncHistoryTab from "../components/CategorySyncHistoryTab.jsx";
@@ -30,6 +31,8 @@ export default function Categories() {
   const qc = useQueryClient();
   const syncCategories = useSyncCategories();
   const clearCategories = useClearCategorySync();
+  const can = useCan();
+  const canPull = can("catalog.pull_category");
 
   // Poll the run report while a pull is in flight. The run 404s until the first
   // site's SyncLog row lands → retry:false keeps the interval polling instead of
@@ -150,17 +153,21 @@ export default function Categories() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            danger
-            icon={<Trash2 size={16} />}
-            loading={clearCategories.isPending}
-            onClick={confirmClear}
-          >
-            Xóa toàn bộ danh mục đồng bộ
-          </Button>
-          <Button type="primary" icon={<RefreshCw size={16} />} onClick={() => setPullOpen(true)}>
-            Đồng bộ danh mục
-          </Button>
+          {can("catalog.delete_category") && (
+            <Button
+              danger
+              icon={<Trash2 size={16} />}
+              loading={clearCategories.isPending}
+              onClick={confirmClear}
+            >
+              Xóa toàn bộ danh mục đồng bộ
+            </Button>
+          )}
+          {canPull && (
+            <Button type="primary" icon={<RefreshCw size={16} />} onClick={() => setPullOpen(true)}>
+              Đồng bộ danh mục
+            </Button>
+          )}
         </div>
       </div>
 

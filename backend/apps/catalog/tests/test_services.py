@@ -17,7 +17,7 @@ from apps.catalog.tests.factories import (
     MasterProductFactory,
     ProductMappingFactory,
 )
-from apps.sites.tests.factories import SiteFactory
+from apps.sites.tests.factories import HostingFactory, SiteFactory
 from apps.sync.models import SyncLog
 
 
@@ -90,7 +90,9 @@ class _FakeClient:
         out = []
         for img in images or []:
             if img.get("id"):
-                out.append({"id": img["id"], "src": f"https://site.example/uploads/keep-{img['id']}.png"})
+                out.append(
+                    {"id": img["id"], "src": f"https://site.example/uploads/keep-{img['id']}.png"}
+                )
             elif img.get("src"):
                 mid = self._next_media_id
                 self._next_media_id += 1
@@ -999,7 +1001,9 @@ def test_clear_category_sync_soft_deletes_history():
     """The pull history is soft-deleted (rows kept, but hidden from the report)."""
     site = SiteFactory()
     SyncLog.objects.create(
-        site=site, operation="pull_categories", status=SyncLog.Status.SUCCESS,
+        site=site,
+        operation="pull_categories",
+        status=SyncLog.Status.SUCCESS,
         run_id=uuid.uuid4(),
     )
     # An unrelated operation is left untouched.
@@ -1032,8 +1036,14 @@ def test_pull_revives_soft_deleted_category(monkeypatch):
 
 @pytest.mark.django_db
 def test_product_sync_status_lists_all_sites(monkeypatch):
-    synced_site = SiteFactory(name="A-Site", base_url="https://a-site.example.com", is_primary=True)
-    SiteFactory(name="B-Site")  # active, not synced
+    hosting = HostingFactory(account_username="sondo_01")
+    synced_site = SiteFactory(
+        name="A-Site",
+        base_url="https://a-site.example.com",
+        is_primary=True,
+        hosting=hosting,
+    )
+    SiteFactory(name="B-Site")  # active, not synced, no hosting
     master = MasterProductFactory(sku="SP-1")
     ProductMappingFactory(master=master, site=synced_site, woo_product_id=321)
 
@@ -1044,9 +1054,13 @@ def test_product_sync_status_lists_all_sites(monkeypatch):
     assert by_name["A-Site"]["woo_product_id"] == 321
     assert by_name["A-Site"]["site_url"] == "https://a-site.example.com"
     assert by_name["A-Site"]["is_primary"] is True
+    assert by_name["A-Site"]["hosting_id"] == hosting.id
+    assert by_name["A-Site"]["hosting_username"] == "sondo_01"
     assert by_name["B-Site"]["synced"] is False
     assert by_name["B-Site"]["woo_product_id"] is None
     assert by_name["B-Site"]["is_primary"] is False
+    assert by_name["B-Site"]["hosting_id"] is None
+    assert by_name["B-Site"]["hosting_username"] == ""
 
 
 # --- stale mapping self-heal (product deleted on the site outside the Hub) ----

@@ -10,6 +10,7 @@ import {
   useSiteNotes,
   useUpdateSiteNote,
 } from "../api/siteNotes.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import { formatDate } from "../lib/format.js";
 import ErrorState from "./ErrorState.jsx";
 import RichTextEditor from "./RichTextEditor.jsx";
@@ -39,6 +40,10 @@ export default function SiteNotesModal({ site, open, onClose }) {
   const createNote = useCreateSiteNote(siteId);
   const updateNote = useUpdateSiteNote(siteId);
   const deleteNote = useDeleteSiteNote(siteId);
+  const can = useCan();
+  const canAdd = can("sites.add_sitenote");
+  const canChange = can("sites.change_sitenote");
+  const canDelete = can("sites.delete_sitenote");
 
   const notes = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -124,7 +129,9 @@ export default function SiteNotesModal({ site, open, onClose }) {
 
   return (
     <Modal open={open} onCancel={onClose} footer={null} title={title} width={720} destroyOnHidden>
-      {/* Composer (add / edit) */}
+      {/* Composer (add / edit) — only for users who can add, or while editing an
+          existing note (edit is reachable only via the change-gated pencil). */}
+      {(canAdd || editingNote) && (
       <div className="mb-4 rounded-lg border border-border bg-surface-muted p-3">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-medium">
@@ -190,6 +197,7 @@ export default function SiteNotesModal({ site, open, onClose }) {
           </Button>
         </div>
       </div>
+      )}
 
       {/* History (newest first) */}
       <div className="mb-2 flex items-center justify-between">
@@ -212,7 +220,7 @@ export default function SiteNotesModal({ site, open, onClose }) {
               <div className="mb-1.5 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-xs text-muted">
                   {page === 1 && idx === 0 && (
-                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-semibold text-amber-300">
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-semibold text-warning">
                       Mới nhất
                     </span>
                   )}
@@ -220,20 +228,24 @@ export default function SiteNotesModal({ site, open, onClose }) {
                   <span className="tabular-nums">{formatDate(note.created_at)}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<Pencil size={14} />}
-                    onClick={() => startEdit(note)}
-                  />
-                  <Popconfirm
-                    title="Xóa ghi chú này?"
-                    okText="Xóa"
-                    cancelText="Hủy"
-                    onConfirm={() => handleDelete(note)}
-                  >
-                    <Button size="small" type="text" danger icon={<Trash2 size={14} />} />
-                  </Popconfirm>
+                  {canChange && (
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<Pencil size={14} />}
+                      onClick={() => startEdit(note)}
+                    />
+                  )}
+                  {canDelete && (
+                    <Popconfirm
+                      title="Xóa ghi chú này?"
+                      okText="Xóa"
+                      cancelText="Hủy"
+                      onConfirm={() => handleDelete(note)}
+                    >
+                      <Button size="small" type="text" danger icon={<Trash2 size={14} />} />
+                    </Popconfirm>
+                  )}
                 </div>
               </div>
 

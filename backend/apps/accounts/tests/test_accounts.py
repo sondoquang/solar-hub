@@ -31,6 +31,9 @@ def test_me_returns_profile_with_role(client, user):
         "email": "alice@example.com",
         "full_name": "Alice Nguyen",
         "role": "Người dùng",
+        "is_superuser": False,
+        "groups": [],
+        "permissions": [],
     }
 
 

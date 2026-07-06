@@ -17,6 +17,7 @@ import httpx
 from django.conf import settings
 from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from apps.sync.models import SyncLog
 
@@ -572,9 +573,7 @@ def _adopt_by_name(site, client, masters) -> dict:
 
     # Woo ids already owned by a mapping on this site must never be adopted again
     # (the ``(site, woo_product_id)`` unique constraint; another master owns it).
-    claimed = set(
-        ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True)
-    )
+    claimed = set(ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True))
     scans: list = []
     for master in to_scan:
         key = normalize_match_name(master.match_name or master.name)
@@ -960,6 +959,65 @@ def _sideload_description_images(site, client, masters, image_ids_by_woo_id, med
     return {"uploaded": uploaded, "products": len(pending), "skipped": skipped}
 
 
+def _reresolve_stale_products(site, client, stale_items) -> tuple[list, list]:
+    """Re-match stale-update items to a still-existing site product before create.
+
+    A mapping's ``woo_product_id`` came back ``woocommerce_rest_product_invalid_id``
+    on update, so the mapping was dropped. RE-CREATING blindly duplicates a product
+    that in fact still exists on the site under a *different* (or again-valid) id —
+    e.g. the product was deleted+re-added on the site (new id) but the Hub's edit
+    (rename / new sale price) still targets the old id. To avoid the duplicate,
+    list the site ONCE and match each item to a live product:
+
+      1. by normalized **SKU** (unique per site) — survives a rename; then
+      2. by the master's frozen **match_name** (import-time name, falling back to
+         the current name) — survives an edit when the product carries no SKU.
+
+    A unique, unclaimed match becomes an UPDATE against that id (and is remapped by
+    ``_save_mappings``); everything unmatched is a create (the product is genuinely
+    gone — the original self-heal). Returns ``(updates, creates)`` where ``updates``
+    are ``{"id": found_id, **item}``. A network error listing the site propagates
+    to the caller's ``httpx.HTTPError`` handler, like the rest of the push.
+    """
+    # Map each stale item to its master (by SKU) so the name match can use the
+    # frozen match_name — the site product still shows the pre-rename name.
+    skus = [normalize_sku(it.get("sku", "")) for it in stale_items if it.get("sku")]
+    master_by_sku = {m.sku: m for m in MasterProduct.objects.filter(sku__in=skus)}
+
+    by_sku: dict = {}
+    by_name: dict = {}
+    for p in client.list_products():
+        woo_id = p.get("id")
+        if not woo_id:
+            continue
+        site_sku = normalize_sku(p.get("sku", ""))
+        if site_sku:
+            by_sku.setdefault(site_sku, []).append(woo_id)
+        site_name = normalize_match_name(p.get("name", ""))
+        if site_name:
+            by_name.setdefault(site_name, []).append(woo_id)
+
+    # Woo ids already owned by a mapping on this site must not be re-adopted (the
+    # (site, woo_product_id) unique constraint; another master owns them).
+    claimed = set(ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True))
+    updates, creates = [], []
+    for item in stale_items:
+        sku = normalize_sku(item.get("sku", ""))
+        ids = [i for i in by_sku.get(sku, []) if i not in claimed] if sku else []
+        if len(ids) != 1:
+            master = master_by_sku.get(sku)
+            key = normalize_match_name(
+                (master.match_name or master.name) if master else item.get("name", "")
+            )
+            ids = [i for i in by_name.get(key, []) if i not in claimed] if key else []
+        if len(ids) == 1:
+            claimed.add(ids[0])
+            updates.append({"id": ids[0], **item})
+        else:
+            creates.append(item)
+    return updates, creates
+
+
 def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=None) -> dict:
     """Push products to one WooCommerce site; the core of the "Sync all".
 
@@ -1133,11 +1191,14 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
     # the description-image sideload can keep those images by id and only append
     # the new ones. Saves a GET per product for everything pushed this run.
     image_ids_by_woo_id: dict = {}
-    # Updates rejected because the woo id no longer exists (product deleted on
-    # the site outside the Hub, e.g. via wp-admin): the mapping is stale. Heal
-    # in this same run — drop the mapping and re-push the item as a create.
+    # Updates rejected because the woo id no longer resolves (product deleted or
+    # re-added on the site outside the Hub): the mapping is stale. Heal in this
+    # same run — drop the mapping, RE-RESOLVE the product on the site by SKU/name
+    # (so an edit does not duplicate a product that merely got a new id), and only
+    # re-create the ones truly gone. ``stale_reresolved`` counts the re-matched.
     stale_creates: list = []
     stale_woo_ids: list = []
+    stale_reresolved = 0
     # Items Woo rejected because it could not sideload a product image: re-pushed
     # WITHOUT images so the rest of the write lands. ``image_skipped`` = their SKUs.
     image_retry: list = []  # [("create"|"update", payload-without-images)]
@@ -1211,7 +1272,7 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
 
         if stale_creates:
             logger.warning(
-                "push_products site_id=%s: %s stale mapping(s), re-creating",
+                "push_products site_id=%s: %s stale mapping(s), re-resolving",
                 site.id,
                 len(stale_creates),
             )
@@ -1219,6 +1280,20 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
                 site=site, woo_parent_id__in=stale_woo_ids
             ).delete()
             ProductMapping.objects.filter(site=site, woo_product_id__in=stale_woo_ids).delete()
+            # Re-match to a still-existing site product first (by SKU, then the
+            # frozen match_name) so an edit does not duplicate a product that
+            # merely got a new id; only the genuinely-gone ones are re-created.
+            stale_updates, stale_creates = _reresolve_stale_products(site, client, stale_creates)
+            stale_reresolved = len(stale_updates)
+            for chunk in _chunked(stale_updates, limit):
+                if throttle:
+                    time.sleep(throttle)
+                resp = client.batch_products(update=chunk)
+                resp_update = resp.get("update") or []
+                _save_mappings(site, resp_update)
+                _collect_image_ids(image_ids_by_woo_id, resp_update)
+                updated += sum(1 for it in resp_update if it.get("id") and not it.get("error"))
+                failures += _collect_batch_failures(chunk, resp_update, "update")
             for chunk in _chunked(stale_creates, limit):
                 if throttle:
                     time.sleep(throttle)
@@ -1315,6 +1390,9 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             # Products re-created because their mapping pointed at a woo id
             # that no longer exists (deleted on the site outside the Hub).
             "recreated_stale": len(stale_creates),
+            # Stale mappings re-matched to a still-existing site product (by SKU
+            # or frozen match_name) and UPDATED in place instead of duplicated.
+            "stale_reresolved": stale_reresolved,
             # SKUs pushed WITHOUT their image because Woo could not sideload it
             # (URL unreachable from the site) — re-host the image to fix.
             "image_skipped": image_skipped,
@@ -1379,8 +1457,9 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
 
     mapping_by_site = {m.site_id: m for m in master.mappings.all()}
     rows = []
-    for site in Site.objects.filter(is_deleted=False).order_by("name"):
+    for site in Site.objects.filter(is_deleted=False).select_related("hosting").order_by("name"):
         mapping = mapping_by_site.get(site.id)
+        hosting = site.hosting
         rows.append(
             {
                 "site_id": site.id,
@@ -1389,6 +1468,11 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
                 "site_status": site.status,
                 "platform": site.platform,
                 "is_primary": site.is_primary,
+                # Hosting account the site lives on: many hostings share a name,
+                # so the panel filters/labels by account_username (fall back to
+                # the hosting name only when the username is blank).
+                "hosting_id": site.hosting_id,
+                "hosting_username": ((hosting.account_username or hosting.name) if hosting else ""),
                 "synced": mapping is not None,
                 "woo_product_id": mapping.woo_product_id if mapping else None,
                 "last_synced_at": mapping.last_synced_at if mapping else None,
@@ -1401,13 +1485,19 @@ def product_sync_status(master: MasterProduct) -> list[dict]:
 
 
 def _site_snapshot(site) -> dict:
-    """SyncLog.detail keys naming the site at pull time, so the category-run
-    report survives a later site delete (``SyncLog.site`` is SET_NULL)."""
+    """SyncLog.detail keys naming the site at pull time, so the category-/product-run
+    report survives a later site delete (``SyncLog.site`` is SET_NULL).
+
+    ``hosting_name``/``hosting_username`` are snapshotted separately (not just the
+    combined ``hosting`` label) so the product-sync report can group sites by
+    hosting and show the account username even after the site/hosting is gone."""
     hosting = site.hosting
     return {
         "site_name": site.name,
         "site_url": site.base_url,
         "hosting": (hosting.provider or hosting.name) if hosting else "",
+        "hosting_name": hosting.name if hosting else "",
+        "hosting_username": (hosting.account_username or "") if hosting else "",
     }
 
 
@@ -1607,17 +1697,13 @@ def clear_category_sync_data() -> dict:
 
     with transaction.atomic():
         # 3. Soft-delete every live category not protected.
-        categories_cleared = (
-            Category.objects.filter(id__in=cleared_ids, is_deleted=False).update(
-                is_deleted=True
-            )
+        categories_cleared = Category.objects.filter(id__in=cleared_ids, is_deleted=False).update(
+            is_deleted=True
         )
         # 4. Drop the cleared categories' mappings (no soft-delete flag on the
         #    mapping; a re-pull rebuilds mappings wholesale per site). Kept
         #    categories keep their mappings.
-        mappings_cleared, _ = CategoryMapping.objects.filter(
-            category_id__in=cleared_ids
-        ).delete()
+        mappings_cleared, _ = CategoryMapping.objects.filter(category_id__in=cleared_ids).delete()
         # 5. Soft-delete the category pull history so the report starts fresh.
         history_cleared = SyncLog.objects.filter(
             operation=CATEGORY_OPERATION, is_deleted=False
@@ -1629,6 +1715,115 @@ def clear_category_sync_data() -> dict:
         "mappings_cleared": mappings_cleared,
         "history_cleared": history_cleared,
     }
+
+
+# --- Hub-side category CRUD (the tree management surface) --------------------
+# Categories used to enter the Hub only via a pull from the sites
+# (``pull_categories_for_site``). These helpers let the Hub be the origin too:
+# create/rename/move/soft-delete a category, building the parent–child tree by
+# hand (like WooCommerce). A Hub-created category has no ``CategoryMapping`` yet;
+# it flows down to a site lazily — ``_ensure_site_categories`` creates the term
+# there the first time a product carrying that category name is pushed.
+
+
+def _would_create_cycle(category_id: int, new_parent_id: int | None) -> bool:
+    """True if making ``new_parent_id`` the parent of ``category_id`` would form
+    a cycle (i.e. the proposed parent is the category itself or a descendant).
+
+    Walks up the proposed parent's ancestor chain over a single {id: parent_id}
+    map of the live tree; a category cannot be nested under its own subtree.
+    """
+    if new_parent_id is None:
+        return False
+    parent_by_id = dict(Category.objects.filter(is_deleted=False).values_list("id", "parent_id"))
+    node = new_parent_id
+    seen: set[int] = set()
+    while node is not None and node not in seen:
+        if node == category_id:
+            return True
+        seen.add(node)
+        node = parent_by_id.get(node)
+    return False
+
+
+def create_category(name: str, parent=None, slug: str = "") -> Category:
+    """Create a Hub category under ``parent`` (null = a root of the tree).
+
+    ``name`` is normalized (``normalize_category_name``) and must be unique among
+    LIVE categories. A name that only collides with a SOFT-DELETED row revives
+    that row (instead of failing the DB-level UNIQUE, which spans soft-deleted
+    rows) — mirroring the revive-by-name in ``pull_categories_for_site``.
+    """
+    clean = normalize_category_name(name)
+    if not clean:
+        raise ValidationError({"name": "Tên danh mục không được để trống."})
+    if parent is not None and parent.is_deleted:
+        raise ValidationError({"parent": "Danh mục cha không hợp lệ."})
+    existing = Category.objects.filter(name=clean).first()
+    if existing is not None:
+        if not existing.is_deleted:
+            raise ValidationError({"name": f"Danh mục đã tồn tại: {clean}"})
+        existing.is_deleted = False
+        existing.slug = slug or existing.slug
+        existing.parent = parent
+        existing.save(update_fields=["is_deleted", "slug", "parent", "updated_at"])
+        return existing
+    return Category.objects.create(name=clean, slug=slug, parent=parent)
+
+
+def update_category(category, changes: dict) -> Category:
+    """Apply a partial update to a category (rename / re-slug / move parent).
+
+    Only the keys present in ``changes`` are touched (PATCH semantics). Renames
+    re-check uniqueness (a collision with a soft-deleted row is reported rather
+    than silently clobbering the UNIQUE); a parent change is guarded against
+    cycles by ``_would_create_cycle``.
+    """
+    update_fields = ["updated_at"]
+    if "name" in changes:
+        clean = normalize_category_name(changes["name"])
+        if not clean:
+            raise ValidationError({"name": "Tên danh mục không được để trống."})
+        clash = Category.objects.exclude(pk=category.pk).filter(name=clean).first()
+        if clash is not None:
+            if clash.is_deleted:
+                raise ValidationError(
+                    {"name": f"Tên trùng danh mục đã xóa: {clean}. Khôi phục hoặc chọn tên khác."}
+                )
+            raise ValidationError({"name": f"Danh mục đã tồn tại: {clean}"})
+        category.name = clean
+        update_fields.append("name")
+    if "slug" in changes:
+        category.slug = changes["slug"] or ""
+        update_fields.append("slug")
+    if "parent" in changes:
+        new_parent = changes["parent"]
+        if new_parent is not None:
+            if new_parent.is_deleted:
+                raise ValidationError({"parent": "Danh mục cha không hợp lệ."})
+            if new_parent.id == category.id or _would_create_cycle(category.id, new_parent.id):
+                raise ValidationError({"parent": "Không thể đặt danh mục làm con của chính nó."})
+        category.parent = new_parent
+        update_fields.append("parent")
+    category.save(update_fields=update_fields)
+    return category
+
+
+def delete_category(category) -> None:
+    """Soft-delete a category, promoting its direct children to its own parent.
+
+    Like WooCommerce, a deleted category's children move UP (to the grandparent,
+    or become roots when the deleted node was a root) instead of being orphaned —
+    the FE tree drops any node whose parent is soft-deleted, so the children must
+    be reparented to stay visible. Category has no ``deleted_at`` field (only the
+    ``is_deleted`` flag, same as ``clear_category_sync_data``).
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        Category.objects.filter(parent=category, is_deleted=False).update(parent=category.parent)
+        category.is_deleted = True
+        category.save(update_fields=["is_deleted", "updated_at"])
 
 
 def pull_categories_for_site(site, run_id=None, triggered_by_id=None) -> dict:
@@ -1804,14 +1999,10 @@ def _master_fields_from_remote(item: dict, sku: str, site, now) -> dict:
         stock = MasterProduct.StockStatus.INSTOCK
     regular = _to_decimal(item.get("regular_price"))
     images = [
-        img["src"]
-        for img in (item.get("images") or [])
-        if isinstance(img, dict) and img.get("src")
+        img["src"] for img in (item.get("images") or []) if isinstance(img, dict) and img.get("src")
     ]
     categories = [
-        c["name"]
-        for c in (item.get("categories") or [])
-        if isinstance(c, dict) and c.get("name")
+        c["name"] for c in (item.get("categories") or []) if isinstance(c, dict) and c.get("name")
     ]
     return {
         "sku": sku,
@@ -1995,9 +2186,7 @@ def _internalize_imported_media(fields: dict, cache: dict) -> dict:
     """In-place: replace an imported master's remote image references (gallery +
     description HTML) with Hub-hosted copies, so a later push to OTHER sites
     serves them from the Hub instead of the (often unreachable) source site."""
-    fields["images"] = [
-        _internalize_remote_image(u, cache) for u in (fields.get("images") or [])
-    ]
+    fields["images"] = [_internalize_remote_image(u, cache) for u in (fields.get("images") or [])]
     fields["description"] = _internalize_html_images(fields.get("description", ""), cache)
     fields["short_description"] = _internalize_html_images(
         fields.get("short_description", ""), cache
@@ -2010,36 +2199,47 @@ def _import_image_workers() -> int:
     return max(1, getattr(settings, "PRODUCT_IMPORT_IMAGE_WORKERS", 4))
 
 
+def _import_match_by_name_enabled() -> bool:
+    """Whether import LINKS a product to an existing master by normalized name when
+    no SKU matches (SKUs are often inconsistent/missing across sites, so name is the
+    only reliable cross-site key). See ``import_products_from_site``."""
+    return bool(getattr(settings, "PRODUCT_IMPORT_MATCH_BY_NAME", True))
+
+
 def _remote_image_urls(item: dict) -> list[str]:
     """Every image src a remote product references: gallery + description ``<img>``.
 
     Raw srcs (pre-normalization); the caller applies the same normalize/guard as
     ``_internalize_remote_image`` before deciding what to download."""
     urls = [
-        img["src"]
-        for img in (item.get("images") or [])
-        if isinstance(img, dict) and img.get("src")
+        img["src"] for img in (item.get("images") or []) if isinstance(img, dict) and img.get("src")
     ]
     for html in (item.get("description") or "", item.get("short_description") or ""):
         urls += [m.group("src") for m in _IMG_SRC_RE.finditer(html)]
     return urls
 
 
-def _prefetch_import_images(site, products, mapped_woo_ids, media_cache) -> None:
+def _prefetch_import_images(
+    site, products, mapped_woo_ids, media_cache, existing_names=None
+) -> None:
     """Warm ``media_cache`` by downloading (CONCURRENTLY) every remote image a
     NEW master would internalize, so the per-item internalize in the import loop
     is a pure cache lookup instead of a serial network call.
 
     Only items that will CREATE a master are considered — importable type, not
-    already mapped, and no live master with the same SKU (those LINK and reuse
-    the existing master's Hub images). Unique remote http(s) srcs (Hub/relative/
-    data URLs skipped, same guard as ``_internalize_remote_image``) are fetched
-    with a bounded ``ThreadPoolExecutor`` (network only — no ORM in the threads),
-    then stored SEQUENTIALLY on the main thread so DB writes stay single-threaded.
-    ``media_cache`` ends up ``{normalized_url: hub_url or original_url}``, the
-    exact shape ``_internalize_remote_image`` reads back (it normalizes before
-    the cache lookup), so a failed download stays a hot-link and is counted.
+    already mapped, no live master with the same SKU, and (when name matching is
+    on) no live master with the same normalized NAME (those LINK and reuse the
+    existing master's Hub images). ``existing_names`` is the set of normalized
+    match-names of live masters (``None``/empty = name matching off). Unique remote
+    http(s) srcs (Hub/relative/data URLs skipped, same guard as
+    ``_internalize_remote_image``) are fetched with a bounded ``ThreadPoolExecutor``
+    (network only — no ORM in the threads), then stored SEQUENTIALLY on the main
+    thread so DB writes stay single-threaded. ``media_cache`` ends up
+    ``{normalized_url: hub_url or original_url}``, the exact shape
+    ``_internalize_remote_image`` reads back (it normalizes before the cache
+    lookup), so a failed download stays a hot-link and is counted.
     """
+    existing_names = existing_names or set()
     # SKUs that would CREATE a new master (skip the loop's non-create items).
     new_items: list[dict] = []
     real_skus: list[str] = []
@@ -2067,7 +2267,9 @@ def _prefetch_import_images(site, products, mapped_woo_ids, media_cache) -> None
     for item in new_items:
         sku = normalize_sku(item.get("sku", ""))
         if sku and sku in existing_skus:
-            continue  # links to an existing master → reuses its Hub images
+            continue  # links to an existing master by SKU → reuses its Hub images
+        if existing_names and normalize_match_name(item.get("name", "")) in existing_names:
+            continue  # will likely LINK by name → reuses the existing master's images
         for raw in _remote_image_urls(item):
             url = _normalize_remote_image_url(raw)
             if not url or _is_hub_media_url(url) or not url.startswith(("http://", "https://")):
@@ -2095,11 +2297,19 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
     website chính về" bootstrap).
 
     Mirrors ``pull_categories_for_site``: builds the client, lists every product,
-    and for each SIMPLE product either LINKS it to an existing master with the
-    same SKU (create the mapping only) or CREATES a new master — freezing the
-    site name into ``match_name`` (the name-match key a later push adopts by) and
-    stamping ``source_site``/``imported_at``. The new/linked master is mapped to
-    the site so a later push UPDATEs it instead of duplicating. ``variable`` /
+    and for each SIMPLE product either LINKS it to an existing master or CREATES a
+    new one — freezing the site name into ``match_name`` and stamping
+    ``source_site``/``imported_at``. **Matching is SKU-first, then NAME:** an exact
+    normalized-SKU match links; otherwise (when ``PRODUCT_IMPORT_MATCH_BY_NAME``,
+    default on) a UNIQUE normalized-name match links too — so two sites carrying the
+    same products under inconsistent/missing SKUs converge onto ONE master instead
+    of duplicating (``linked_by_name`` counts these). A master already mapped to
+    THIS site is excluded from name matching, so two products of one site never
+    collapse onto one master (which would clobber a ``(master, site)`` mapping);
+    >1 candidate is ambiguous → a new master is created and ``name_ambiguous`` is
+    reported (never a silent wrong merge). Linking never overwrites the master's
+    data — only a mapping is added. The new/linked master is mapped to the site so
+    a later push UPDATEs it instead of duplicating. ``variable`` /
     ``grouped`` / ``external`` products are NOT imported (v1: pushing a
     half-defined master of those types would degrade the site product) — they are
     counted in ``skipped`` / ``skipped_types`` so the report names what needs
@@ -2141,18 +2351,38 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
         return {"site_id": site.id, "imported": 0, "error": exc.__class__.__name__}
 
     created = linked = skipped = 0
+    linked_by_name = name_ambiguous = 0
     skipped_types: dict = {}
     # woo ids already mapped on this site → idempotent skip on re-import.
     mapped_woo_ids = set(
         ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True)
     )
     now = timezone.now()
+
+    # Name-match fallback: SKUs are often inconsistent/missing across sites, so a
+    # product with no SKU match LINKs to an existing master by normalized name.
+    # Index live masters by their match key (frozen import name, else name); track
+    # masters already mapped to THIS site so two products of one site can never
+    # collapse onto one master (which would clobber a (master, site) mapping).
+    match_by_name = _import_match_by_name_enabled()
+    name_index: dict = {}  # normalized name → [master_id, ...]
+    if match_by_name:
+        for m in MasterProduct.objects.filter(is_deleted=False).values("id", "match_name", "name"):
+            key = normalize_match_name(m["match_name"] or m["name"])
+            if key:
+                name_index.setdefault(key, []).append(m["id"])
+    existing_names = set(name_index)
+    mapped_master_ids = set(
+        ProductMapping.objects.filter(site=site).values_list("master_id", flat=True)
+    )
+
     internalize = _internalize_imported_images_enabled()
     media_cache: dict = {}  # remote src → Hub url, deduped across this run
     # Download all new masters' images concurrently up front so the loop below
-    # only reads the warmed cache (no serial per-image network call).
+    # only reads the warmed cache (no serial per-image network call). Items that
+    # will LINK (by SKU or name) are skipped — they reuse the master's Hub images.
     if internalize:
-        _prefetch_import_images(site, products, mapped_woo_ids, media_cache)
+        _prefetch_import_images(site, products, mapped_woo_ids, media_cache, existing_names)
     for item in products:
         woo_id = item.get("id")
         if not woo_id:
@@ -2167,9 +2397,22 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
             continue
         sku = normalize_sku(item.get("sku", "")) or f"IMPORT-{site.id}-{woo_id}"
         master = MasterProduct.objects.filter(sku=sku, is_deleted=False).first()
+        matched_by_name = False
+        # SKU is the primary cross-site key; when it does not match, fall back to
+        # the normalized NAME. Only a UNIQUE match links; a master already mapped
+        # to THIS site is excluded (no same-site collapse); >1 candidate is
+        # ambiguous → create a new master and report it (never silently merge).
+        if master is None and match_by_name:
+            key = normalize_match_name(item.get("name", ""))
+            candidates = [mid for mid in name_index.get(key, []) if mid not in mapped_master_ids]
+            if len(candidates) == 1:
+                master = MasterProduct.objects.filter(id=candidates[0]).first()
+                matched_by_name = master is not None
+            elif len(candidates) > 1:
+                name_ambiguous += 1
         # Internalize images BEFORE opening the transaction — downloading remote
         # files must not hold a DB transaction open. Only a NEW master needs it;
-        # linking to an existing SKU reuses that master's (already-Hub) images.
+        # linking (by SKU or name) reuses that master's (already-Hub) images.
         fields = None
         if master is None:
             fields = _master_fields_from_remote(item, sku, site, now)
@@ -2179,13 +2422,19 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
             if master is None:
                 master = MasterProduct.objects.create(**fields)
                 created += 1
+                new_key = normalize_match_name(master.match_name or master.name)
+                if new_key:
+                    name_index.setdefault(new_key, []).append(master.id)
             else:
                 linked += 1
+                if matched_by_name:
+                    linked_by_name += 1
             ProductMapping.objects.update_or_create(
                 master=master,
                 site=site,
                 defaults={"woo_product_id": woo_id, "last_synced_at": now},
             )
+        mapped_master_ids.add(master.id)
         mapped_woo_ids.add(woo_id)
 
     # media_cache holds one entry per remote image we attempted (Hub URLs are not
@@ -2203,6 +2452,11 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
             "imported": created + linked,
             "created": created,
             "linked": linked,
+            # Of ``linked``, how many matched by NAME (not SKU) — visibility into
+            # the cross-site name-merge; ``name_ambiguous`` = products left as a
+            # new master because >1 existing master shared the name (need a human).
+            "linked_by_name": linked_by_name,
+            "name_ambiguous": name_ambiguous,
             "skipped": skipped,
             "skipped_types": skipped_types,
             "images_internalized": images_internalized,
@@ -2216,6 +2470,8 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
         "imported": created + linked,
         "created": created,
         "linked": linked,
+        "linked_by_name": linked_by_name,
+        "name_ambiguous": name_ambiguous,
         "skipped": skipped,
         "images_internalized": images_internalized,
         "image_download_failures": image_download_failures,

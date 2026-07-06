@@ -61,9 +61,7 @@ def test_adopt_falls_back_to_name_when_no_match_name(monkeypatch):
     """A hand-created master (blank match_name) adopts by its ``name``."""
     site = SiteFactory()
     master = MasterProductFactory(sku="SP-1", name="Inverter 5kW", match_name="", categories=[])
-    fake = _FakeClient(
-        products=[{"id": 42, "name": "INVERTER 5KW", "sku": "X", "type": "simple"}]
-    )
+    fake = _FakeClient(products=[{"id": 42, "name": "INVERTER 5KW", "sku": "X", "type": "simple"}])
     _patch_client(monkeypatch, fake)
 
     services.push_products_to_site(site, masters=[master])
@@ -76,9 +74,7 @@ def test_adopt_not_found_creates_as_before(monkeypatch):
     """No name match on the site → the master is created (regression-safe)."""
     site = SiteFactory()
     master = MasterProductFactory(sku="SP-1", match_name="Khác Hẳn", categories=[])
-    fake = _FakeClient(
-        products=[{"id": 7, "name": "Hoàn toàn khác", "sku": "Y", "type": "simple"}]
-    )
+    fake = _FakeClient(products=[{"id": 7, "name": "Hoàn toàn khác", "sku": "Y", "type": "simple"}])
     _patch_client(monkeypatch, fake)
 
     result = services.push_products_to_site(site, masters=[master])
@@ -247,6 +243,86 @@ def test_adopt_http_error_logs_and_returns(monkeypatch):
     assert SyncLog.objects.get(site=site).status == SyncLog.Status.ERROR
 
 
+# --- stale-id re-resolve (product re-added on the site under a new id) --------
+# A mapped product whose woo id no longer resolves (deleted + re-added on the
+# site outside the Hub, so it now has a NEW id) used to be re-CREATED blindly —
+# duplicating the product the user still sees. The heal now re-matches it on the
+# site first (by SKU, then the frozen match_name) and UPDATES in place.
+
+
+@pytest.mark.django_db
+def test_stale_update_reresolves_by_sku_instead_of_duplicating(monkeypatch, settings):
+    """Update rejected invalid_id, but a live site product has the same SKU under
+    a new id → re-matched and UPDATED (no duplicate create)."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", name="Đổi tên rồi", categories=[])
+    ProductMappingFactory(master=master, site=site, woo_product_id=555)
+    # 555 is gone; the same product now lives at 777 (same SKU, any name).
+    fake = _FakeClient(
+        stale_woo_ids={555},
+        products=[{"id": 777, "name": "khác hẳn", "sku": "SP-1", "type": "simple"}],
+    )
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["created"] == 0 and result["updated"] == 1
+    assert ProductMapping.objects.get(master=master, site=site).woo_product_id == 777
+    log = SyncLog.objects.get(site=site)
+    assert log.detail["stale_reresolved"] == 1
+    assert log.detail["recreated_stale"] == 0
+    assert log.detail["failed"] == []
+
+
+@pytest.mark.django_db
+def test_stale_update_reresolves_by_match_name_after_rename(monkeypatch, settings):
+    """A no-SKU import that was renamed in the Hub: SKU cannot match (site product
+    has no SKU), but the frozen match_name still equals the site product's name →
+    re-matched by name and UPDATED, not duplicated."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    master = MasterProductFactory(
+        sku="IMPORT-9-11",  # synthetic (site product carried no SKU)
+        name="Tên Mới Sau Khi Đổi",  # renamed in the Hub
+        match_name="tam pin mat troi",  # frozen import-time name
+        categories=[],
+    )
+    ProductMappingFactory(master=master, site=site, woo_product_id=555)
+    fake = _FakeClient(
+        stale_woo_ids={555},
+        # Site still shows the OLD name and no SKU, now at a new id 888.
+        products=[{"id": 888, "name": "Tấm Pin Mặt Trời", "sku": "", "type": "simple"}],
+    )
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["created"] == 0 and result["updated"] == 1
+    assert ProductMapping.objects.get(master=master, site=site).woo_product_id == 888
+    assert SyncLog.objects.get(site=site).detail["stale_reresolved"] == 1
+
+
+@pytest.mark.django_db
+def test_stale_update_recreates_when_truly_gone(monkeypatch, settings):
+    """No live site product matches (genuinely deleted) → the heal still re-creates
+    the product, exactly as before (self-heal preserved)."""
+    settings.PRODUCT_PUSH_THROTTLE_SECONDS = 0
+    site = SiteFactory()
+    master = MasterProductFactory(sku="SP-1", categories=[])
+    ProductMappingFactory(master=master, site=site, woo_product_id=555)
+    fake = _FakeClient(stale_woo_ids={555}, products=[])  # nothing left on the site
+    _patch_client(monkeypatch, fake)
+
+    result = services.push_products_to_site(site, masters=[master])
+
+    assert result["created"] == 1 and result["updated"] == 0
+    assert ProductMapping.objects.get(master=master, site=site).woo_product_id != 555
+    log = SyncLog.objects.get(site=site)
+    assert log.detail["recreated_stale"] == 1
+    assert log.detail["stale_reresolved"] == 0
+
+
 # --- import_products_from_site -----------------------------------------------
 
 
@@ -285,9 +361,7 @@ def test_import_creates_masters_and_maps(monkeypatch):
 def test_import_links_existing_sku_without_creating(monkeypatch):
     site = SiteFactory()
     existing = MasterProductFactory(sku="PIN-450")
-    fake = _FakeClient(
-        products=[{"id": 11, "name": "Pin", "sku": "PIN-450", "type": "simple"}]
-    )
+    fake = _FakeClient(products=[{"id": 11, "name": "Pin", "sku": "PIN-450", "type": "simple"}])
     _patch_client(monkeypatch, fake)
 
     result = services.import_products_from_site(site)
@@ -301,9 +375,7 @@ def test_import_skips_already_mapped(monkeypatch):
     site = SiteFactory()
     master = MasterProductFactory(sku="PIN-450")
     ProductMappingFactory(master=master, site=site, woo_product_id=11)
-    fake = _FakeClient(
-        products=[{"id": 11, "name": "Pin", "sku": "PIN-450", "type": "simple"}]
-    )
+    fake = _FakeClient(products=[{"id": 11, "name": "Pin", "sku": "PIN-450", "type": "simple"}])
     _patch_client(monkeypatch, fake)
 
     result = services.import_products_from_site(site)
@@ -340,6 +412,96 @@ def test_import_placeholder_sku_when_blank(monkeypatch):
     services.import_products_from_site(site)
 
     assert MasterProduct.objects.filter(sku=f"IMPORT-{site.id}-11").exists()
+
+
+# --- import name matching (SKUs inconsistent across sites) --------------------
+# When a product's SKU matches no master, import LINKs it to an existing master by
+# normalized name instead of duplicating — so two sites with the same products but
+# different/missing SKUs converge onto one master. See import_products_from_site.
+
+
+@pytest.mark.django_db
+def test_import_links_by_name_when_no_sku_match(monkeypatch):
+    """Master from site A; site B has the same product under a DIFFERENT sku →
+    linked by name (no duplicate master)."""
+    site_b = SiteFactory()
+    master = MasterProductFactory(sku="A-1", name="Tấm Pin", match_name="tam pin", categories=[])
+    fake = _FakeClient(products=[{"id": 50, "name": "Tấm Pin", "sku": "B-9", "type": "simple"}])
+    _patch_client(monkeypatch, fake)
+
+    result = services.import_products_from_site(site_b)
+
+    assert result["created"] == 0 and result["linked"] == 1
+    assert result["linked_by_name"] == 1
+    assert MasterProduct.objects.count() == 1  # no duplicate
+    assert ProductMapping.objects.get(master=master, site=site_b).woo_product_id == 50
+
+
+@pytest.mark.django_db
+def test_import_sku_match_takes_priority_over_name(monkeypatch):
+    """An exact SKU match wins over a name match to a different master."""
+    by_sku = MasterProductFactory(sku="SP-1", name="Alpha", match_name="alpha", categories=[])
+    MasterProductFactory(sku="SP-2", name="Beta", match_name="beta", categories=[])
+    fake = _FakeClient(products=[{"id": 7, "name": "Beta", "sku": "SP-1", "type": "simple"}])
+    _patch_client(monkeypatch, fake)
+
+    site = SiteFactory()
+    result = services.import_products_from_site(site)
+
+    assert result["linked"] == 1 and result["linked_by_name"] == 0
+    assert ProductMapping.objects.get(site=site).master_id == by_sku.id
+
+
+@pytest.mark.django_db
+def test_import_ambiguous_name_creates_new_master(monkeypatch):
+    """Two masters share the name → not safe to link → create + report ambiguous."""
+    MasterProductFactory(sku="P-1", name="Pin", match_name="pin", categories=[])
+    MasterProductFactory(sku="P-2", name="Pin", match_name="pin", categories=[])
+    fake = _FakeClient(products=[{"id": 9, "name": "Pin", "sku": "X", "type": "simple"}])
+    _patch_client(monkeypatch, fake)
+
+    site = SiteFactory()
+    result = services.import_products_from_site(site)
+
+    assert result["created"] == 1 and result["linked_by_name"] == 0
+    assert result["name_ambiguous"] == 1
+    assert MasterProduct.objects.count() == 3
+
+
+@pytest.mark.django_db
+def test_import_two_same_name_products_of_one_site_do_not_collapse(monkeypatch):
+    """Two products of the SAME site sharing a name (no SKU) must NOT map onto one
+    master (would clobber a mapping) — the second creates its own master."""
+    site = SiteFactory()
+    fake = _FakeClient(
+        products=[
+            {"id": 10, "name": "Combo", "sku": "", "type": "simple"},
+            {"id": 11, "name": "Combo", "sku": "", "type": "simple"},
+        ]
+    )
+    _patch_client(monkeypatch, fake)
+
+    result = services.import_products_from_site(site)
+
+    assert result["created"] == 2 and result["linked"] == 0
+    assert ProductMapping.objects.filter(site=site).count() == 2
+    assert set(
+        ProductMapping.objects.filter(site=site).values_list("woo_product_id", flat=True)
+    ) == {10, 11}
+
+
+@pytest.mark.django_db
+def test_import_name_match_disabled_creates_duplicate(monkeypatch, settings):
+    """With the flag off, a name match no longer links — SKU-only (old behaviour)."""
+    settings.PRODUCT_IMPORT_MATCH_BY_NAME = False
+    MasterProductFactory(sku="A-1", name="Tấm Pin", match_name="tam pin", categories=[])
+    fake = _FakeClient(products=[{"id": 50, "name": "Tấm Pin", "sku": "B-9", "type": "simple"}])
+    _patch_client(monkeypatch, fake)
+
+    result = services.import_products_from_site(SiteFactory())
+
+    assert result["created"] == 1 and result["linked"] == 0
+    assert MasterProduct.objects.count() == 2  # duplicate — no name merge
 
 
 # --- import-time image internalization ---------------------------------------

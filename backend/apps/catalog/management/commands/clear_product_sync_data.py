@@ -41,9 +41,7 @@ class Command(BaseCommand):
         parser.add_argument("--categories", action="store_true", help="Wipe category tree.")
         parser.add_argument("--logs", action="store_true", help="Wipe sync logs.")
         parser.add_argument("--all", action="store_true", help="Wipe all of the above.")
-        parser.add_argument(
-            "--dry-run", action="store_true", help="Report counts, delete nothing."
-        )
+        parser.add_argument("--dry-run", action="store_true", help="Report counts, delete nothing.")
 
     def handle(self, *args, **options):
         do_all = options["all"]

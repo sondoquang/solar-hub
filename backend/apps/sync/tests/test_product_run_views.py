@@ -199,16 +199,23 @@ def test_export_returns_readable_xlsx(client):
     assert wb.sheetnames == ["Tổng quan", "Chi tiết"]
 
     overview = wb["Tổng quan"]
-    # Row 5 = table header, row 6 = the one site row.
-    assert overview.cell(row=6, column=1).value == "A-Site"
-    assert overview.cell(row=6, column=3).value == "TenTen"
-    assert overview.cell(row=6, column=5).value == 2  # created
+    col1 = [c.value for c in overview["A"]]
+    # Sites are grouped under a "Hosting: …" header row.
+    assert any(str(v or "").startswith("Hosting:") for v in col1)
+    # Locate the single site row by name (layout has a meta header + group header).
+    site_row = next(r for r in overview.iter_rows() if r[0].value == "A-Site")
+    cells = [c.value for c in site_row]
+    assert cells[2] == "Một phần (có cảnh báo)"  # status label (col 3)
+    assert cells[3] == 2  # created (col 4)
+    # A partial row is tinted so problems stand out.
+    assert site_row[0].fill.fgColor.rgb == "FFFFF3CD"
 
     detail = wb["Chi tiết"]
     # Row 1 = timestamp, row 2 = header, row 3 = the one failed SKU.
-    assert detail.cell(row=3, column=3).value == "SP-1"
-    assert detail.cell(row=3, column=5).value == "duplicate"  # kind
-    assert detail.cell(row=3, column=6).value == "product_invalid_sku"
+    assert detail.cell(row=3, column=3).value == "A-Site"  # site
+    assert detail.cell(row=3, column=4).value == "SP-1"  # sku
+    assert detail.cell(row=3, column=6).value == "duplicate"  # kind
+    assert detail.cell(row=3, column=7).value == "product_invalid_sku"  # code
 
 
 @pytest.mark.django_db

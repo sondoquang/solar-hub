@@ -535,6 +535,15 @@ def _product_site_row(log) -> dict:
         "hosting": (
             (hosting.provider or hosting.name) if hosting else detail.get("hosting", "")
         ),
+        # Split hosting fields so the report can group by hosting and label the
+        # account username (many hostings share a name). Live values when the site
+        # still exists, else the snapshot frozen into ``detail`` at push time.
+        "hosting_name": (hosting.name if hosting else detail.get("hosting_name", "")),
+        "hosting_username": (
+            (hosting.account_username or "")
+            if hosting
+            else detail.get("hosting_username", "")
+        ),
         "status": log.status,
         "error": log.error,
         "created": log.created_count,
@@ -567,21 +576,27 @@ def product_run_detail(run_id) -> dict | None:
     return summary
 
 
+_PRODUCT_STATUS_LABELS = {
+    SyncLog.Status.SUCCESS: "Thành công",
+    SyncLog.Status.PARTIAL: "Một phần (có cảnh báo)",
+    SyncLog.Status.ERROR: "Lỗi",
+}
+# Per-site "Tổng quan" columns — hosting is a grouping header row, not a column.
 _PRODUCT_OVERVIEW_HEADERS = [
     "Site",
     "URL",
-    "Hosting",
     "Trạng thái",
     "Tạo mới",
     "Cập nhật",
     "Đã nhận (khớp tên)",
     "Xóa",
     "Số lỗi",
-    "Lỗi (exception)",
+    "Chi tiết lỗi / cảnh báo",
 ]
 _PRODUCT_DETAIL_HEADERS = [
-    "Site",
     "Hosting",
+    "Tài khoản hosting",
+    "Site",
     "SKU",
     "Thao tác",
     "Loại",
@@ -589,17 +604,82 @@ _PRODUCT_DETAIL_HEADERS = [
     "Thông báo",
 ]
 
+# Row tints so a reader spots problem sites at a glance (openpyxl needs ARGB hex,
+# no leading '#'). Error → red, partial/warning → amber; success is left plain.
+_FILL_ERROR = "FFF8D7DA"
+_FILL_PARTIAL = "FFFFF3CD"
+_FILL_HOSTING = "FFE9ECEF"
+
+
+def _hosting_group_label(row: dict) -> str:
+    """"<name> (<username>)" for the hosting header, or a placeholder when the
+    site has no hosting (so unassigned sites still land in one clear bucket)."""
+    name = (row.get("hosting_name") or "").strip()
+    username = (row.get("hosting_username") or "").strip()
+    if not name and not username:
+        return "(Không có hosting)"
+    return f"{name} ({username})" if username else name
+
+
+def _row_error_text(row: dict) -> str:
+    """Human-readable reason a site is not a clean success: the exception (if the
+    whole push errored) plus each rejected SKU's message/code — so the end user
+    reads *why*, not just a status."""
+    parts: list[str] = []
+    if row.get("error"):
+        parts.append(str(row["error"]))
+    for f in row.get("failed") or []:
+        reason = f.get("message") or f.get("code") or "lỗi"
+        sku = f.get("sku") or "?"
+        parts.append(f"{sku}: {reason}")
+    if row.get("ambiguous"):
+        parts.append(f"{len(row['ambiguous'])} sản phẩm khớp tên mập mờ (chưa đẩy)")
+    return "; ".join(parts)
+
 
 def build_product_run_workbook(detail: dict) -> bytes:
-    """Two-sheet .xlsx for one product run: "Tổng quan" (one row per site) and a
-    flat "Chi tiết" (one row per failed SKU per site). Mirrors
-    ``build_run_workbook``."""
+    """Two-sheet .xlsx for one product run.
+
+    "Tổng quan": a meta header (thời gian, người thực hiện, tổng tạo/cập nhật/…),
+    then sites GROUPED under a header row per hosting (name + account username) so
+    the report reads by hosting even though one hosting has many domains. Rows for
+    ``error``/``partial`` sites are tinted (red/amber) so problems stand out, with
+    a "Chi tiết lỗi" column spelling out the reason.
+
+    "Chi tiết": one row per rejected SKU per site (also grouped/tinted), for the
+    site owner to action. In-memory via BytesIO — a run is at most a few thousand
+    rows, same class of inline work as the existing CSV/PDF exports."""
     from openpyxl import Workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, PatternFill
     from openpyxl.utils import get_column_letter
 
     bold = Font(bold=True)
+    fill_error = PatternFill("solid", start_color=_FILL_ERROR, end_color=_FILL_ERROR)
+    fill_partial = PatternFill(
+        "solid", start_color=_FILL_PARTIAL, end_color=_FILL_PARTIAL
+    )
+    fill_hosting = PatternFill(
+        "solid", start_color=_FILL_HOSTING, end_color=_FILL_HOSTING
+    )
+
+    def _fill_for(status):
+        if status == SyncLog.Status.ERROR:
+            return fill_error
+        if status == SyncLog.Status.PARTIAL:
+            return fill_partial
+        return None
+
+    def _tint_row(ws, fill):
+        if fill is None:
+            return
+        for cell in ws[ws.max_row]:
+            cell.fill = fill
+
     started = timezone.localtime(detail["started_at"]).strftime("%d/%m/%Y %H:%M:%S")
+    # Sites grouped by hosting, preserving the detail order within each group.
+    groups: dict[str, list[dict]] = {}
+    for row in detail["sites"]:
+        groups.setdefault(_hosting_group_label(row), []).append(row)
 
     wb = Workbook()
     overview = wb.active
@@ -607,26 +687,43 @@ def build_product_run_workbook(detail: dict) -> bytes:
     overview.append(["Báo cáo đồng bộ sản phẩm"])
     overview["A1"].font = bold
     overview.append(["Thời gian đồng bộ", started])
+    overview.append(["Người thực hiện", detail.get("triggered_by") or "—"])
     overview.append(["Mã lần đồng bộ", detail["run_id"]])
+    overview.append(["Số site", detail.get("site_count", 0)])
+    overview.append(
+        [
+            "Tổng kết quả",
+            f"Tạo mới {detail.get('total_created', 0)} · "
+            f"Cập nhật {detail.get('total_updated', 0)} · "
+            f"Xóa {detail.get('total_deleted', 0)} · "
+            f"Đã nhận {detail.get('total_adopted', 0)} · "
+            f"Lỗi {detail.get('total_failed', 0)}",
+        ]
+    )
     overview.append([])
     overview.append(_PRODUCT_OVERVIEW_HEADERS)
     for cell in overview[overview.max_row]:
         cell.font = bold
-    for row in detail["sites"]:
-        overview.append(
-            [
-                row["site_name"],
-                row["site_url"],
-                row["hosting"],
-                row["status"],
-                row["created"],
-                row["updated"],
-                row["adopted_count"],
-                row["deleted"],
-                len(row["failed"]),
-                row["error"],
-            ]
-        )
+
+    for label, rows in groups.items():
+        overview.append([f"Hosting: {label}"])
+        overview[overview.max_row][0].font = bold
+        _tint_row(overview, fill_hosting)
+        for row in rows:
+            overview.append(
+                [
+                    row["site_name"],
+                    row["site_url"],
+                    _PRODUCT_STATUS_LABELS.get(row["status"], row["status"]),
+                    row["created"],
+                    row["updated"],
+                    row["adopted_count"],
+                    row["deleted"],
+                    len(row["failed"]),
+                    _row_error_text(row),
+                ]
+            )
+            _tint_row(overview, _fill_for(row["status"]))
 
     sheet = wb.create_sheet("Chi tiết")
     sheet.append([f"Thời gian đồng bộ: {started}"])
@@ -634,21 +731,32 @@ def build_product_run_workbook(detail: dict) -> bytes:
     sheet.append(_PRODUCT_DETAIL_HEADERS)
     for cell in sheet[2]:
         cell.font = bold
-    for row in detail["sites"]:
-        for f in row["failed"]:
-            sheet.append(
-                [
-                    row["site_name"],
-                    row["hosting"],
-                    f.get("sku"),
-                    f.get("op"),
-                    f.get("kind"),
-                    f.get("code"),
-                    f.get("message"),
-                ]
-            )
+    for label, rows in groups.items():
+        for row in rows:
+            for f in row["failed"]:
+                sheet.append(
+                    [
+                        row.get("hosting_name") or label,
+                        row.get("hosting_username") or "",
+                        row["site_name"],
+                        f.get("sku"),
+                        f.get("op"),
+                        f.get("kind"),
+                        f.get("code"),
+                        f.get("message"),
+                    ]
+                )
+                # Duplicate-SKU rejects are expected friction (amber); genuine
+                # errors are red.
+                _tint_row(
+                    sheet,
+                    fill_partial if f.get("kind") == "duplicate" else fill_error,
+                )
 
-    widths = {overview: [28, 36, 18, 12, 10, 10, 16, 8, 8, 24], sheet: [28, 18, 22, 10, 12, 28, 50]}
+    widths = {
+        overview: [28, 36, 20, 10, 10, 16, 8, 8, 48],
+        sheet: [22, 20, 28, 22, 10, 12, 24, 44],
+    }
     for ws, cols in widths.items():
         for i, width in enumerate(cols, start=1):
             ws.column_dimensions[get_column_letter(i)].width = width
@@ -661,3 +769,140 @@ def build_product_run_workbook(detail: dict) -> bytes:
 def product_run_export_filename(detail: dict) -> str:
     started = timezone.localtime(detail["started_at"]).strftime("%Y%m%d-%H%M%S")
     return f"bao-cao-san-pham-{started}.xlsx"
+
+
+# --- Push notifications (app-wide "đã push xong" modal + bell) -----------------
+
+
+def open_push_notification(run_id, operation, expected, user_id, master_ids):
+    """Create the RUNNING notification for a freshly-triggered push (``sync_now``).
+
+    ``master_ids`` None = the whole catalog; a list = those products, of which a
+    few names/SKUs are snapshotted so the bell can say "sản phẩm nào". No-op (returns
+    None) when ``expected < 1`` — a push targeting no site has nothing to report.
+    """
+    from .models import Notification
+
+    if not expected:
+        return None
+    products: list = []
+    if master_ids:
+        from apps.catalog.models import MasterProduct
+
+        products = list(
+            MasterProduct.objects.filter(id__in=master_ids).values("id", "name", "sku")[:50]
+        )
+    return Notification.objects.create(
+        run_id=run_id,
+        operation=operation,
+        expected=expected,
+        created_by_id=user_id,
+        summary={
+            "products": products,
+            "product_count": len(master_ids) if master_ids else None,
+            "all_products": master_ids is None,
+        },
+    )
+
+
+def _push_notification_timeout_seconds() -> int:
+    """Age (s) after which a still-RUNNING notification is marked ``timeout``."""
+    from django.conf import settings
+
+    return int(getattr(settings, "PUSH_NOTIFICATION_TIMEOUT_SECONDS", 1800))
+
+
+def _summarize_push_detail(detail, expected, done) -> dict:
+    """Compact per-site roll-up for the bell/modal, from ``product_run_detail``.
+
+    ``detail`` is None before any site reports; then everything is zero/empty.
+    ``failed_sites`` lists only the non-success sites with their reason (exception
+    or per-SKU rejects) so the notification answers "site nào lỗi, vì sao"."""
+    sites = (detail or {}).get("sites") or []
+    failed_sites = [
+        {
+            "site_id": r["site_id"],
+            "site_name": r["site_name"],
+            "status": r["status"],
+            "error": r["error"],
+            "failed": r["failed"],
+        }
+        for r in sites
+        if r["status"] != SyncLog.Status.SUCCESS
+    ]
+    return {
+        "site_count": expected,
+        "done": done,
+        "success": sum(1 for r in sites if r["status"] == SyncLog.Status.SUCCESS),
+        "partial": sum(1 for r in sites if r["status"] == SyncLog.Status.PARTIAL),
+        "error": sum(1 for r in sites if r["status"] == SyncLog.Status.ERROR),
+        "created": (detail or {}).get("total_created", 0),
+        "updated": (detail or {}).get("total_updated", 0),
+        "deleted": (detail or {}).get("total_deleted", 0),
+        "adopted": (detail or {}).get("total_adopted", 0),
+        "failed_items": (detail or {}).get("total_failed", 0),
+        "failed_sites": failed_sites,
+    }
+
+
+def finalize_notification(notif):
+    """Flip a RUNNING notification to completed/timeout once its run's sites have
+    all reported (or the timeout elapsed), filling ``summary`` from the run rows.
+
+    Idempotent: a non-RUNNING notification is returned unchanged. Lazy finalize
+    (computed from ``SyncLog`` on read) so no Celery result backend/chord is
+    needed. Reused by the list/unread endpoints and the beat sweep."""
+    from .models import Notification
+
+    if notif.status != Notification.Status.RUNNING:
+        return notif
+    progress = run_progress(notif.run_id, notif.operation)
+    done = progress["done"]
+    finished = notif.expected > 0 and done >= notif.expected
+    timed_out = (
+        timezone.now() - notif.created_at
+    ).total_seconds() > _push_notification_timeout_seconds()
+    if not finished and not timed_out:
+        return notif
+
+    detail = product_run_detail(notif.run_id)
+    summary = dict(notif.summary or {})
+    summary.update(_summarize_push_detail(detail, notif.expected, done))
+    notif.summary = summary
+    notif.status = Notification.Status.COMPLETED if finished else Notification.Status.TIMEOUT
+    notif.completed_at = timezone.now()
+    notif.save(update_fields=["summary", "status", "completed_at"])
+    _enqueue_report_email(notif)
+    return notif
+
+
+def _enqueue_report_email(notif) -> None:
+    """Queue the product-sync report email the first time a push run finalizes.
+
+    Called on the single RUNNING→terminal transition, so it enqueues once; the
+    task itself claims ``report_emailed_at`` atomically as a second guard against a
+    double-send. Wrapped so a broker hiccup never breaks finalize (which also runs
+    on the read path of the notification endpoints)."""
+    if notif.operation != "push_products" or notif.report_emailed_at is not None:
+        return
+    try:
+        from .tasks import send_product_sync_report_task
+
+        send_product_sync_report_task.delay(str(notif.run_id))
+    except Exception:  # pragma: no cover - broker unavailable must not break read
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "sync: could not enqueue product-sync report run_id=%s", notif.run_id
+        )
+
+
+def finalize_running_notifications() -> None:
+    """Finalize every RUNNING notification (bounded — few in flight at a time).
+
+    Called by the notification endpoints (lazy finalize on read) and the beat
+    sweep so a run that nobody polls still gets closed out."""
+    from .models import Notification
+
+    for notif in Notification.objects.filter(status=Notification.Status.RUNNING):
+        finalize_notification(notif)

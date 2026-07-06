@@ -3,9 +3,13 @@
 @tailwind utilities;
 
 /* Design tokens — the single source of raw values (referenced by tailwind.config.js).
-   EvonHub dark theme: black surfaces, violet accent, Manrope. antd's darkAlgorithm
-   (src/lib/antdTheme.js) mirrors these so antd components share the palette. */
+   EvonHub theme: two variants share the same token NAMES so components stay theme-
+   agnostic. `:root` is the DARK default (black surfaces, violet accent, Manrope);
+   `:root[data-theme="light"]` below overrides the raw values for the light variant.
+   ThemeContext.jsx flips `data-theme` on <html>; antd (src/lib/antdTheme.js) mirrors
+   these per mode via makeAntdTheme(mode) since it can't read CSS variables. */
 :root {
+  color-scheme: dark;
   --color-brand: #978df8; /* EvonHub violet accent (hex — for antd/NProgress/inline) */
   --color-brand-rgb: 151 141 248; /* channels — lets Tailwind apply /opacity (bg-brand/15) */
   --color-brand-hover: #a99ffb; /* lighter for hover on dark surfaces */
@@ -21,9 +25,39 @@
   --color-success: #22c55e;
   --color-warning: #f59e0b;
   --color-danger: #ef4444;
+  --color-info: #93c5fd; /* status "info"/processing text (blue-300 on dark) */
+  /* Neutral overlay channels for hover fills & neutral chips (bg-overlay/5,
+     bg-overlay/10). White on dark; inverts to near-black on light so the same
+     utility reads on both themes. */
+  --color-overlay-rgb: 255 255 255;
   --radius: 6px; /* between EvonHub radius.xs (4.88) & sm (9.75) */
   --radius-lg: 10px; /* EvonHub radius.sm */
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.4);
+}
+
+/* Light variant — same token names, values tuned for white surfaces. Brand is a
+   deeper violet so text-brand / nav-active clear AA on white; status colors drop to
+   their 600 shades so chip text stays legible on the pale /15 tints. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-brand: #6d5ef6;
+  --color-brand-rgb: 109 94 246;
+  --color-brand-hover: #5b4ff0;
+  --color-brand-active: #4f43e0;
+  --color-surface: #f4f5f7;
+  --color-surface-raised: #ffffff;
+  --color-surface-muted: #eef0f3;
+  --color-ink: #0f172a;
+  --color-text: #334155;
+  --color-muted: #64748b;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-info: #2563eb;
+  --color-overlay-rgb: 15 23 42;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.1);
 }
 
 body {

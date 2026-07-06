@@ -90,3 +90,103 @@ def render_orders_email_text(orders) -> str:
     lines.append("")
     lines.append("Chi tiết đầy đủ trong bản HTML và file PDF đính kèm.")
     return "\n".join(lines)
+
+
+# --- Product-sync report email ------------------------------------------------
+
+# Row tints matching the Excel report (build_product_run_workbook): error → red,
+# partial → amber, success → no tint.
+_STATUS_ROW_BG = {"error": "#f8d7da", "partial": "#fff3cd"}
+
+
+def _product_scope_label(meta: dict) -> str:
+    """"Toàn bộ catalog" / "N sản phẩm" from the Notification summary snapshot."""
+    if meta.get("all_products"):
+        return "Toàn bộ catalog"
+    count = meta.get("product_count")
+    if count:
+        return f"{count} sản phẩm"
+    return "—"
+
+
+def build_product_sync_report_context(
+    detail: dict, *, title: str, meta: dict | None = None
+) -> dict:
+    """Pre-format one product-push run for the report email template.
+
+    Reuses the grouping/label helpers of the run report so the email, the Excel
+    attachment and the on-screen report all agree (single source of truth)."""
+    from apps.sync.services import (
+        _PRODUCT_STATUS_LABELS,
+        _hosting_group_label,
+        _row_error_text,
+    )
+
+    meta = meta or {}
+    counts = {"success": 0, "partial": 0, "error": 0}
+    grouped: dict[str, list[dict]] = {}
+    for row in detail.get("sites", []):
+        status = row["status"]
+        counts[status] = counts.get(status, 0) + 1
+        grouped.setdefault(_hosting_group_label(row), []).append(
+            {
+                "site_name": row["site_name"],
+                "site_url": row["site_url"],
+                "status": status,
+                "status_label": _PRODUCT_STATUS_LABELS.get(status, status),
+                "bg": _STATUS_ROW_BG.get(status, ""),
+                "created": row["created"],
+                "updated": row["updated"],
+                "deleted": row["deleted"],
+                "error_text": _row_error_text(row),
+            }
+        )
+
+    return {
+        "title": title,
+        "run_id": detail.get("run_id", ""),
+        "started_at": _format_dt(detail.get("started_at")),
+        "triggered_by": detail.get("triggered_by") or "—",
+        "product_scope": _product_scope_label(meta),
+        "site_count": detail.get("site_count", 0),
+        "counts": counts,
+        "totals": {
+            "created": detail.get("total_created", 0),
+            "updated": detail.get("total_updated", 0),
+            "deleted": detail.get("total_deleted", 0),
+            "adopted": detail.get("total_adopted", 0),
+            "failed": detail.get("total_failed", 0),
+        },
+        "groups": [{"label": label, "sites": sites} for label, sites in grouped.items()],
+    }
+
+
+def render_product_sync_report_html(
+    detail: dict, *, title: str, meta: dict | None = None
+) -> str:
+    """Full HTML body for one product-sync run report."""
+    return render_to_string(
+        "mailer/product_sync_report_email.html",
+        build_product_sync_report_context(detail, title=title, meta=meta),
+    )
+
+
+def render_product_sync_report_text(detail: dict) -> str:
+    """Plain-text fallback: one line per site with its outcome."""
+    from apps.sync.services import _hosting_group_label, _row_error_text
+
+    lines = ["Solar Hub — báo cáo đồng bộ sản phẩm", ""]
+    current = None
+    for row in detail.get("sites", []):
+        label = _hosting_group_label(row)
+        if label != current:
+            current = label
+            lines.append(f"[Hosting: {label}]")
+        reason = _row_error_text(row)
+        lines.append(
+            f"  - {row['site_name']}: {row['status']}"
+            + (f" — {reason}" if reason else "")
+        )
+    lines.append("")
+    lines.append("Báo cáo chi tiết trong file Excel đính kèm.")
+    return "\n".join(lines)

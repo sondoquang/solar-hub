@@ -95,6 +95,9 @@ class MasterProduct(models.Model):
 
     class Meta:
         ordering = ["-updated_at"]
+        permissions = [
+            ("push_masterproduct", "Có thể đẩy sản phẩm sang website"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.sku} — {self.name}"
@@ -236,6 +239,9 @@ class Category(models.Model):
     class Meta:
         ordering = ["name"]
         verbose_name_plural = "categories"
+        permissions = [
+            ("pull_category", "Có thể đồng bộ danh mục từ website"),
+        ]
 
     def __str__(self) -> str:
         return self.name

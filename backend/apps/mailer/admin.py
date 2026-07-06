@@ -25,6 +25,8 @@ class MailSettingsAdminForm(forms.ModelForm):
             "from_email",
             "from_name",
             "recipients",
+            "product_sync_recipients",
+            "product_sync_report_enabled",
             "digest_enabled",
             "digest_times",
             "password",

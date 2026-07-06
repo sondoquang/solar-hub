@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Input, Modal, Popconfirm, Select, Tabs } from "antd";
-import { Download, Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Download, Network, Package, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
@@ -15,6 +15,8 @@ import {
 } from "../api/products.js";
 import { useAllSites } from "../api/sites.js";
 import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
+import { PUSH_CONFIRM_WORD, PUSH_EMAIL_NOTICE } from "../lib/productSync.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
@@ -22,22 +24,54 @@ import ProductRegisterForm, {
   STATUS_OPTIONS as FORM_STATUS,
   STOCK_OPTIONS as FORM_STOCK,
 } from "../components/ProductRegisterForm.jsx";
-import ProductRunDetailModal from "../components/ProductRunDetailModal.jsx";
 import ProductStats from "../components/ProductStats.jsx";
 import ProductStatusBadge from "../components/ProductStatusBadge.jsx";
 import ProductSyncHistoryTab from "../components/ProductSyncHistoryTab.jsx";
 import ProductSyncStatusModal from "../components/ProductSyncStatusModal.jsx";
-import ProductSyncSummaryModal from "../components/ProductSyncSummaryModal.jsx";
 import { formatDate, formatVND } from "../lib/format.js";
+import { usePushNotifications } from "../lib/PushNotificationContext.jsx";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
-// Type-to-confirm keyword guarding the heavy "push catalog to ALL sites" action.
-const SYNC_CONFIRM_WORD = "PUSH";
+// Type-to-confirm keyword guarding the heavy "push catalog to ALL sites" action
+// (shared with the per-product sync panel).
+const SYNC_CONFIRM_WORD = PUSH_CONFIRM_WORD;
 
 const STATUS_FILTER = [{ value: "all", label: "Tất cả trạng thái" }, ...FORM_STATUS];
 const STOCK_FILTER = [{ value: "all", label: "Tất cả kho" }, ...FORM_STOCK];
 const STOCK_LABEL = Object.fromEntries(FORM_STOCK.map((o) => [o.value, o.label]));
+
+// Identity/audit fields dropped when duplicating a product so the copy is a
+// brand-new product, not the source: per-site push state (mappings), the frozen
+// import-time match key (match_name → copy is treated as hand-created), and the
+// import/audit trail.
+const DUPLICATE_OMIT = [
+  "id",
+  "mappings",
+  "mapping_count",
+  "match_name",
+  "source_site",
+  "source_site_name",
+  "imported_at",
+  "created_at",
+  "updated_at",
+];
+
+// Build the create-form defaults for a "Nhân bản" (duplicate) of a product: strip
+// the identity/audit fields above and suggest a unique SKU + distinguishable name
+// (SKU is UNIQUE + required, so a verbatim copy would be rejected on save).
+// `toForm()` in ProductRegisterForm coerces numbers/variations, so no coercion is
+// needed here.
+export const buildDuplicateDefaults = (p) => {
+  const rest = Object.fromEntries(
+    Object.entries(p).filter(([key]) => !DUPLICATE_OMIT.includes(key)),
+  );
+  return {
+    ...rest,
+    sku: p.sku ? `${p.sku}-COPY` : "",
+    name: p.name ? `${p.name} (Copy)` : "",
+  };
+};
 
 export default function Products() {
   const [searchInput, setSearchInput] = useState("");
@@ -50,12 +84,10 @@ export default function Products() {
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null); // product being edited, or null
+  const [duplicating, setDuplicating] = useState(null); // pre-filled copy defaults, or null
   const [syncProduct, setSyncProduct] = useState(null); // product whose sync panel is open
   const [importOpen, setImportOpen] = useState(false); // import-from-site picker open
   const [importSiteId, setImportSiteId] = useState(null); // chosen source site
-  const [lastPushRunId, setLastPushRunId] = useState(null); // run to summarize on finish
-  const [summaryRunId, setSummaryRunId] = useState(null); // end-of-run summary modal
-  const [detailRunId, setDetailRunId] = useState(null); // full per-site detail modal
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false); // push-to-all-sites gate
   const [syncConfirmText, setSyncConfirmText] = useState(""); // type-to-confirm input
 
@@ -75,7 +107,7 @@ export default function Products() {
       status: statusFilter === "all" ? undefined : statusFilter,
       stock_status: stockFilter === "all" ? undefined : stockFilter,
     }),
-    [search, statusFilter, stockFilter]
+    [search, statusFilter, stockFilter],
   );
 
   const { data, isLoading, isFetching, isError, refetch } = useProducts({
@@ -94,24 +126,16 @@ export default function Products() {
   const importProducts = useImportProductsFromSite();
   const { data: allSites = [], isLoading: sitesLoading } = useAllSites();
   const qc = useQueryClient();
+  const { notifyStarted } = usePushNotifications();
+  const can = useCan();
+  const canAdd = can("catalog.add_masterproduct");
+  const canChange = can("catalog.change_masterproduct");
+  const canDelete = can("catalog.delete_masterproduct");
+  const canPush = can("catalog.push_masterproduct");
 
-  // "Đang đồng bộ sản phẩm… X/Y site" banner: poll the push run until every
-  // targeted site reports, then refetch so mappings/last_synced_at refresh and
-  // pop the end-of-run summary (which site landed / which failed + why).
-  const productRun = useSyncRunProgress(SYNC_OPS.products, {
-    onFinish: ({ finished, timedOut, expected, errorCount }) => {
-      if (timedOut) {
-        toast("Đồng bộ chạy lâu hơn dự kiến — kiểm tra lại sau.", { icon: "⏳" });
-      } else if (errorCount) {
-        toast(`Đồng bộ xong, ${errorCount}/${expected} site lỗi.`, { icon: "⚠️" });
-      } else if (finished) {
-        toast.success(`Đã đồng bộ sản phẩm xuống ${expected} site.`);
-      }
-      qc.invalidateQueries({ queryKey: ["products"] });
-      if ((finished || errorCount) && lastPushRunId) setSummaryRunId(lastPushRunId);
-    },
-  });
-
+  // The catalog push is long-running and reported by email — the frontend no
+  // longer polls it (no "X/Y site" banner). Import below is a single-site,
+  // quick op, so it keeps its progress banner.
   // "Đang nhập sản phẩm…" banner for the import-from-site run (expected=1).
   const importRun = useSyncRunProgress(SYNC_OPS.import, {
     onFinish: ({ finished, timedOut }) => {
@@ -127,6 +151,7 @@ export default function Products() {
   const closeForm = () => {
     setShowForm(false);
     setEditing(null);
+    setDuplicating(null);
   };
 
   const handleSubmit = async (values, { onSuccess }) => {
@@ -165,14 +190,13 @@ export default function Products() {
       {},
       {
         onSuccess: (res) => {
-          toast.success("Đã kích hoạt đồng bộ sản phẩm xuống các site.");
-          setLastPushRunId(res.run_id);
-          productRun.start({ runId: res.run_id, expected: res.expected });
+          toast.success("Đã kích hoạt đồng bộ. Kết quả sẽ được gửi qua email.");
+          notifyStarted(res.run_id);
           setSyncConfirmOpen(false);
           setSyncConfirmText("");
         },
         onError: () => toast.error("Kích hoạt đồng bộ thất bại."),
-      }
+      },
     );
   };
 
@@ -191,6 +215,15 @@ export default function Products() {
 
   const openEdit = (product) => {
     setEditing(product);
+    setDuplicating(null);
+    setShowForm(true);
+  };
+
+  // Open the form in CREATE mode (editing stays null → handleSubmit posts a new
+  // product) but pre-filled with a copy of `product` minus its identity fields.
+  const openDuplicate = (product) => {
+    setEditing(null);
+    setDuplicating(buildDuplicateDefaults(product));
     setShowForm(true);
   };
 
@@ -229,7 +262,7 @@ export default function Products() {
       sortOrder: sortOrder("sku"),
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-info">
             <Package size={15} />
           </span>
           <div className="min-w-0">
@@ -249,7 +282,9 @@ export default function Products() {
         <div className="min-w-0">
           <p className="font-medium tabular-nums">{formatVND(v)}</p>
           {r.sale_price != null && r.sale_price !== "" && (
-            <p className="truncate text-xs text-success tabular-nums">KM {formatVND(r.sale_price)}</p>
+            <p className="truncate text-xs text-success tabular-nums">
+              KM {formatVND(r.sale_price)}
+            </p>
           )}
         </div>
       ),
@@ -294,34 +329,50 @@ export default function Products() {
     {
       key: "actions",
       title: "Thao tác",
-      width: 230,
+      width: 330,
       align: "right",
       hideable: false,
       ellipsis: false,
       render: (_v, r) => (
         <div className="flex items-center justify-end gap-1">
-          <Button
-            size="small"
-            icon={<Network size={14} />}
-            onClick={() => setSyncProduct(r)}
-            title="Trạng thái đồng bộ theo domain"
-          >
-            Đồng bộ
-          </Button>
-          <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(r)}>
-            Sửa
-          </Button>
-          <Popconfirm
-            title="Xóa sản phẩm này?"
-            description="Lần đồng bộ tới sẽ gỡ sản phẩm khỏi các site."
-            okText="Xóa"
-            cancelText="Hủy"
-            onConfirm={() => handleDelete(r)}
-          >
-            <Button size="small" danger icon={<Trash2 size={14} />}>
-              Xóa
+          {canPush && (
+            <Button
+              size="small"
+              icon={<Network size={14} />}
+              onClick={() => setSyncProduct(r)}
+              title="Trạng thái đồng bộ theo domain"
+            >
+              Đồng bộ
             </Button>
-          </Popconfirm>
+          )}
+          {canChange && (
+            <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(r)}>
+              Sửa
+            </Button>
+          )}
+          {canAdd && (
+            <Button
+              size="small"
+              icon={<Copy size={14} />}
+              onClick={() => openDuplicate(r)}
+              title="Tạo sản phẩm mới từ sản phẩm này"
+            >
+              Nhân bản
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm
+              title="Xóa sản phẩm này?"
+              description="Lần đồng bộ tới sẽ gỡ sản phẩm khỏi các site."
+              okText="Xóa"
+              cancelText="Hủy"
+              onConfirm={() => handleDelete(r)}
+            >
+              <Button size="small" danger icon={<Trash2 size={14} />}>
+                Xóa
+              </Button>
+            </Popconfirm>
+          )}
         </div>
       ),
     },
@@ -336,43 +387,39 @@ export default function Products() {
           <h1 className="font-display text-2xl font-bold">Sản phẩm</h1>
         </div>
         <div className="flex gap-1">
-          <Button
-            icon={<Download size={16} />}
-            onClick={() => setImportOpen(true)}
-          >
-            Nhập từ website chính
-          </Button>
-          <Button
-            icon={<RefreshCw size={16} />}
-            loading={sync.isPending}
-            onClick={() => {
-              setSyncConfirmText("");
-              setSyncConfirmOpen(true);
-            }}
-          >
-            Đồng bộ ngay
-          </Button>
-          <Button
-            type="primary"
-            icon={<Plus size={16} />}
-            onClick={() => {
-              setEditing(null);
-              setShowForm(true);
-            }}
-          >
-            Thêm sản phẩm
-          </Button>
+          {canAdd && (
+            <Button icon={<Download size={16} />} onClick={() => setImportOpen(true)}>
+              Nhập từ website chính
+            </Button>
+          )}
+          {canPush && (
+            <Button
+              icon={<RefreshCw size={16} />}
+              loading={sync.isPending}
+              onClick={() => {
+                setSyncConfirmText("");
+                setSyncConfirmOpen(true);
+              }}
+            >
+              Đồng bộ ngay
+            </Button>
+          )}
+          {canAdd && (
+            <Button
+              type="primary"
+              icon={<Plus size={16} />}
+              onClick={() => {
+                setEditing(null);
+                setDuplicating(null);
+                setShowForm(true);
+              }}
+            >
+              Thêm sản phẩm
+            </Button>
+          )}
         </div>
       </div>
 
-      {productRun.activeRun && (
-        <Alert
-          type="info"
-          showIcon
-          className="mb-3"
-          message={`Đang đồng bộ sản phẩm… ${productRun.doneSites}/${productRun.activeRun.expected} site hoàn tất.`}
-        />
-      )}
       {importRun.activeRun && (
         <Alert
           type="info"
@@ -448,7 +495,9 @@ export default function Products() {
                       locale={{
                         emptyText: (
                           <EmptyState
-                            title={filterActive ? "Không có sản phẩm phù hợp" : "Chưa có sản phẩm nào"}
+                            title={
+                              filterActive ? "Không có sản phẩm phù hợp" : "Chưa có sản phẩm nào"
+                            }
                             hint={
                               filterActive
                                 ? "Thử đổi từ khóa hoặc bộ lọc."
@@ -477,8 +526,10 @@ export default function Products() {
         destroyOnClose
         width="90vw"
         style={{ top: 10 }}
-        styles={{ body: { maxHeight: "calc(100vh - 170px)", overflowY: "auto", padding: "20px 24px" } }}
-        title={editing ? "Sửa sản phẩm" : "Thêm sản phẩm"}
+        styles={{
+          body: { maxHeight: "calc(100vh - 170px)", overflowY: "auto", padding: "20px 24px" },
+        }}
+        title={editing ? "Sửa sản phẩm" : duplicating ? "Nhân bản sản phẩm" : "Thêm sản phẩm"}
         maskClosable={false}
         footer={
           <>
@@ -496,7 +547,7 @@ export default function Products() {
       >
         <ProductRegisterForm
           formId="product-register-form"
-          defaultValues={editing ?? undefined}
+          defaultValues={editing ?? duplicating ?? undefined}
           onSubmit={handleSubmit}
         />
       </Modal>
@@ -516,12 +567,11 @@ export default function Products() {
         okButtonProps={{ disabled: !importSiteId, loading: importProducts.isPending }}
         onOk={handleImport}
       >
-        <p className="mb-2 text-sm text-muted">
-          Chọn website WooCommerce nguồn để lấy sản phẩm về làm dữ liệu gốc. Tên sản phẩm
-          lúc nhập được dùng làm khóa khớp khi đồng bộ sang các site khác. (Phiên bản này
-          chỉ hỗ trợ WooCommerce + sản phẩm đơn; sản phẩm có biến thể được ghi nhận để xử lý
-          sau, Sapo sẽ làm sau.)
-        </p>
+        <Alert
+          title="Chọn website WooCommerce nguồn để lấy sản phẩm về làm dữ liệu gốc"
+          type="info"
+        />
+        <br />
         <Select
           showSearch
           allowClear
@@ -560,11 +610,11 @@ export default function Products() {
           showIcon
           className="mb-3"
           message="Thao tác nặng — đẩy toàn bộ sản phẩm xuống TẤT CẢ website."
-          description="Lệnh này chạy nền và có thể mất nhiều thời gian khi có nhiều site. Nếu chỉ cần đồng bộ vài site, hãy dùng nút “Đồng bộ” trên từng sản phẩm để chọn site."
+          description={PUSH_EMAIL_NOTICE}
         />
         <p className="mb-2 text-sm text-muted">
-          Nhập <span className="font-mono font-semibold">{SYNC_CONFIRM_WORD}</span> để xác nhận
-          đẩy toàn bộ catalog xuống mọi site.
+          Nhập <span className="font-mono font-semibold">{SYNC_CONFIRM_WORD}</span> để xác nhận đẩy
+          toàn bộ catalog xuống mọi site.
         </p>
         <Input
           autoFocus
@@ -574,22 +624,6 @@ export default function Products() {
           onPressEnter={handleSync}
         />
       </Modal>
-
-      <ProductSyncSummaryModal
-        runId={summaryRunId}
-        open={summaryRunId != null}
-        onClose={() => setSummaryRunId(null)}
-        onViewDetail={() => {
-          setDetailRunId(summaryRunId);
-          setSummaryRunId(null);
-        }}
-      />
-
-      <ProductRunDetailModal
-        runId={detailRunId}
-        open={detailRunId != null}
-        onClose={() => setDetailRunId(null)}
-      />
     </section>
   );
 }

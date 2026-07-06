@@ -15,6 +15,7 @@ import {
 } from "../api/orders.js";
 import { useSites } from "../api/sites.js";
 import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import ClassificationBadge from "../components/ClassificationBadge.jsx";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
@@ -131,6 +132,7 @@ export default function Orders() {
   const poll = usePollOrders();
   const forwardBulk = useForwardOrdersBulk();
   const qc = useQueryClient();
+  const can = useCan();
 
   // "Đang đồng bộ đơn hàng… X/Y site" banner: poll the run until every targeted
   // site reports, then refetch the list/stats so the newly-pulled orders show.
@@ -282,7 +284,7 @@ export default function Orders() {
       width: 200,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-info">
             <Globe size={15} />
           </span>
           <div className="flex min-w-0 flex-col gap-1">
@@ -381,14 +383,16 @@ export default function Orders() {
         <div>
           <h1 className="font-display text-2xl font-bold">Đơn hàng WooCommerce</h1>
         </div>
-        <Button
-          type="primary"
-          icon={<RefreshCw size={16} />}
-          loading={poll.isPending}
-          onClick={handlePoll}
-        >
-          Đồng bộ ngay
-        </Button>
+        {can("orders.sync_order") && (
+          <Button
+            type="primary"
+            icon={<RefreshCw size={16} />}
+            loading={poll.isPending}
+            onClick={handlePoll}
+          >
+            Đồng bộ ngay
+          </Button>
+        )}
       </div>
 
       {orderRun.activeRun && (
@@ -483,14 +487,16 @@ export default function Orders() {
                   >
                     Xem chi tiết ({selectedKeys.length})
                   </Button>
-                  <Button
-                    size="small"
-                    icon={<Send size={14} />}
-                    loading={forwardBulk.isPending}
-                    onClick={forwardSelected}
-                  >
-                    Chuyển marketing ({selectedKeys.length})
-                  </Button>
+                  {can("orders.forward_order") && (
+                    <Button
+                      size="small"
+                      icon={<Send size={14} />}
+                      loading={forwardBulk.isPending}
+                      onClick={forwardSelected}
+                    >
+                      Chuyển marketing ({selectedKeys.length})
+                    </Button>
+                  )}
                   <Button
                     size="small"
                     icon={<FileDown size={14} />}
@@ -499,13 +505,15 @@ export default function Orders() {
                   >
                     Xuất PDF ({selectedKeys.length})
                   </Button>
-                  <Button
-                    size="small"
-                    icon={<Mail size={14} />}
-                    onClick={() => setSendOpen(true)}
-                  >
-                    Gửi mail ({selectedKeys.length})
-                  </Button>
+                  {can("orders.email_order") && (
+                    <Button
+                      size="small"
+                      icon={<Mail size={14} />}
+                      onClick={() => setSendOpen(true)}
+                    >
+                      Gửi mail ({selectedKeys.length})
+                    </Button>
+                  )}
                   <Button size="small" icon={<X size={14} />} onClick={clearSelection}>
                     Bỏ chọn
                   </Button>

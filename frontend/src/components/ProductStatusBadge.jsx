@@ -2,15 +2,15 @@
 // OrderStatusBadge so the catalog reads consistently with the rest of the app.
 const MAP = {
   publish: { bg: "bg-green-500/15", text: "text-success", label: "Đã đăng" },
-  draft: { bg: "bg-white/10", text: "text-slate-300", label: "Nháp" },
+  draft: { bg: "bg-overlay/10", text: "text-muted", label: "Nháp" },
   pending: { bg: "bg-amber-500/15", text: "text-warning", label: "Chờ duyệt" },
-  private: { bg: "bg-blue-500/15", text: "text-blue-300", label: "Riêng tư" },
+  private: { bg: "bg-blue-500/15", text: "text-info", label: "Riêng tư" },
 };
 
 export default function ProductStatusBadge({ status }) {
   const { bg, text, label } = MAP[status] || {
-    bg: "bg-white/10",
-    text: "text-slate-300",
+    bg: "bg-overlay/10",
+    text: "text-muted",
     label: status || "—",
   };
   return (

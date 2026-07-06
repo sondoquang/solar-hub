@@ -55,9 +55,7 @@ class _Resp:
 
 
 @pytest.mark.django_db
-def test_push_to_sapo_site_maps_simple_and_reports_grouped_as_failure(
-    monkeypatch, settings
-):
+def test_push_to_sapo_site_maps_simple_and_reports_grouped_as_failure(monkeypatch, settings):
     settings.SAPO_THROTTLE_SECONDS = 0  # no pacing in tests
     site = SiteFactory(platform=Site.Platform.SAPO)
     simple = MasterProductFactory(sku="SP-SIMPLE")
@@ -78,8 +76,6 @@ def test_push_to_sapo_site_maps_simple_and_reports_grouped_as_failure(
     log = SyncLog.objects.get(site=site, operation="push_products")
     assert log.status == SyncLog.Status.PARTIAL
     failed = log.detail["failed"]
-    assert any(
-        f["sku"] == "SP-GROUPED" and f["code"] == "sapo_unsupported_type" for f in failed
-    )
+    assert any(f["sku"] == "SP-GROUPED" and f["code"] == "sapo_unsupported_type" for f in failed)
     # the referenced category was created as a custom collection first
     assert any("/custom_collections.json" in url for method, url in fake.calls if method == "POST")

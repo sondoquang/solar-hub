@@ -85,6 +85,11 @@ class Order(models.Model):
 
     class Meta:
         ordering = ["-date_created_woo"]
+        permissions = [
+            ("sync_order", "Có thể đồng bộ đơn hàng từ website"),
+            ("forward_order", "Có thể chuyển đơn sang marketing"),
+            ("email_order", "Có thể gửi email đơn hàng"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["site", "woo_order_id"], name="order_unique_per_site"

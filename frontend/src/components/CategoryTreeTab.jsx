@@ -1,13 +1,17 @@
-import { Empty, Input, Table, Tree } from "antd";
-import { FolderTree, Layers, Network, Trash2 } from "lucide-react";
+import { Button, Empty, Input, Modal, Table, Tree } from "antd";
+import { FolderPlus, FolderTree, Layers, Network, Pencil, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import toast from "react-hot-toast";
 
 import {
   useCategoryOverview,
   useCategorySiteLinks,
+  useDeleteCategory,
   useProductCategories,
 } from "../api/products.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import { formatDate } from "../lib/format.js";
+import CategoryFormModal from "./CategoryFormModal.jsx";
 import EmptyState from "./EmptyState.jsx";
 import ErrorState from "./ErrorState.jsx";
 import StatCards from "./StatCards.jsx";
@@ -59,11 +63,63 @@ export default function CategoryTreeTab() {
   const [search, setSearch] = useState("");
   const [expandedKeys, setExpandedKeys] = useState([]);
   const [autoExpandParent, setAutoExpandParent] = useState(true);
+  // { mode: "create" | "edit", category?, presetParentId? } while the form is open.
+  const [formModal, setFormModal] = useState(null);
+
+  const deleteCategory = useDeleteCategory();
+  const can = useCan();
+  const canAdd = can("catalog.add_category");
+  const canChange = can("catalog.change_category");
+  const canDelete = can("catalog.delete_category");
 
   const { roots, byId, byParent, countDesc } = useMemo(
     () => buildTree(categories),
     [categories]
   );
+
+  const openCreate = (presetParentId = null) =>
+    setFormModal({ mode: "create", presetParentId });
+  const openEdit = (cat) => setFormModal({ mode: "edit", category: cat });
+
+  // Soft-delete: confirm first, warn how many children get promoted to the
+  // parent, then delete + drop the selection if it was the removed node.
+  const confirmDelete = (cat) => {
+    const childCount = byParent.get(cat.id)?.length ?? 0;
+    Modal.confirm({
+      title: `Xóa danh mục "${cat.name}"?`,
+      icon: null,
+      okText: "Xóa",
+      okButtonProps: { danger: true },
+      cancelText: "Hủy",
+      content: (
+        <div className="space-y-2 text-sm">
+          <p>
+            Danh mục sẽ bị <strong>ẩn</strong> (xóa mềm) khỏi cây.
+          </p>
+          {childCount > 0 && (
+            <p>
+              {childCount} danh mục con sẽ được chuyển lên danh mục cha của nó.
+            </p>
+          )}
+          <p className="text-muted">
+            Sản phẩm đang dùng tên danh mục này vẫn giữ nguyên; đồng bộ danh mục lại có thể
+            khôi phục.
+          </p>
+        </div>
+      ),
+      onOk: () =>
+        deleteCategory.mutateAsync(cat.id).then(
+          () => {
+            toast.success("Đã xóa danh mục.");
+            if (selectedId === cat.id) setSelectedId(null);
+          },
+          () => {
+            toast.error("Xóa danh mục thất bại.");
+            return Promise.reject();
+          }
+        ),
+    });
+  };
 
   const o = overview.data ?? {};
   const cards = [
@@ -72,7 +128,7 @@ export default function CategoryTreeTab() {
       label: "Tổng danh mục (đang dùng)",
       value: vi(o.hub_used),
       Icon: FolderTree,
-      tint: "bg-blue-500/15 text-blue-300",
+      tint: "bg-blue-500/15 text-info",
     },
     {
       key: "root",
@@ -118,14 +174,22 @@ export default function CategoryTreeTab() {
     setAutoExpandParent(true);
   };
 
-  // Highlight the matched substring in a tree row + show its subtree size.
+  // Highlight the matched substring in a tree row + show its subtree size, and
+  // reveal per-node actions (add child / edit / delete) on hover. Each action
+  // stops propagation so it doesn't also select the node.
   const titleRender = (node) => {
     const name = node.title;
     const q = search.trim().toLowerCase();
     const idx = q ? name.toLowerCase().indexOf(q) : -1;
     const count = countDesc(node.key);
+    const cat = byId.get(node.key);
+    const act = (fn) => (e) => {
+      e.stopPropagation();
+      fn();
+    };
+    const iconBtn = "rounded p-0.5 text-muted hover:bg-surface-muted hover:text-ink";
     return (
-      <span className="inline-flex items-center gap-2">
+      <span className="group inline-flex items-center gap-2">
         <span>
           {idx === -1 ? (
             name
@@ -138,6 +202,33 @@ export default function CategoryTreeTab() {
           )}
         </span>
         {count > 0 && <span className="text-xs tabular-nums text-muted">{count}</span>}
+        <span className="hidden items-center gap-0.5 group-hover:inline-flex">
+          {canAdd && (
+            <button
+              type="button"
+              title="Thêm danh mục con"
+              className={iconBtn}
+              onClick={act(() => openCreate(node.key))}
+            >
+              <FolderPlus size={13} />
+            </button>
+          )}
+          {canChange && (
+            <button type="button" title="Sửa" className={iconBtn} onClick={act(() => openEdit(cat))}>
+              <Pencil size={13} />
+            </button>
+          )}
+          {canDelete && (
+            <button
+              type="button"
+              title="Xóa"
+              className={`${iconBtn} hover:text-danger`}
+              onClick={act(() => confirmDelete(cat))}
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+        </span>
       </span>
     );
   };
@@ -197,7 +288,19 @@ export default function CategoryTreeTab() {
         <div className="rounded bg-surface-raised p-3 border border-border lg:col-span-2">
           <div className="mb-2 flex items-center justify-between gap-2">
             <h3 className="font-display text-base font-semibold">Cây danh mục</h3>
-            <span className="text-xs tabular-nums text-muted">{vi(o.hub_used)}</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs tabular-nums text-muted">{vi(o.hub_used)}</span>
+              {canAdd && (
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<Plus size={14} />}
+                  onClick={() => openCreate(null)}
+                >
+                  Thêm danh mục
+                </Button>
+              )}
+            </div>
           </div>
           <Input.Search
             allowClear
@@ -210,7 +313,10 @@ export default function CategoryTreeTab() {
           ) : isLoading ? (
             <p className="py-6 text-center text-sm text-muted">Đang tải cây danh mục…</p>
           ) : roots.length === 0 ? (
-            <EmptyState title="Chưa có danh mục nào" hint="Đồng bộ danh mục từ một site để dựng cây." />
+            <EmptyState
+              title="Chưa có danh mục nào"
+              hint='Bấm "Thêm danh mục" để tạo, hoặc đồng bộ danh mục từ một site.'
+            />
           ) : (
             <Tree
               treeData={roots}
@@ -239,7 +345,35 @@ export default function CategoryTreeTab() {
             </div>
           ) : (
             <>
-              <h3 className="font-display text-xl font-bold">{selected.name}</h3>
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="font-display text-xl font-bold">{selected.name}</h3>
+                <div className="flex shrink-0 gap-1">
+                  {canAdd && (
+                    <Button
+                      size="small"
+                      icon={<FolderPlus size={14} />}
+                      onClick={() => openCreate(selected.id)}
+                    >
+                      Thêm con
+                    </Button>
+                  )}
+                  {canChange && (
+                    <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(selected)}>
+                      Sửa
+                    </Button>
+                  )}
+                  {canDelete && (
+                    <Button
+                      size="small"
+                      danger
+                      icon={<Trash2 size={14} />}
+                      onClick={() => confirmDelete(selected)}
+                    >
+                      Xóa
+                    </Button>
+                  )}
+                </div>
+              </div>
               <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
                 <div>
                   <p className="text-muted">Slug</p>
@@ -281,6 +415,14 @@ export default function CategoryTreeTab() {
           )}
         </div>
       </div>
+
+      <CategoryFormModal
+        open={!!formModal}
+        mode={formModal?.mode}
+        category={formModal?.category ?? null}
+        presetParentId={formModal?.presetParentId ?? null}
+        onClose={() => setFormModal(null)}
+      />
     </div>
   );
 }

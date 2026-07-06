@@ -108,6 +108,35 @@ def test_sync_now_dispatches_task(client, monkeypatch):
 
 
 @pytest.mark.django_db
+def test_sync_now_opens_notification(client, monkeypatch):
+    """A push to real sites opens a RUNNING notification (app-wide bell/modal),
+    snapshotting the targeted products — even though the heavy task is async."""
+    from apps.sync import tasks
+    from apps.sync.models import Notification
+
+    class _Result:
+        id = "task-x"
+
+    monkeypatch.setattr(tasks.push_all_products, "delay", lambda **kw: _Result())
+
+    site = SiteFactory()
+    product = MasterProductFactory(sku="SP-1", name="Tấm Pin")
+
+    resp = client.post(
+        "/api/products/sync_now/",
+        {"sites": [site.id], "products": [product.id]},
+        format="json",
+    )
+    assert resp.status_code == 200
+    assert resp.data["expected"] == 1
+
+    notif = Notification.objects.get(run_id=resp.data["run_id"])
+    assert notif.status == Notification.Status.RUNNING
+    assert notif.expected == 1
+    assert notif.summary["products"] == [{"id": product.id, "name": "Tấm Pin", "sku": "SP-1"}]
+
+
+@pytest.mark.django_db
 def test_sync_now_validates_sites(client):
     resp = client.post("/api/products/sync_now/", {"sites": ["x"]}, format="json")
     assert resp.status_code == 400
@@ -448,7 +477,10 @@ def test_category_matrix_search_by_name_or_parent(client):
     CategoryFactory(name="Inverter")
 
     def names(params):
-        return [r["name"] for r in client.get("/api/products/categories/matrix/", params).data["results"]]
+        return [
+            r["name"]
+            for r in client.get("/api/products/categories/matrix/", params).data["results"]
+        ]
 
     assert names({"search": "khô"}) == ["Ắc quy khô"]  # by own name
     # "Ắc quy" matches the root by name and the child by parent name.

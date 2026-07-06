@@ -7,6 +7,8 @@ import toast from "react-hot-toast";
 import { z } from "zod";
 
 import { useProductCategories, useProductSearch, useSyncCategories } from "../api/products.js";
+import { useCan } from "../lib/AuthContext.jsx";
+import CategoryFormModal from "./CategoryFormModal.jsx";
 import MediaLibraryModal from "./MediaLibraryModal.jsx";
 import RichTextEditor from "./RichTextEditor.jsx";
 
@@ -204,6 +206,8 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
 
   const categoriesQuery = useProductCategories();
   const syncCategories = useSyncCategories();
+  const can = useCan();
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [groupedSearch, setGroupedSearch] = useState("");
   const groupedResults = useProductSearch(groupedSearch);
 
@@ -727,15 +731,30 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
       <Postbox
         title="Danh mục sản phẩm"
         action={
-          <Button
-            type="link"
-            size="small"
-            className="px-0"
-            loading={syncCategories.isPending}
-            onClick={pullCategories}
-          >
-            Cập nhật từ site
-          </Button>
+          <div className="flex items-center gap-3">
+            {can("catalog.add_category") && (
+              <Button
+                type="link"
+                size="small"
+                className="px-0"
+                icon={<Plus size={14} />}
+                onClick={() => setCategoryModalOpen(true)}
+              >
+                Tạo danh mục mới
+              </Button>
+            )}
+            {can("catalog.pull_category") && (
+              <Button
+                type="link"
+                size="small"
+                className="px-0"
+                loading={syncCategories.isPending}
+                onClick={pullCategories}
+              >
+                Cập nhật từ site
+              </Button>
+            )}
+          </div>
         }
       >
         <Controller
@@ -879,6 +898,17 @@ export default function ProductRegisterForm({ formId, onSubmit, defaultValues })
         }
         onClose={() => setPicker(null)}
         onSelect={handlePicked}
+      />
+
+      {/* Tạo nhanh danh mục mới (kèm chọn cha) ngay trong form — danh mục vừa tạo
+          được refetch vào TreeSelect và tự chọn sẵn vào sản phẩm này. */}
+      <CategoryFormModal
+        open={categoryModalOpen}
+        onClose={() => setCategoryModalOpen(false)}
+        onCreated={(cat) => {
+          const current = getValues("categories") ?? [];
+          if (!current.includes(cat.name)) setValue("categories", [...current, cat.name]);
+        }}
       />
     </form>
   );

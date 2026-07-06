@@ -7,11 +7,13 @@ import {
   Globe,
   LayoutGrid,
   LogOut,
+  Moon,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
   Settings,
+  Sun,
   SunMedium,
 } from "lucide-react";
 import NProgress from "nprogress";
@@ -20,7 +22,10 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useAuth } from "../lib/AuthContext.jsx";
+import { useTheme } from "../lib/ThemeContext.jsx";
+import { PushNotificationProvider } from "../lib/PushNotificationContext.jsx";
 import NotificationBell from "./NotificationBell.jsx";
+import PushNotificationBell from "./PushNotificationBell.jsx";
 import UserMenu from "./UserMenu.jsx";
 
 NProgress.configure({
@@ -60,7 +65,9 @@ function Logo({ collapsed }) {
 
 // Top-level nav. Items with a real route use NavLink; items with `children`
 // render as an expandable group (NavGroup); the rest are visual placeholders
-// for sections not yet built (kept to match the product design).
+// for sections not yet built (kept to match the product design). A `perm`
+// hides the item when the user lacks it (visibleNav) — the backend still
+// enforces; this only declutters the menu.
 const MAIN_NAV = [
   { to: "/", label: "Tổng quan", icon: LayoutGrid, end: true },
   {
@@ -68,8 +75,8 @@ const MAIN_NAV = [
     icon: ClipboardList,
     to: "/orders", // collapsed-mode target
     children: [
-      { to: "/orders", label: "WooCommerce" },
-      { to: "/sapo-unpaid-orders", label: "Sapo" },
+      { to: "/orders", label: "WooCommerce", perm: "orders.view_order" },
+      { to: "/sapo-unpaid-orders", label: "Sapo", perm: "orders.view_order" },
     ],
   },
   {
@@ -77,8 +84,8 @@ const MAIN_NAV = [
     icon: Package,
     to: "/products", // collapsed-mode target
     children: [
-      { to: "/products", label: "Danh sách sản phẩm" },
-      { to: "/categories", label: "Danh mục" },
+      { to: "/products", label: "Danh sách sản phẩm", perm: "catalog.view_masterproduct" },
+      { to: "/categories", label: "Danh mục", perm: "catalog.view_category" },
     ],
   },
 ];
@@ -88,20 +95,42 @@ const WEBSITE_NAV = {
   icon: Globe,
   to: "/sites", // collapsed-mode target
   children: [
-    { to: "/hostings", label: "Hosting" },
-    { to: "/sites", label: "Quản lý website" },
-    { to: "/health-checks", label: "Lịch sử kiểm tra" },
+    { to: "/hostings", label: "Hosting", perm: "sites.view_hosting" },
+    { to: "/sites", label: "Quản lý website", perm: "sites.view_site" },
+    { to: "/domains", label: "Tên miền", perm: "domains.view_domaininfo" },
+    { to: "/health-checks", label: "Lịch sử kiểm tra", perm: "monitoring.view_healthcheck" },
   ],
 };
 
-const SECONDARY_NAV = [{ to: "/reports", label: "Báo cáo", icon: BarChart3 }];
+const SECONDARY_NAV = [
+  { to: "/reports", label: "Báo cáo", icon: BarChart3, perm: "sync.view_synclog" },
+];
 
 const SETTINGS_NAV = {
   label: "Cài đặt hệ thống",
   icon: Settings,
   to: "/settings/mail", // collapsed-mode target
-  children: [{ to: "/settings/mail", label: "Mail SMTP" }],
+  children: [
+    { to: "/settings/mail", label: "Mail SMTP", perm: "mailer.view_mailsettings" },
+    { to: "/settings/users", label: "Người dùng", perm: "auth.view_user" },
+    { to: "/settings/groups", label: "Nhóm & quyền", perm: "auth.view_group" },
+  ],
 };
+
+// Hide nav entries the user has no permission for. Filters group children,
+// drops groups left empty, and re-points a collapsed group's icon at its first
+// still-visible child so the collapsed link never lands on a hidden route.
+function visibleNav(items, hasPerm) {
+  return items
+    .map((item) => {
+      if (!item.children) return item;
+      const children = item.children.filter((c) => !c.perm || hasPerm(c.perm));
+      return { ...item, children, to: children[0]?.to ?? item.to };
+    })
+    .filter((item) =>
+      item.children ? item.children.length > 0 : !item.perm || hasPerm(item.perm),
+    );
+}
 
 const itemBase =
   "flex w-full items-center gap-3 rounded px-2 py-3 text-base font-medium transition-colors border-0";
@@ -111,7 +140,7 @@ function navClass(collapsed) {
     [
       itemBase,
       collapsed && "justify-center",
-      isActive ? "bg-brand/15 text-brand" : "text-muted hover:bg-white/5 hover:text-ink",
+      isActive ? "bg-brand/15 text-brand" : "text-muted hover:bg-overlay/5 hover:text-ink",
     ]
       .filter(Boolean)
       .join(" ");
@@ -139,7 +168,7 @@ function NavRow({ item, collapsed }) {
       type="button"
       className={[
         itemBase,
-        "cursor-default text-muted hover:bg-white/5",
+        "cursor-default text-muted hover:bg-overlay/5",
         collapsed && "justify-center",
       ]
         .filter(Boolean)
@@ -194,7 +223,7 @@ function SubNavRow({ sub, isFirst, isLast }) {
             rowBase,
             isActive
               ? "bg-brand/15 font-medium text-brand"
-              : "text-muted hover:bg-white/5 hover:text-ink",
+              : "text-muted hover:bg-overlay/5 hover:text-ink",
           ].join(" ")
         }
       >
@@ -205,7 +234,7 @@ function SubNavRow({ sub, isFirst, isLast }) {
   return (
     <button
       type="button"
-      className={`${rowBase} w-full text-muted hover:bg-white/5`}
+      className={`${rowBase} w-full text-muted hover:bg-overlay/5`}
       title="Sắp ra mắt"
     >
       {sub.label}
@@ -238,7 +267,7 @@ function NavGroup({ item, collapsed, open, onToggle }) {
         className={[
           itemBase,
           "cursor-pointer justify-between",
-          active ? "bg-brand/15 text-brand" : "text-muted hover:bg-white/5 hover:text-ink",
+          active ? "bg-brand/15 text-brand" : "text-muted hover:bg-overlay/5 hover:text-ink",
         ].join(" ")}
       >
         <span className="flex items-center gap-3">
@@ -279,7 +308,7 @@ function LogoutButton({ collapsed }) {
       title={collapsed ? "Đăng xuất" : undefined}
       className={[
         itemBase,
-        "text-muted hover:bg-white/5 hover:text-ink",
+        "text-muted hover:bg-overlay/5 hover:text-ink",
         collapsed && "justify-center",
       ]
         .filter(Boolean)
@@ -291,18 +320,29 @@ function LogoutButton({ collapsed }) {
   );
 }
 
-// All expandable groups, in render order. Used to derive which group should
-// start open based on the current route.
-const NAV_GROUPS = [...MAIN_NAV.filter((item) => item.children), WEBSITE_NAV, SETTINGS_NAV];
-
 function Sidebar() {
   const { pathname } = useLocation();
+  const { hasPerm } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+
+  // Nav filtered to what the user may see (backend still enforces).
+  const mainNav = visibleNav(MAIN_NAV, hasPerm);
+  const websiteNav = visibleNav([WEBSITE_NAV], hasPerm)[0] ?? null;
+  const secondaryNav = visibleNav(SECONDARY_NAV, hasPerm);
+  const settingsNav = visibleNav([SETTINGS_NAV], hasPerm)[0] ?? null;
+
+  // All expandable groups, in render order — derives which group starts open.
+  const navGroups = [
+    ...mainNav.filter((item) => item.children),
+    ...(websiteNav ? [websiteNav] : []),
+    ...(settingsNav ? [settingsNav] : []),
+  ];
+
   // Only one group is open at a time (accordion). Initialise to the group that
   // owns the current route, if any.
   const [openGroup, setOpenGroup] = useState(
     () =>
-      NAV_GROUPS.find((group) =>
+      navGroups.find((group) =>
         group.children.some((sub) => sub.to && pathname.startsWith(sub.to)),
       )?.label ?? null,
   );
@@ -329,7 +369,7 @@ function Sidebar() {
           onClick={() => setCollapsed((v) => !v)}
           aria-label={collapsed ? "Mở rộng menu" : "Thu gọn menu"}
           title={collapsed ? "Mở rộng" : "Thu gọn"}
-          className="rounded p-1 text-muted hover:bg-white/5 hover:text-ink"
+          className="rounded p-1 text-muted hover:bg-overlay/5 hover:text-ink"
         >
           {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
         </button>
@@ -341,7 +381,7 @@ function Sidebar() {
           collapsed ? "px-2" : "px-4",
         ].join(" ")}
       >
-        {MAIN_NAV.map((item) =>
+        {mainNav.map((item) =>
           item.children ? (
             <NavGroup
               key={item.label}
@@ -355,23 +395,27 @@ function Sidebar() {
           ),
         )}
 
-        <NavGroup
-          item={WEBSITE_NAV}
-          collapsed={collapsed}
-          open={openGroup === WEBSITE_NAV.label}
-          onToggle={() => toggleGroup(WEBSITE_NAV.label)}
-        />
+        {websiteNav && (
+          <NavGroup
+            item={websiteNav}
+            collapsed={collapsed}
+            open={openGroup === websiteNav.label}
+            onToggle={() => toggleGroup(websiteNav.label)}
+          />
+        )}
 
-        {SECONDARY_NAV.map((item) => (
+        {secondaryNav.map((item) => (
           <NavRow key={item.label} item={item} collapsed={collapsed} />
         ))}
 
-        <NavGroup
-          item={SETTINGS_NAV}
-          collapsed={collapsed}
-          open={openGroup === SETTINGS_NAV.label}
-          onToggle={() => toggleGroup(SETTINGS_NAV.label)}
-        />
+        {settingsNav && (
+          <NavGroup
+            item={settingsNav}
+            collapsed={collapsed}
+            open={openGroup === settingsNav.label}
+            onToggle={() => toggleGroup(settingsNav.label)}
+          />
+        )}
 
         <LogoutButton collapsed={collapsed} />
       </nav>
@@ -393,6 +437,23 @@ function useNProgress() {
 
   // Tidy up if the layout unmounts mid-request (e.g. logout).
   useEffect(() => () => NProgress.done(), []);
+}
+
+// Light/dark switch — shows the icon of the theme you'd switch TO.
+function ThemeToggle() {
+  const { mode, toggleTheme } = useTheme();
+  const toLight = mode === "dark";
+  return (
+    <button
+      type="button"
+      onClick={toggleTheme}
+      aria-label={toLight ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối"}
+      title={toLight ? "Giao diện sáng" : "Giao diện tối"}
+      className="rounded-full p-1.5 text-muted hover:bg-overlay/5 hover:text-ink"
+    >
+      {toLight ? <Sun size={18} /> : <Moon size={18} />}
+    </button>
+  );
 }
 
 function Topbar() {
@@ -417,6 +478,8 @@ function Topbar() {
 
       {/* Right actions */}
       <div className="ml-auto flex items-center gap-1.5">
+        <ThemeToggle />
+        <PushNotificationBell />
         <NotificationBell />
         <UserMenu />
       </div>
@@ -426,14 +489,16 @@ function Topbar() {
 
 export default function AppLayout() {
   return (
-    <div className="flex min-h-screen bg-surface">
-      <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar />
-        <main className="flex-1 px-4 pb-5">
-          <Outlet />
-        </main>
+    <PushNotificationProvider>
+      <div className="flex min-h-screen bg-surface">
+        <Sidebar />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Topbar />
+          <main className="flex-1 px-4 pb-5">
+            <Outlet />
+          </main>
+        </div>
       </div>
-    </div>
+    </PushNotificationProvider>
   );
 }

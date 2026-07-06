@@ -26,6 +26,10 @@ import { api } from "./client.js";
 //   GET    /products/categories/{id}/sites/   -> getCategorySiteLinks (per-category)
 //   GET    /products/categories/mappings/     -> getCategoryMappings (per-site mapping)
 //       params: ?site (bắt buộc), ?search, ?ordering, ?page, ?page_size
+//   POST   /products/categories/             -> createCategory / useCreateCategory
+//       body: { name, slug?, parent?: number|null }  (parent = tree; null = root)
+//   PATCH  /products/categories/{id}/        -> updateCategory / useUpdateCategory
+//   DELETE /products/categories/{id}/        -> deleteCategory / useDeleteCategory (soft)
 //   POST   /products/categories/pull_now/     -> pullProductCategories (Woo → Hub)
 //       body: { sites?: number[] }  (bỏ trống = pull TẤT CẢ site)
 //   POST   /products/categories/clear_all/    -> clearCategorySync (reset catalog)
@@ -105,6 +109,18 @@ export const getCategoryMatrix = (params = {}) =>
 // One Hub category's link state on every live site (tree-tab detail panel).
 export const getCategorySiteLinks = (id) =>
   api.get(`/products/categories/${id}/sites/`).then((r) => r.data);
+
+// Hub-side category CRUD (the tree-management surface). `parent` is sent as-is
+// (null = root); `clean()` is NOT used so an explicit `parent: null` reaches the
+// backend to move a node to the top level.
+export const createCategory = (payload) =>
+  api.post("/products/categories/", payload).then((r) => r.data);
+
+export const updateCategory = ({ id, ...payload }) =>
+  api.patch(`/products/categories/${id}/`, payload).then((r) => r.data);
+
+export const deleteCategory = (id) =>
+  api.delete(`/products/categories/${id}/`).then((r) => r.data);
 
 const KEY = ["products"];
 const CAT_KEY = [...KEY, "categories"];
@@ -254,3 +270,17 @@ export function useClearCategorySync() {
     },
   });
 }
+
+// Hub-side category CRUD — each write invalidates the whole `CAT_KEY` prefix so
+// the picker list, the tree, and the overview stat cards all refresh.
+function useInvalidatingCategoryMutation(mutationFn) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => qc.invalidateQueries({ queryKey: CAT_KEY }),
+  });
+}
+
+export const useCreateCategory = () => useInvalidatingCategoryMutation(createCategory);
+export const useUpdateCategory = () => useInvalidatingCategoryMutation(updateCategory);
+export const useDeleteCategory = () => useInvalidatingCategoryMutation(deleteCategory);

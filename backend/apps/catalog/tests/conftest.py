@@ -5,7 +5,8 @@ from rest_framework.test import APIClient
 
 @pytest.fixture
 def user(db):
-    return get_user_model().objects.create_user(
+    # Superuser: business tests bypass RBAC (covered in apps/accounts/tests).
+    return get_user_model().objects.create_superuser(
         username="tester", password="x", first_name="Nguyễn", last_name="Văn A"
     )
 

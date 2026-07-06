@@ -25,6 +25,9 @@ class MailSettingsView(generics.RetrieveUpdateAPIView):
     """The single system-wide SMTP config row (auto-created on first read)."""
 
     serializer_class = MailSettingsSerializer
+    # Without a queryset the RBAC default would silently fall through to
+    # auth-only; with it GET → view_mailsettings, PUT/PATCH → change_mailsettings.
+    queryset = MailSettings.objects.all()
 
     def get_object(self):
         return MailSettings.load()
@@ -32,6 +35,8 @@ class MailSettingsView(generics.RetrieveUpdateAPIView):
 
 class MailSettingsTestView(APIView):
     """Send a test email to the given ``recipient`` (or the saved recipients)."""
+
+    required_perms = {"POST": ["mailer.test_mailsettings"]}
 
     def post(self, request):
         recipient = request.data.get("recipient") or request.data.get("recipients")

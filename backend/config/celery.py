@@ -15,6 +15,10 @@ app.autodiscover_tasks()  # discovers apps/*/tasks.py
 # longer OK interval elapses (the due-filter in apps.sites.services.check_hosting).
 _HEALTHCHECK_TICK = float(os.getenv("SITE_HEALTHCHECK_FAIL_INTERVAL_SECONDS", "300"))
 _ORDER_POLL_INTERVAL = float(os.getenv("ORDER_POLL_INTERVAL_SECONDS", "480"))
+# Domain-info tick is deliberately much shorter than the per-site refresh
+# interval (default 24h): each tick the dispatcher re-selects only STALE sites,
+# so new sites and previously-failed runs self-heal within the hour.
+_DOMAIN_INFO_TICK = float(os.getenv("DOMAIN_INFO_TICK_SECONDS", "3600"))
 
 @task_postrun.connect
 def close_db_connections(**kwargs):
@@ -39,5 +43,18 @@ app.conf.beat_schedule = {
     "mailer-digest-tick": {
         "task": "apps.mailer.tasks.dispatch_due_digests",
         "schedule": crontab(minute="*"),
+    },
+    # Primary finalizer for push notifications now that the frontend no longer
+    # polls: flip RUNNING → completed/timeout (which also queues the report email).
+    # Every minute so a completed push is reported by email within ~1 min.
+    "finalize-push-notifications": {
+        "task": "apps.sync.tasks.finalize_push_notifications",
+        "schedule": 60.0,  # every 1 min
+    },
+    # Domain snapshots (WHOIS/DNS/SSL/blacklist/Google index). Hourly tick;
+    # the task itself filters to sites not refreshed in the last 24h.
+    "refresh-domain-info": {
+        "task": "apps.domains.tasks.refresh_all_domain_info",
+        "schedule": _DOMAIN_INFO_TICK,
     },
 }

@@ -14,7 +14,8 @@ def locmem_mail(settings):
 
 @pytest.fixture
 def user(db):
-    return get_user_model().objects.create_user(username="tester", password="x")
+    # Superuser: business tests bypass RBAC (covered in apps/accounts/tests).
+    return get_user_model().objects.create_superuser(username="tester", password="x")
 
 
 @pytest.fixture

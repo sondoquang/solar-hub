@@ -117,7 +117,7 @@ export default function CategoryRunDetailModal({ runId, open, onClose }) {
     <div className="flex items-center gap-2">
       <span>Chi tiết lần đồng bộ danh mục</span>
       {data && (
-        <span className="rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-blue-300">
+        <span className="rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-info">
           {formatDateTime(data.started_at)}
         </span>
       )}

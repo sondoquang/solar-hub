@@ -27,6 +27,10 @@ export default {
         success: "var(--color-success)",
         warning: "var(--color-warning)",
         danger: "var(--color-danger)",
+        info: "var(--color-info)",
+        // Neutral overlay — RGB-channel form so opacity modifiers work
+        // (bg-overlay/5, bg-overlay/10). Inverts white↔near-black per theme.
+        overlay: "rgb(var(--color-overlay-rgb) / <alpha-value>)",
       },
       fontFamily: {
         display: ["Manrope", "ui-sans-serif", "sans-serif"],

@@ -28,6 +28,7 @@ from .serializers import (
     CategoryMatrixRowSerializer,
     CategorySerializer,
     CategorySiteLinkSerializer,
+    CategoryWriteSerializer,
     MasterProductSerializer,
     ProductImageSerializer,
     ProductSyncStatusSerializer,
@@ -40,6 +41,10 @@ class MasterProductViewSet(viewsets.ModelViewSet):
     search_fields = ["sku", "name"]
     ordering_fields = ["name", "sku", "updated_at"]
     ordering = ["-updated_at"]
+    action_perms = {
+        "sync_now": ["catalog.push_masterproduct"],
+        "import_from_site": ["catalog.add_masterproduct"],
+    }
 
     def get_queryset(self):
         qs = MasterProduct.objects.filter(is_deleted=False).prefetch_related("mappings__site")
@@ -69,6 +74,7 @@ class MasterProductViewSet(viewsets.ModelViewSet):
         import uuid
 
         from apps.sites.services import sites_for_product_push
+        from apps.sync.services import open_push_notification
         from apps.sync.tasks import push_all_products
 
         sites = request.data.get("sites")
@@ -98,6 +104,17 @@ class MasterProductViewSet(viewsets.ModelViewSet):
         run_id = str(uuid.uuid4())
         triggered_by_id = request.user.id if request.user.is_authenticated else None
         expected = len(sites_for_product_push(sites or None))
+
+        # Open the persistent notification for this push BEFORE dispatching, so the
+        # app-wide bell/modal can poll it to completion even if the user navigates
+        # away. Finalized lazily from the run's SyncLog rows (services).
+        open_push_notification(
+            run_id=run_id,
+            operation="push_products",
+            expected=expected,
+            user_id=triggered_by_id,
+            master_ids=products or None,
+        )
 
         result = push_all_products.delay(
             site_ids=sites or None,
@@ -144,9 +161,7 @@ class MasterProductViewSet(viewsets.ModelViewSet):
 
         run_id = str(uuid.uuid4())
         triggered_by_id = request.user.id if request.user.is_authenticated else None
-        result = import_products_task.delay(
-            site_id, run_id=run_id, triggered_by_id=triggered_by_id
-        )
+        result = import_products_task.delay(site_id, run_id=run_id, triggered_by_id=triggered_by_id)
         return Response({"task_id": result.id, "run_id": run_id, "expected": 1})
 
     @action(detail=True, methods=["get"])
@@ -183,6 +198,13 @@ class ProductImageViewSet(
     search_fields = ["original_name"]
     ordering_fields = ["uploaded_at"]
     ordering = ["-uploaded_at"]
+    # The media library rides product-edit rights so `productimage` stays out
+    # of the permission matrix.
+    required_perms = {
+        "GET": ["catalog.view_masterproduct"],
+        "POST": ["catalog.change_masterproduct"],
+        "DELETE": ["catalog.change_masterproduct"],
+    }
 
     def perform_destroy(self, instance):
         # Remove the file from MEDIA_ROOT too, not just the DB row.
@@ -199,10 +221,13 @@ class CategoryPickerPagination(StandardPagination):
     max_page_size = 1000
 
 
-class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
-    """Read-only category catalog for the form picker, plus a manual pull trigger.
+class CategoryViewSet(viewsets.ModelViewSet):
+    """Category catalog: Hub-side CRUD over the tree, plus a manual pull trigger.
 
-    - ``GET  /api/products/categories/``          — list known categories (search).
+    - ``GET    /api/products/categories/``          — list known categories (search).
+    - ``POST   /api/products/categories/``          — create a category (parent = tree).
+    - ``PATCH  /api/products/categories/{id}/``     — rename / re-slug / move parent.
+    - ``DELETE /api/products/categories/{id}/``     — soft-delete (children promoted).
     - ``GET  /api/products/categories/overview/`` — stat-card counts (dashboard).
     - ``GET  /api/products/categories/matrix/``   — cross-site matrix (Hub × sites).
     - ``GET  /api/products/categories/{id}/sites/`` — one category's per-site links.
@@ -210,9 +235,11 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     - ``POST /api/products/categories/pull_now/`` — pull categories from the sites.
     - ``POST /api/products/categories/clear_all/`` — reset the catalog (soft-delete).
 
-    Categories are created/synced *down* implicitly through the product push
-    (a product carrying a new category name makes Woo create it); this viewset is
-    the *up* direction (Woo → Hub) so the picker shows what already exists.
+    A category can now originate on the Hub (write here) as well as arrive via a
+    pull from the sites (``pull_now``). A Hub-created category has no per-site
+    mapping yet; it flows *down* lazily — the product push
+    (``services._ensure_site_categories``) creates the term on a site the first
+    time a product carrying that category name is synced there.
     """
 
     queryset = Category.objects.filter(is_deleted=False)
@@ -222,6 +249,22 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ["name"]
     ordering_fields = ["name"]
     ordering = ["name"]
+    action_perms = {
+        "pull_now": ["catalog.pull_category"],
+        "clear_all": ["catalog.delete_category"],
+    }
+
+    def get_serializer_class(self):
+        # Writes go through the revive/cycle-aware write serializer; reads keep
+        # the picker shape (id/name/slug/parent/mapping_count).
+        if self.action in ("create", "update", "partial_update"):
+            return CategoryWriteSerializer
+        return CategorySerializer
+
+    def perform_destroy(self, instance):
+        """Soft-delete via the service (promotes children to the parent) — never
+        a hard delete (docs/backend/PROJECT_RULE §8)."""
+        services.delete_category(instance)
 
     @action(detail=False, methods=["get"])
     def overview(self, request):

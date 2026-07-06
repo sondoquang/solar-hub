@@ -13,10 +13,13 @@ const SapoUnpaidOrders = lazy(() => import("./pages/SapoUnpaidOrders.jsx"));
 const Products = lazy(() => import("./pages/Products.jsx"));
 const Categories = lazy(() => import("./pages/Categories.jsx"));
 const Sites = lazy(() => import("./pages/Sites.jsx"));
+const Domains = lazy(() => import("./pages/Domains.jsx"));
 const Hostings = lazy(() => import("./pages/Hostings.jsx"));
 const HealthChecks = lazy(() => import("./pages/HealthChecks.jsx"));
 const Reports = lazy(() => import("./pages/Reports.jsx"));
 const MailSettings = lazy(() => import("./pages/MailSettings.jsx"));
+const Users = lazy(() => import("./pages/Users.jsx"));
+const Groups = lazy(() => import("./pages/Groups.jsx"));
 const Login = lazy(() => import("./pages/Login.jsx"));
 
 // Each lazy menu page shows a layout-shaped skeleton while its chunk loads,
@@ -73,6 +76,7 @@ export const router = createBrowserRouter([
           { path: "products", element: wrap(Products, <PageSkeleton stats={3} />) },
           { path: "categories", element: wrap(Categories, <PageSkeleton stats={4} />) },
           { path: "sites", element: wrap(Sites, <PageSkeleton stats={4} />) },
+          { path: "domains", element: wrap(Domains, <PageSkeleton stats={0} />) },
           { path: "hostings", element: wrap(Hostings, <PageSkeleton stats={0} />) },
           { path: "health-checks", element: wrap(HealthChecks, <PageSkeleton stats={4} />) },
           { path: "reports", element: wrap(Reports, <PageSkeleton stats={0} />) },
@@ -81,6 +85,10 @@ export const router = createBrowserRouter([
             path: "settings/mail",
             element: wrap(MailSettings, <PageSkeleton stats={0} filters={false} />),
           },
+          // No route-level permission guard: deep links render and the API's
+          // 403 lands in the page's ErrorState — the backend enforces RBAC.
+          { path: "settings/users", element: wrap(Users, <PageSkeleton stats={0} />) },
+          { path: "settings/groups", element: wrap(Groups, <PageSkeleton stats={0} />) },
         ],
       },
       { path: "/login", element: wrap(Login, <Loading />) },

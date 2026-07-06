@@ -13,6 +13,7 @@ import {
 } from "../api/mailSettings.js";
 import ErrorState from "../components/ErrorState.jsx";
 import PageSkeleton from "../components/PageSkeleton.jsx";
+import { useCan } from "../lib/AuthContext.jsx";
 import { formatDateTime } from "../lib/format.js";
 
 // Daily send time, "HH:MM" (00:00–23:59). Matches the backend normalizer.
@@ -36,6 +37,11 @@ const makeSchema = (hasPassword) =>
       recipients: z
         .array(z.string().email("Email nhận không hợp lệ"))
         .min(1, "Cần ít nhất một email nhận"),
+      // Optional: empty falls back to the order-report recipients on the backend.
+      product_sync_recipients: z
+        .array(z.string().email("Email nhận không hợp lệ"))
+        .optional(),
+      product_sync_report_enabled: z.boolean(),
       digest_enabled: z.boolean(),
       digest_times: z
         .array(z.string())
@@ -67,6 +73,8 @@ const toForm = (data) => ({
   from_name: data?.from_name ?? "Solar Hub",
   from_email: data?.from_email ?? "",
   recipients: data?.recipients ?? [],
+  product_sync_recipients: data?.product_sync_recipients ?? [],
+  product_sync_report_enabled: data?.product_sync_report_enabled ?? true,
   digest_enabled: data?.digest_enabled ?? true,
   digest_times: data?.digest_times ?? ["09:00", "16:00"],
 });
@@ -75,6 +83,9 @@ function MailSettingsForm({ data }) {
   const update = useUpdateMailSettings();
   const sendTest = useSendTestMail();
   const hasPassword = !!data?.has_password;
+  const can = useCan();
+  const canChange = can("mailer.change_mailsettings");
+  const canTest = can("mailer.test_mailsettings");
 
   const {
     control,
@@ -322,14 +333,60 @@ function MailSettingsForm({ data }) {
         )}
       </div>
 
-      <div className="flex gap-2">
-        <Button type="primary" htmlType="submit" icon={<Mail size={16} />} loading={busy}>
-          {busy ? "Đang lưu…" : "Lưu cấu hình"}
-        </Button>
-        <Button icon={<Send size={16} />} loading={sendTest.isPending} onClick={handleTest}>
-          Gửi email thử
-        </Button>
+      <div className="grid gap-3 rounded border border-border bg-surface-raised p-4">
+        <h2 className="text-sm font-semibold text-muted">Báo cáo đồng bộ sản phẩm</h2>
+        <div>
+          <label className="mb-1 block text-sm font-medium">Email nhận báo cáo đồng bộ</label>
+          <Controller
+            name="product_sync_recipients"
+            control={control}
+            render={({ field }) => (
+              <Select
+                {...field}
+                mode="tags"
+                className="w-full"
+                placeholder="Nhập email rồi nhấn Enter (để trống = dùng email nhận báo cáo đơn hàng)"
+                tokenSeparators={[",", " ", ";"]}
+                open={false}
+                status={errors.product_sync_recipients ? "error" : ""}
+              />
+            )}
+          />
+          {errors.product_sync_recipients ? (
+            <p className={errCls}>{errors.product_sync_recipients.message}</p>
+          ) : (
+            <p className="mt-1 text-xs text-muted">
+              Nhận email tổng hợp (kèm file Excel) sau mỗi lần đồng bộ sản phẩm xuống các site.
+              Để trống sẽ dùng danh sách “Email nhận báo cáo” ở trên.
+            </p>
+          )}
+        </div>
+        <Controller
+          name="product_sync_report_enabled"
+          control={control}
+          render={({ field }) => (
+            <label className="flex items-center gap-2 text-sm">
+              <Switch size="small" checked={!!field.value} onChange={field.onChange} />
+              Gửi email báo cáo sau khi đồng bộ sản phẩm hoàn tất
+            </label>
+          )}
+        />
       </div>
+
+      {(canChange || canTest) && (
+        <div className="flex gap-2">
+          {canChange && (
+            <Button type="primary" htmlType="submit" icon={<Mail size={16} />} loading={busy}>
+              {busy ? "Đang lưu…" : "Lưu cấu hình"}
+            </Button>
+          )}
+          {canTest && (
+            <Button icon={<Send size={16} />} loading={sendTest.isPending} onClick={handleTest}>
+              Gửi email thử
+            </Button>
+          )}
+        </div>
+      )}
     </form>
   );
 }

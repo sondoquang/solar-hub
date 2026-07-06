@@ -12,6 +12,7 @@ import {
 } from "../api/orders.js";
 import { useSites } from "../api/sites.js";
 import { SYNC_OPS, useSyncRunProgress } from "../api/syncReports.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import DataTable from "../components/DataTable.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
@@ -106,6 +107,9 @@ export default function SapoUnpaidOrders() {
   const cancelOrder = useCancelOrder();
   const markPaid = useMarkOrderPaid();
   const qc = useQueryClient();
+  const can = useCan();
+  // Both row actions push a change to Sapo → gated by change_order.
+  const canChangeOrder = can("orders.change_order");
 
   const orderRun = useSyncRunProgress(SYNC_OPS.orders, {
     onFinish: ({ finished, timedOut, expected, errorCount }) => {
@@ -266,8 +270,8 @@ export default function SapoUnpaidOrders() {
       hideable: false,
       ellipsis: false,
       render: (_v, r) => {
-        const paid = canMarkPaid(r);
-        const cancel = canCancel(r);
+        const paid = canChangeOrder && canMarkPaid(r);
+        const cancel = canChangeOrder && canCancel(r);
         return (
           <div className="flex items-center justify-end gap-1">
             <Button
@@ -333,14 +337,16 @@ export default function SapoUnpaidOrders() {
     <section className="pt-4">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-1.5">
         <h1 className="font-display text-2xl font-bold">Đơn hàng Sapo</h1>
-        <Button
-          type="primary"
-          icon={<RefreshCw size={16} />}
-          loading={poll.isPending}
-          onClick={handlePoll}
-        >
-          Đồng bộ ngay
-        </Button>
+        {can("orders.sync_order") && (
+          <Button
+            type="primary"
+            icon={<RefreshCw size={16} />}
+            loading={poll.isPending}
+            onClick={handlePoll}
+          >
+            Đồng bộ ngay
+          </Button>
+        )}
       </div>
 
       {orderRun.activeRun && (

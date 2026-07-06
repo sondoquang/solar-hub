@@ -7,6 +7,7 @@ import {
   Pencil,
   Play,
   Plus,
+  ShieldCheck,
   Star,
   Trash2,
 } from "lucide-react";
@@ -24,7 +25,9 @@ import {
   useTestConnections,
   useUpdateSite,
 } from "../api/sites.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import DataTable from "../components/DataTable.jsx";
+import DomainInfoModal from "../components/DomainInfoModal.jsx";
 import EmptyState from "../components/EmptyState.jsx";
 import ErrorState from "../components/ErrorState.jsx";
 import SiteImport from "../components/SiteImport.jsx";
@@ -40,6 +43,7 @@ export default function Sites() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null); // site being edited, or null
   const [notesSite, setNotesSite] = useState(null); // site whose notes are open, or null
+  const [domainSite, setDomainSite] = useState(null); // site whose domain info is open, or null
   const [selectedKeys, setSelectedKeys] = useState([]);
   const [ordering, setOrdering] = useState(null); // null | "name" | "-name"
   const [hostingFilter, setHostingFilter] = useState("all"); // "all" | "none" | hosting id
@@ -82,6 +86,10 @@ export default function Sites() {
   const testConn = useTestConnection();
   const bulkTest = useTestConnections();
   const importSites = useImportSites();
+  const can = useCan();
+  const canAddSite = can("sites.add_site");
+  const canChangeSite = can("sites.change_site");
+  const canDeleteSite = can("sites.delete_site");
 
   const sites = data?.results ?? [];
   const total = data?.count ?? 0;
@@ -190,7 +198,7 @@ export default function Sites() {
       sortOrder: ordering === "name" ? "ascend" : ordering === "-name" ? "descend" : null,
       render: (name, site) => (
         <span className="inline-flex max-w-full items-center gap-1.5 font-medium">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-info">
             <Globe size={15} />
           </span>
           <span className="truncate">{name}</span>
@@ -200,26 +208,32 @@ export default function Sites() {
           >
             {site.platform === "sapo" ? "Sapo" : "Woo"}
           </Tag>
-          <Tooltip
-            title={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
-          >
-            <Button
-              type="text"
-              size="small"
-              aria-label={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
-              onClick={() => handleTogglePrimary(site)}
-              icon={
-                <Star
-                  size={15}
-                  className={
-                    site.is_primary
-                      ? "fill-amber-400 text-amber-400"
-                      : "text-muted hover:text-amber-400"
-                  }
-                />
-              }
-            />
-          </Tooltip>
+          {canChangeSite ? (
+            <Tooltip
+              title={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
+            >
+              <Button
+                type="text"
+                size="small"
+                aria-label={site.is_primary ? "Bỏ đánh dấu trang chính" : "Đánh dấu trang chính"}
+                onClick={() => handleTogglePrimary(site)}
+                icon={
+                  <Star
+                    size={15}
+                    className={
+                      site.is_primary
+                        ? "fill-amber-400 text-amber-400"
+                        : "text-muted hover:text-amber-400"
+                    }
+                  />
+                }
+              />
+            </Tooltip>
+          ) : (
+            site.is_primary && (
+              <Star size={15} className="shrink-0 fill-amber-400 text-amber-400" aria-label="Trang chính" />
+            )
+          )}
         </span>
       ),
     },
@@ -265,7 +279,7 @@ export default function Sites() {
     {
       key: "actions",
       title: "Hành động",
-      width: 360,
+      width: 440,
       align: "right",
       hideable: false,
       ellipsis: false,
@@ -273,13 +287,22 @@ export default function Sites() {
         const testing = testingId === site.id;
         return (
           <div className="flex items-center justify-end gap-1">
+            {canChangeSite && (
+              <Button
+                size="small"
+                icon={<Play size={14} />}
+                loading={testing}
+                onClick={() => handleTest(site)}
+              >
+                {testing ? "Đang kiểm tra…" : "Test"}
+              </Button>
+            )}
             <Button
               size="small"
-              icon={<Play size={14} />}
-              loading={testing}
-              onClick={() => handleTest(site)}
+              icon={<ShieldCheck size={14} />}
+              onClick={() => setDomainSite(site)}
             >
-              {testing ? "Đang kiểm tra…" : "Test"}
+              Tên miền
             </Button>
             <Button
               size="small"
@@ -288,20 +311,24 @@ export default function Sites() {
             >
               Ghi chú
             </Button>
-            <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(site)}>
-              Sửa
-            </Button>
-            <Popconfirm
-              title="Xóa website này?"
-              description="Site sẽ bị gỡ khỏi hệ thống Hub."
-              okText="Xóa"
-              cancelText="Hủy"
-              onConfirm={() => handleDelete(site)}
-            >
-              <Button size="small" danger icon={<Trash2 size={14} />}>
-                Xóa
+            {canChangeSite && (
+              <Button size="small" icon={<Pencil size={14} />} onClick={() => openEdit(site)}>
+                Sửa
               </Button>
-            </Popconfirm>
+            )}
+            {canDeleteSite && (
+              <Popconfirm
+                title="Xóa website này?"
+                description="Site sẽ bị gỡ khỏi hệ thống Hub."
+                okText="Xóa"
+                cancelText="Hủy"
+                onConfirm={() => handleDelete(site)}
+              >
+                <Button size="small" danger icon={<Trash2 size={14} />}>
+                  Xóa
+                </Button>
+              </Popconfirm>
+            )}
           </div>
         );
       },
@@ -322,32 +349,38 @@ export default function Sites() {
           <h1 className="font-display text-2xl font-bold">Quản lý website</h1>
         </div>
         <div className="flex gap-1">
-          <Button
-            icon={<ClipboardCheck size={16} />}
-            onClick={handleBulkTest}
-            disabled={selectedKeys.length === 0}
-            loading={bulkTest.isPending}
-          >
-            {bulkTest.isPending
-              ? "Đang kiểm tra…"
-              : `Kiểm tra đã chọn (${selectedKeys.length})`}
-          </Button>
-          <Button
-            type="primary"
-            icon={<Plus size={16} />}
-            onClick={() => {
-              setEditing(null);
-              setShowForm(true);
-            }}
-          >
-            Thêm website
-          </Button>
+          {canChangeSite && (
+            <Button
+              icon={<ClipboardCheck size={16} />}
+              onClick={handleBulkTest}
+              disabled={selectedKeys.length === 0}
+              loading={bulkTest.isPending}
+            >
+              {bulkTest.isPending
+                ? "Đang kiểm tra…"
+                : `Kiểm tra đã chọn (${selectedKeys.length})`}
+            </Button>
+          )}
+          {canAddSite && (
+            <Button
+              type="primary"
+              icon={<Plus size={16} />}
+              onClick={() => {
+                setEditing(null);
+                setShowForm(true);
+              }}
+            >
+              Thêm website
+            </Button>
+          )}
         </div>
       </div>
 
-      <div className="mb-2.5">
-        <SiteImport onImport={handleImport} pending={importSites.isPending} hostings={hostings} />
-      </div>
+      {canAddSite && (
+        <div className="mb-2.5">
+          <SiteImport onImport={handleImport} pending={importSites.isPending} hostings={hostings} />
+        </div>
+      )}
 
       <div className="mb-3">
         <SiteStats counts={stats ?? {}} loading={statsLoading} />
@@ -444,11 +477,15 @@ export default function Sites() {
                 className="w-60"
               />
             }
-            rowSelection={{
-              selectedRowKeys: selectedKeys,
-              onChange: setSelectedKeys,
-              preserveSelectedRowKeys: true,
-            }}
+            rowSelection={
+              canChangeSite
+                ? {
+                    selectedRowKeys: selectedKeys,
+                    onChange: setSelectedKeys,
+                    preserveSelectedRowKeys: true,
+                  }
+                : undefined
+            }
             onChange={handleTableChange}
             pagination={{
               current: page,
@@ -495,6 +532,12 @@ export default function Sites() {
         site={notesSite}
         open={!!notesSite}
         onClose={() => setNotesSite(null)}
+      />
+
+      <DomainInfoModal
+        site={domainSite}
+        open={!!domainSite}
+        onClose={() => setDomainSite(null)}
       />
     </section>
   );

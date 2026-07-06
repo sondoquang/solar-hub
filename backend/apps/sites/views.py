@@ -33,6 +33,11 @@ class SiteViewSet(viewsets.ModelViewSet):
     # Primary sites ("trang chính") float to the top so they are the first
     # thing the operator sees on the daily check.
     ordering = ["-is_primary", "-created_at"]
+    action_perms = {
+        "test_connection": ["sites.change_site"],
+        "test_connections": ["sites.change_site"],
+        "import_excel": ["sites.add_site"],
+    }
 
     def get_queryset(self):
         qs = Site.objects.filter(is_deleted=False)
@@ -141,6 +146,10 @@ class HostingViewSet(viewsets.ModelViewSet):
     # table's search box works across all pages, not just the current one.
     filter_backends = [SearchFilter]
     search_fields = ["name", "provider", "account_username"]
+    action_perms = {
+        "check": ["sites.change_hosting"],
+        "import_excel": ["sites.add_hosting"],
+    }
 
     def get_queryset(self):
         return (

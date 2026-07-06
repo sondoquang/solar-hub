@@ -76,6 +76,7 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
     {
       key: "site",
       title: <ColTitle label="Website" hint="Trang web nhận sản phẩm trong lần đồng bộ này." />,
+      width: 200,
       render: (_v, r) => (
         <div className="min-w-0">
           <p className="truncate font-medium">{r.site_name || "—"}</p>
@@ -85,10 +86,25 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
     },
     {
       key: "hosting",
-      dataIndex: "hosting",
-      title: <ColTitle label="Hosting" hint="Nhà cung cấp hosting đang chạy website này." />,
-      width: 150,
-      render: (v) => v || "—",
+      title: (
+        <ColTitle
+          label="Hosting"
+          hint="Gói hosting đang chạy website này — tên gói và tài khoản đăng nhập."
+        />
+      ),
+      width: 190,
+      render: (_v, r) => {
+        const name = r.hosting_name || r.hosting;
+        if (!name && !r.hosting_username) return <span className="text-muted">—</span>;
+        return (
+          <div className="min-w-0">
+            <p className="truncate font-medium">{name || "—"}</p>
+            {r.hosting_username && (
+              <p className="truncate text-xs text-muted">{r.hosting_username}</p>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: "status",
@@ -161,7 +177,7 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
     <div className="flex items-center gap-2">
       <span>Chi tiết lần đồng bộ sản phẩm</span>
       {data && (
-        <span className="rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-blue-300">
+        <span className="rounded-full bg-blue-500/15 px-2.5 py-0.5 text-xs font-semibold text-info">
           {formatDateTime(data.started_at)}
         </span>
       )}
@@ -184,7 +200,7 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
   );
 
   return (
-    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={920}>
+    <Modal open={open} onCancel={onClose} footer={footer} title={title} width={1080}>
       {isError ? (
         <ErrorState message="Không tải được chi tiết lần đồng bộ" onRetry={refetch} />
       ) : (
@@ -206,7 +222,7 @@ export default function ProductRunDetailModal({ runId, open, onClose }) {
             columns={columns}
             dataSource={sites}
             pagination={false}
-            scroll={{ y: 420 }}
+            scroll={{ x: 1000, y: 420 }}
             expandable={{
               rowExpandable: (r) => r.failed.length > 0,
               expandedRowRender: (r) => (

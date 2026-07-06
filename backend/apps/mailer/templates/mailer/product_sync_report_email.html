@@ -1,0 +1,110 @@
+{% autoescape on %}<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ title }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:20px 0;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="760" cellpadding="0" cellspacing="0" style="width:760px;max-width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="padding:20px 24px;border-bottom:3px solid #f59e0b;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="font-size:20px;font-weight:bold;color:#f59e0b;">SOLAR HUB</td>
+                  <td align="right" style="font-size:13px;color:#6b7280;">{{ title }}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Summary -->
+          <tr>
+            <td style="padding:16px 24px;background:#f9fafb;border-bottom:1px solid #e5e7eb;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;">
+                <tr>
+                  <td width="150" style="padding:4px 0;color:#6b7280;">Thời gian đồng bộ</td>
+                  <td style="padding:4px 0;color:#1f2937;">{{ started_at }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;color:#6b7280;">Người thực hiện</td>
+                  <td style="padding:4px 0;color:#1f2937;">{{ triggered_by }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;color:#6b7280;">Sản phẩm đồng bộ</td>
+                  <td style="padding:4px 0;color:#1f2937;">{{ product_scope }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;color:#6b7280;">Số site</td>
+                  <td style="padding:4px 0;color:#1f2937;">{{ site_count }}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;color:#6b7280;">Kết quả theo site</td>
+                  <td style="padding:4px 0;color:#1f2937;">
+                    <span style="color:#16a34a;font-weight:bold;">{{ counts.success }} thành công</span>
+                    {% if counts.partial %}· <span style="color:#b45309;font-weight:bold;">{{ counts.partial }} cảnh báo</span>{% endif %}
+                    {% if counts.error %}· <span style="color:#b91c1c;font-weight:bold;">{{ counts.error }} lỗi</span>{% endif %}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;color:#6b7280;">Tổng kết quả</td>
+                  <td style="padding:4px 0;color:#1f2937;">
+                    Tạo mới {{ totals.created }} · Cập nhật {{ totals.updated }} · Xóa {{ totals.deleted }} · Đã nhận {{ totals.adopted }} · Lỗi {{ totals.failed }}
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:10px 0 0;font-size:12px;color:#6b7280;">
+                Báo cáo chi tiết (nhóm theo hosting) nằm trong file Excel đính kèm.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Per-hosting tables -->
+          {% for group in groups %}
+          <tr>
+            <td style="padding:16px 24px;{% if not forloop.last %}border-bottom:1px solid #e5e7eb;{% endif %}">
+              <p style="margin:0 0 8px;font-size:14px;font-weight:bold;color:#1f2937;">
+                Hosting: {{ group.label }}
+                <span style="font-size:12px;font-weight:normal;color:#6b7280;">— {{ group.sites|length }} site</span>
+              </p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:12px;border-collapse:collapse;border:1px solid #e5e7eb;">
+                <tr style="background:#f9fafb;">
+                  <th align="left" style="padding:7px 6px;border-bottom:1px solid #e5e7eb;">Site</th>
+                  <th align="center" width="120" style="padding:7px 6px;border-bottom:1px solid #e5e7eb;">Trạng thái</th>
+                  <th align="center" width="130" style="padding:7px 6px;border-bottom:1px solid #e5e7eb;">Tạo/Cập nhật/Xóa</th>
+                  <th align="left" style="padding:7px 6px;border-bottom:1px solid #e5e7eb;">Chi tiết lỗi / cảnh báo</th>
+                </tr>
+                {% for site in group.sites %}
+                <tr{% if site.bg %} style="background:{{ site.bg }};"{% endif %}>
+                  <td align="left" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">
+                    {{ site.site_name }}
+                    <div style="font-size:11px;color:#6b7280;">{{ site.site_url }}</div>
+                  </td>
+                  <td align="center" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ site.status_label }}</td>
+                  <td align="center" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ site.created }}/{{ site.updated }}/{{ site.deleted }}</td>
+                  <td align="left" style="padding:7px 6px;color:#1f2937;border-bottom:1px solid #f0f0f0;">{{ site.error_text|default:"—" }}</td>
+                </tr>
+                {% endfor %}
+              </table>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 24px;background:#f9fafb;border-top:1px solid #e5e7eb;">
+              <p style="margin:0;font-size:11px;color:#9ca3af;">
+                Email tự động từ hệ thống Solar Hub. Vui lòng không trả lời email này. Mã lần đồng bộ: {{ run_id }}
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>{% endautoescape %}

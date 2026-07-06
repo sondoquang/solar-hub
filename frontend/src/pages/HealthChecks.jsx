@@ -132,7 +132,7 @@ export default function HealthChecks() {
       width: 240,
       render: (_v, r) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-info">
             <Globe size={15} />
           </span>
           <div className="min-w-0">

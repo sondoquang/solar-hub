@@ -279,3 +279,83 @@ def import_products_task(site_id, run_id=None, triggered_by_id=None):
     finally:
         cache.delete(lock_key)
         connection.close()
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=120)
+def send_product_sync_report_task(self, run_id):
+    """Email the product-sync report for a finished push run — exactly once.
+
+    Enqueued by ``apps.sync.services.finalize_notification`` the moment a push
+    ``Notification`` reaches a terminal state (completed/timeout). The heavy report
+    (Excel + HTML) is built here, off the finalize/read path.
+
+    Idempotency: an atomic filtered UPDATE claims the send by flipping
+    ``report_emailed_at`` null→now; only the first caller proceeds, so a bell read
+    and the beat sweep finalizing the same run never double-send. On a transient
+    SMTP error the claim is released and the task retries; a missing SMTP config or
+    empty recipient list is logged and skipped (nothing to retry)."""
+    import smtplib
+
+    from django.utils import timezone as tz
+
+    from apps.mailer import services as mail_services
+    from apps.mailer.models import MailSettings
+    from apps.sync import services as sync_services
+    from apps.sync.models import Notification
+
+    run_id = str(run_id)
+    settings_obj = MailSettings.load()
+    if not settings_obj.product_sync_report_enabled:
+        return {"status": "disabled", "run_id": run_id}
+
+    # Claim: only the first caller flips report_emailed_at from null → now.
+    claimed = Notification.objects.filter(
+        run_id=run_id, operation="push_products", report_emailed_at__isnull=True
+    ).update(report_emailed_at=tz.now())
+    if not claimed:
+        return {"status": "already_sent", "run_id": run_id}
+
+    try:
+        detail = sync_services.product_run_detail(run_id)
+        if detail is None:
+            return {"status": "no_detail", "run_id": run_id}
+        notif = Notification.objects.filter(run_id=run_id).first()
+        if notif is not None:
+            detail["meta"] = notif.summary or {}
+
+        recipients = mail_services.resolve_product_sync_recipients(settings_obj)
+        xlsx = sync_services.build_product_run_workbook(detail)
+        sent = mail_services.send_product_sync_report(
+            detail, xlsx, recipients=recipients, settings_obj=settings_obj
+        )
+        return {"status": "sent", "run_id": run_id, "recipients": sent}
+    except mail_services.MailNotConfigured as exc:
+        # Not a transient failure — no SMTP account / no recipient. Log and stop
+        # (leave the claim set so we don't spin retrying an unfixable send).
+        logger.warning("mailer: product-sync report skipped run_id=%s: %s", run_id, exc)
+        return {"status": "not_configured", "run_id": run_id}
+    except (smtplib.SMTPException, OSError) as exc:
+        # Transient send failure: release the claim so a retry can send again.
+        Notification.objects.filter(run_id=run_id).update(report_emailed_at=None)
+        logger.error("mailer: product-sync report send failed run_id=%s (SMTP)", run_id)
+        raise self.retry(exc=exc)
+    finally:
+        connection.close()
+
+
+@shared_task
+def finalize_push_notifications():
+    """Beat sweep: close out RUNNING push notifications nobody polled.
+
+    Notifications are normally finalized lazily when the bell/list endpoint is
+    read (see ``apps.sync.services.finalize_notification``). This tick is the
+    safety net for a run that completed while no client was open — it flips such
+    a notification to ``completed``/``timeout`` so the badge and history are
+    correct the next time someone opens the app."""
+    from apps.sync import services as sync_services
+
+    try:
+        sync_services.finalize_running_notifications()
+    finally:
+        connection.close()
+    return {"ok": True}

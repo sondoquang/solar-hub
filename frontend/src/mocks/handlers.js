@@ -53,6 +53,79 @@ export const handlers = [
       ],
     })
   ),
+  // Domain-info snapshots. The detail route ("*/domain-info/:siteId/") is
+  // registered before the broad "*/sites/" glob for consistency with the file's
+  // ordering convention (it does not actually overlap that glob).
+  http.get("*/domain-info/:siteId/", ({ params }) =>
+    HttpResponse.json({
+      id: 1,
+      site: Number(params.siteId),
+      site_name: "Shop A",
+      base_url: "https://a.example.com",
+      host: "a.example.com",
+      domain: "example.com",
+      whois_status: "ok",
+      whois_registrar: "GoDaddy.com, LLC",
+      whois_created_at: "2020-01-02T00:00:00Z",
+      whois_expires_at: "2027-01-02T00:00:00Z",
+      whois_days_remaining: 180,
+      whois_source: "rdap",
+      whois_checked_at: "2026-07-01T00:00:00Z",
+      dns_status: "ok",
+      dns_records: { A: ["1.2.3.4"], MX: ["10 mail.example.com"], NS: ["ns1.example.com"] },
+      dns_checked_at: "2026-07-01T00:00:00Z",
+      ssl_status: "ok",
+      ssl_issuer: "CN=R11,O=Let's Encrypt",
+      ssl_subject: "CN=a.example.com",
+      ssl_not_before: "2026-05-01T00:00:00Z",
+      ssl_not_after: "2026-08-01T00:00:00Z",
+      ssl_days_remaining: 20,
+      ssl_checked_at: "2026-07-01T00:00:00Z",
+      blacklist_status: "ok",
+      blacklist_verdict: "clean",
+      blacklist_results: [
+        { list: "zen.spamhaus.org", target: "1.2.3.4", result: "clean", detail: "" },
+      ],
+      blacklist_checked_at: "2026-07-01T00:00:00Z",
+      gindex_status: "skipped",
+      gindex_indexed: null,
+      gindex_total_results: null,
+      gindex_checked_at: null,
+      last_refreshed_at: "2026-07-01T00:00:00Z",
+      last_error: "",
+      is_pending: false,
+    })
+  ),
+  http.post("*/domain-info/refresh-all/", () =>
+    HttpResponse.json({ queued: true }, { status: 202 })
+  ),
+  http.post("*/domain-info/:siteId/refresh/", ({ params }) =>
+    HttpResponse.json({ site: Number(params.siteId), is_pending: true }, { status: 202 })
+  ),
+  http.get("*/domain-info/", () =>
+    HttpResponse.json({
+      count: 1,
+      next: null,
+      previous: null,
+      results: [
+        {
+          id: 1,
+          site: 1,
+          site_name: "Shop A",
+          domain: "example.com",
+          whois_status: "ok",
+          whois_expires_at: "2027-01-02T00:00:00Z",
+          whois_days_remaining: 180,
+          ssl_not_after: "2026-08-01T00:00:00Z",
+          ssl_days_remaining: 20,
+          blacklist_verdict: "clean",
+          gindex_status: "skipped",
+          gindex_indexed: null,
+          last_refreshed_at: "2026-07-01T00:00:00Z",
+        },
+      ],
+    })
+  ),
   http.get("*/sites/", () =>
     HttpResponse.json({
       count: 1,
@@ -231,4 +304,146 @@ export const handlers = [
       recipient: body.recipient,
     });
   }),
+  // --- RBAC: users / groups / permission catalog -------------------------
+  // The specific "*/auth/users/:id/{action}/" routes MUST precede the broad
+  // "*/auth/users/:id/" one, or the glob shadows them (file-wide convention).
+  http.post("*/auth/users/:id/activate/", ({ params }) =>
+    HttpResponse.json({ id: Number(params.id), is_active: true })
+  ),
+  http.post("*/auth/users/:id/set_password/", () =>
+    new HttpResponse(null, { status: 204 })
+  ),
+  http.patch("*/auth/users/:id/", async ({ params, request }) => {
+    const body = await request.json();
+    return HttpResponse.json({
+      id: Number(params.id),
+      username: "nhanvien01",
+      email: body.email ?? "nv@example.com",
+      full_name: body.full_name || "Nguyễn Văn A",
+      is_active: body.is_active ?? true,
+      is_superuser: false,
+      groups: [],
+      last_login: null,
+      date_joined: "2026-06-01T00:00:00Z",
+    });
+  }),
+  http.delete("*/auth/users/:id/", () => new HttpResponse(null, { status: 204 })),
+  http.post("*/auth/users/", async ({ request }) => {
+    const body = await request.json();
+    return HttpResponse.json(
+      {
+        id: 99,
+        username: body.username,
+        email: body.email ?? "",
+        full_name: body.full_name || body.username,
+        is_active: true,
+        is_superuser: false,
+        groups: [],
+        last_login: null,
+        date_joined: "2026-07-01T00:00:00Z",
+      },
+      { status: 201 }
+    );
+  }),
+  http.get("*/auth/users/", () =>
+    HttpResponse.json({
+      count: 2,
+      next: null,
+      previous: null,
+      results: [
+        {
+          id: 1,
+          username: "admin",
+          email: "admin@example.com",
+          full_name: "Quản trị",
+          is_active: true,
+          is_superuser: true,
+          groups: [{ id: 1, name: "Quản trị viên" }],
+          last_login: "2026-07-03T08:00:00Z",
+          date_joined: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: 2,
+          username: "marketing01",
+          email: "mkt@example.com",
+          full_name: "Trần Thị B",
+          is_active: false,
+          is_superuser: false,
+          groups: [{ id: 3, name: "Marketing" }],
+          last_login: null,
+          date_joined: "2026-05-01T00:00:00Z",
+        },
+      ],
+    })
+  ),
+  http.post("*/auth/groups/", async ({ request }) => {
+    const body = await request.json();
+    return HttpResponse.json(
+      {
+        id: 42,
+        name: body.name,
+        permission_ids: body.permission_ids ?? [],
+        permission_count: (body.permission_ids ?? []).length,
+        user_count: 0,
+      },
+      { status: 201 }
+    );
+  }),
+  http.patch("*/auth/groups/:id/", async ({ params, request }) => {
+    const body = await request.json();
+    return HttpResponse.json({
+      id: Number(params.id),
+      name: body.name ?? "Nhóm",
+      permission_ids: body.permission_ids ?? [],
+      permission_count: (body.permission_ids ?? []).length,
+      user_count: 0,
+    });
+  }),
+  http.delete("*/auth/groups/:id/", () => new HttpResponse(null, { status: 204 })),
+  http.get("*/auth/groups/", () =>
+    HttpResponse.json({
+      count: 2,
+      next: null,
+      previous: null,
+      results: [
+        { id: 1, name: "Quản trị viên", permission_count: 83, user_count: 3 },
+        { id: 3, name: "Marketing", permission_count: 7, user_count: 1 },
+      ],
+    })
+  ),
+  http.get("*/auth/permissions/", () =>
+    HttpResponse.json([
+      {
+        module: "orders",
+        label: "Đơn hàng",
+        models: [
+          {
+            model: "order",
+            label: "Đơn hàng",
+            permissions: [
+              { id: 10, codename: "view_order", perm: "orders.view_order", label: "Xem", is_custom: false },
+              { id: 11, codename: "add_order", perm: "orders.add_order", label: "Thêm", is_custom: false },
+              { id: 12, codename: "change_order", perm: "orders.change_order", label: "Sửa", is_custom: false },
+              { id: 13, codename: "delete_order", perm: "orders.delete_order", label: "Xóa", is_custom: false },
+              { id: 14, codename: "forward_order", perm: "orders.forward_order", label: "Có thể chuyển đơn sang marketing", is_custom: true },
+            ],
+          },
+        ],
+      },
+      {
+        module: "domains",
+        label: "Tên miền",
+        models: [
+          {
+            model: "domaininfo",
+            label: "Thông tin tên miền",
+            permissions: [
+              { id: 20, codename: "view_domaininfo", perm: "domains.view_domaininfo", label: "Xem", is_custom: false },
+              { id: 21, codename: "refresh_domaininfo", perm: "domains.refresh_domaininfo", label: "Có thể kiểm tra lại thông tin tên miền", is_custom: true },
+            ],
+          },
+        ],
+      },
+    ])
+  ),
 ];

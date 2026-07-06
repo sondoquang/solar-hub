@@ -8,14 +8,18 @@ import { RouterProvider } from "react-router-dom";
 
 import "antd/dist/reset.css";
 import { queryClient } from "./api/queryClient.js";
-import { theme } from "./lib/antdTheme.js";
+import { makeAntdTheme } from "./lib/antdTheme.js";
+import { ThemeProvider, useTheme } from "./lib/ThemeContext.jsx";
 import { router } from "./routes.jsx";
 import "./index.css";
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
+// Reads the current theme mode and feeds the matching antd config to
+// ConfigProvider, so antd components flip with the CSS-variable palette.
+function ThemedApp() {
+  const { mode } = useTheme();
+  return (
     <StyleProvider layer>
-      <ConfigProvider theme={theme} locale={viVN}>
+      <ConfigProvider theme={makeAntdTheme(mode)} locale={viVN}>
         <AntApp>
           <QueryClientProvider client={queryClient}>
             <RouterProvider router={router} />
@@ -23,5 +27,13 @@ ReactDOM.createRoot(document.getElementById("root")).render(
         </AntApp>
       </ConfigProvider>
     </StyleProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <ThemeProvider>
+      <ThemedApp />
+    </ThemeProvider>
   </React.StrictMode>
 );

@@ -44,9 +44,9 @@ function OrderRow({ order, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-start gap-2.5 rounded px-2 py-2 text-left transition-colors hover:bg-white/5"
+      className="flex w-full items-start gap-2.5 rounded px-2 py-2 text-left transition-colors hover:bg-overlay/5"
     >
-      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-info">
         <ClipboardList size={15} />
       </span>
       <div className="min-w-0 flex-1">
@@ -127,7 +127,7 @@ export default function NotificationBell() {
       <button
         type="button"
         onClick={() => goToOrders()}
-        className="block w-full border-t border-border px-3 py-2 text-center text-sm font-medium text-brand hover:bg-white/5"
+        className="block w-full border-t border-border px-3 py-2 text-center text-sm font-medium text-brand hover:bg-overlay/5"
       >
         Xem tất cả đơn chưa xử lý
       </button>
@@ -147,7 +147,7 @@ export default function NotificationBell() {
     >
       <button
         type="button"
-        className="relative rounded-full p-1.5 text-muted hover:bg-white/5 hover:text-ink"
+        className="relative rounded-full p-1.5 text-muted hover:bg-overlay/5 hover:text-ink"
         aria-label={count > 0 ? `Thông báo: ${count} đơn hàng chưa xử lý` : "Thông báo"}
       >
         <Bell size={20} />

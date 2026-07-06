@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useCategoryMatrix, useCategoryOverview } from "../api/products.js";
 import { useAllSites } from "../api/sites.js";
 import { useCategoryRuns } from "../api/syncReports.js";
+import { useCan } from "../lib/AuthContext.jsx";
 import { formatDate } from "../lib/format.js";
 import { RunStatusTag } from "./CategoryRunDetailModal.jsx";
 import DataTable from "./DataTable.jsx";
@@ -22,6 +23,7 @@ const vi = (n) => (n ?? 0).toLocaleString("vi-VN");
 // backend (overview / matrix / category-runs). `onPull(siteIds)`/`pulling` are
 // owned by the page so the pull + run-polling stays in one place.
 export default function CategoryOverviewTab({ onPull, pulling }) {
+  const canPull = useCan()("catalog.pull_category");
   const [pullSite, setPullSite] = useState(null);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
@@ -55,7 +57,7 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       value: vi(o.hub_used),
       sub: `Trong tổng số ${vi(o.hub_total)} danh mục`,
       Icon: Boxes,
-      tint: "bg-blue-500/15 text-blue-300",
+      tint: "bg-blue-500/15 text-info",
     },
     {
       key: "linked",
@@ -161,39 +163,47 @@ export default function CategoryOverviewTab({ onPull, pulling }) {
       <StatCards cards={cards} loading={overview.isLoading} columns={4} />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        {/* Scoped pull (Woo → Hub) */}
-        <div className="rounded bg-surface-raised p-3 border border-border">
-          <h3 className="font-display text-base font-semibold">Đồng bộ danh mục từ website (PULL)</h3>
-          <p className="mt-1 text-sm text-muted">
-            Kéo danh mục từ một website về Hub. Dữ liệu được gộp, chuẩn hóa và dựng
-            cây cha–con.
-          </p>
-          <p className="mt-3 text-sm text-muted">Chọn website</p>
-          <Select
-            showSearch
-            allowClear
-            loading={sitesLoading}
-            value={pullSite}
-            placeholder="Chọn website"
-            optionFilterProp="label"
-            className="mt-1 w-full"
-            onChange={(v) => setPullSite(v ?? null)}
-            options={sites.map((s) => ({ value: s.id, label: s.name }))}
-          />
-          <Button
-            type="primary"
-            block
-            className="mt-2"
-            disabled={!pullSite}
-            loading={pulling}
-            onClick={() => onPull([pullSite])}
-          >
-            Đồng bộ ngay
-          </Button>
-        </div>
+        {/* Scoped pull (Woo → Hub) — only for users who can pull categories. */}
+        {canPull && (
+          <div className="rounded bg-surface-raised p-3 border border-border">
+            <h3 className="font-display text-base font-semibold">Đồng bộ danh mục từ website (PULL)</h3>
+            <p className="mt-1 text-sm text-muted">
+              Kéo danh mục từ một website về Hub. Dữ liệu được gộp, chuẩn hóa và dựng
+              cây cha–con.
+            </p>
+            <p className="mt-3 text-sm text-muted">Chọn website</p>
+            <Select
+              showSearch
+              allowClear
+              loading={sitesLoading}
+              value={pullSite}
+              placeholder="Chọn website"
+              optionFilterProp="label"
+              className="mt-1 w-full"
+              onChange={(v) => setPullSite(v ?? null)}
+              options={sites.map((s) => ({ value: s.id, label: s.name }))}
+            />
+            <Button
+              type="primary"
+              block
+              className="mt-2"
+              disabled={!pullSite}
+              loading={pulling}
+              onClick={() => onPull([pullSite])}
+            >
+              Đồng bộ ngay
+            </Button>
+          </div>
+        )}
 
-        {/* Recent runs */}
-        <div className="rounded bg-surface-raised p-3 border border-border lg:col-span-2">
+        {/* Recent runs — spans full width when the pull panel is hidden. */}
+        <div
+          className={
+            canPull
+              ? "rounded bg-surface-raised p-3 border border-border lg:col-span-2"
+              : "rounded bg-surface-raised p-3 border border-border lg:col-span-3"
+          }
+        >
           <h3 className="font-display text-base font-semibold">Lịch sử đồng bộ gần đây</h3>
           {recent.isError ? (
             <ErrorState message="Không tải được lịch sử" onRetry={recent.refetch} />

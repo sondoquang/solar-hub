@@ -9,10 +9,10 @@ const MAP = {
     text: "text-warning",
     label: "Thanh toán một phần",
   },
-  refunded: { bg: "bg-white/10", text: "text-slate-300", label: "Đã hoàn tiền" },
+  refunded: { bg: "bg-overlay/10", text: "text-muted", label: "Đã hoàn tiền" },
   partially_refunded: {
-    bg: "bg-white/10",
-    text: "text-slate-300",
+    bg: "bg-overlay/10",
+    text: "text-muted",
     label: "Hoàn tiền một phần",
   },
   voided: { bg: "bg-red-500/15", text: "text-danger", label: "Đã hủy thanh toán" },
@@ -20,8 +20,8 @@ const MAP = {
 
 export default function PaymentStatusBadge({ status }) {
   const { bg, text, label } = MAP[status] || {
-    bg: "bg-white/10",
-    text: "text-slate-300",
+    bg: "bg-overlay/10",
+    text: "text-muted",
     label: status || "—",
   };
   return (

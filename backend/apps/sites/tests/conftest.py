@@ -7,10 +7,11 @@ from rest_framework.test import APIClient
 def client(db):
     """Authenticated API client shared by all site/hosting API tests.
 
-    Every Hub endpoint requires auth (settings DEFAULT_PERMISSION_CLASSES =
-    IsAuthenticated), so tests must authenticate to exercise the real behaviour.
+    Every Hub endpoint requires auth + model permissions (settings
+    DEFAULT_PERMISSION_CLASSES = RBACPermission), so business tests run as a
+    superuser; the RBAC layer itself is covered in apps/accounts/tests.
     """
-    user = get_user_model().objects.create_user(username="tester", password="x")
+    user = get_user_model().objects.create_superuser(username="tester", password="x")
     api = APIClient()
     api.force_authenticate(user=user)
     return api

@@ -26,7 +26,7 @@ export default function HealthCheckStats({ stats = {}, loading = false }) {
       label: "Tổng số lần kiểm tra",
       value: total,
       Icon: Activity,
-      tint: "bg-blue-500/15 text-blue-300",
+      tint: "bg-blue-500/15 text-info",
       sub: <Trend value={stats.trend_pct} />,
     },
     {

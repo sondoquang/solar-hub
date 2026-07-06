@@ -29,6 +29,8 @@ const detail = {
       site_name: "A-Site",
       site_url: "https://a-site.example.com",
       hosting: "TenTen",
+      hosting_name: "TenTen Hosting",
+      hosting_username: "solar_admin",
       status: "partial",
       error: "",
       created: 4,
@@ -55,6 +57,8 @@ const detail = {
       site_name: "B-Site",
       site_url: "https://b-site.example.com",
       hosting: "",
+      hosting_name: "",
+      hosting_username: "",
       status: "error",
       error: "ConnectError",
       created: 0,
@@ -87,7 +91,9 @@ describe("ProductRunDetailModal", () => {
       screen.getByText(/2 site — tạo mới 4, cập nhật\s*1, đã nhận theo tên 2/)
     ).toBeInTheDocument();
     expect(screen.getByText("A-Site")).toBeInTheDocument();
-    expect(screen.getByText("TenTen")).toBeInTheDocument();
+    // Hosting column shows the hosting name + its login account, not the raw provider.
+    expect(screen.getByText("TenTen Hosting")).toBeInTheDocument();
+    expect(screen.getByText("solar_admin")).toBeInTheDocument();
     // Raw "ConnectError" is mapped to an end-user message; the raw token lives in a tooltip.
     expect(screen.getByText("Không kết nối được tới website")).toBeInTheDocument();
     expect(screen.queryByText("ConnectError")).not.toBeInTheDocument();

@@ -11,7 +11,7 @@ export default function ProductStats({ stats = {}, loading = false }) {
       label: "Tổng sản phẩm",
       value: (stats.total ?? 0).toLocaleString("vi-VN"),
       Icon: Package,
-      tint: "bg-blue-500/15 text-blue-300",
+      tint: "bg-blue-500/15 text-info",
     },
     {
       key: "mapped",

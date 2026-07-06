@@ -192,9 +192,9 @@ export default function UserMenu() {
       >
         <button
           type="button"
-          className="flex cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-1.5 py-1 hover:bg-white/5"
+          className="flex cursor-pointer items-center gap-1.5 rounded-lg border-0 bg-transparent px-1.5 py-1 hover:bg-overlay/5"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-text">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-overlay/10 text-sm font-semibold text-text">
             {initialsOf(user)}
           </span>
           <div className="text-right text-sm leading-tight">

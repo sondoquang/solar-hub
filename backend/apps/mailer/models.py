@@ -45,6 +45,15 @@ class MailSettings(models.Model):
     # Recipients of the twice-daily digest (list of email strings).
     recipients = models.JSONField(default=list, blank=True)
 
+    # Recipients of the product-sync report email (sent once a push run finishes,
+    # see apps.sync.tasks.send_product_sync_report_task). A separate list from the
+    # order digest so the two audiences can differ; when left empty the report
+    # falls back to ``recipients`` (see apps.mailer.services.product_sync_recipients).
+    product_sync_recipients = models.JSONField(default=list, blank=True)
+    # Master switch for the product-sync report email (the push itself is
+    # unaffected — only whether a report is emailed on completion).
+    product_sync_report_enabled = models.BooleanField(default=True)
+
     # Master switch for the scheduled digest (manual send is unaffected).
     digest_enabled = models.BooleanField(default=True)
     # Daily local-time slots the digest fires at, as ``"HH:MM"`` strings (e.g.
@@ -60,6 +69,9 @@ class MailSettings(models.Model):
     class Meta:
         verbose_name = "Cấu hình Mail SMTP"
         verbose_name_plural = "Cấu hình Mail SMTP"
+        permissions = [
+            ("test_mailsettings", "Có thể gửi email thử"),
+        ]
 
     def __str__(self) -> str:
         return f"MailSettings({self.username or 'chưa cấu hình'})"
