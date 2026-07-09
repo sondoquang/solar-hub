@@ -14,6 +14,8 @@ from django.db.models import Count, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
+from apps.core.logging_utils import log_event
+
 from .models import GENUINE, SPAM, SUSPICIOUS, Order
 
 logger = logging.getLogger(__name__)
@@ -650,6 +652,10 @@ def poll_site(
     from apps.sites.services import client_for_site
 
     started = timezone.now()
+    log_event(
+        logger, logging.INFO, "poll_site start",
+        site_id=site.id, status=status, run_id=run_id,
+    )
     after, before = _date_bounds(date_from, date_to)
     if after or before:
         modified_after = None
@@ -676,11 +682,10 @@ def poll_site(
             modified_after=modified_after,
         )
     except httpx.HTTPError as exc:
-        logger.error(
-            "poll_site failed site_id=%s status=%s: %s",
-            site.id,
-            status,
-            exc.__class__.__name__,
+        log_event(
+            logger, logging.ERROR, "poll_site fail",
+            site_id=site.id, status=status, err=exc.__class__.__name__,
+            elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
         )
         _log_poll(
             site, status, started=started, run_id=run_id, triggered_by_id=triggered_by_id,
@@ -705,6 +710,11 @@ def poll_site(
     _log_poll(
         site, status, started=started, run_id=run_id, triggered_by_id=triggered_by_id,
         ok=True, fetched=len(orders), created=created, updated=updated, error=None,
+    )
+    log_event(
+        logger, logging.INFO, "poll_site ok",
+        site_id=site.id, status=status, fetched=len(orders), created=created, updated=updated,
+        elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
     )
     return {
         "site_id": site.id,

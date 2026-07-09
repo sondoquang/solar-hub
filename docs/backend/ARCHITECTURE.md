@@ -255,6 +255,20 @@ Khác biệt nền tảng được hấp thụ bên trong client:
 - Task **idempotent**, có **retry + backoff** cho lỗi mạng, **timeout** mọi call ngoài.
 - Sync N site = N task con (lỗi một site không kéo cả mẻ).
 
+## 7b. Logging & quan sát (observability)
+
+Cấu hình ở `config/settings.py` (`LOGGING` dictConfig). Log ra **console** (Docker thu stdout theo từng service) **và** file **xoay vòng** (`RotatingFileHandler`) trong `LOG_DIR` (mặc định `<backend>/logs`, được `.gitignore`). Handler `error_file` gom riêng `WARNING+` (`error.log`) để tra lỗi nhanh.
+
+- **Logger theo module:** mọi module dùng `logging.getLogger(__name__)` → tên `apps.<app>.<module>`. Chỉ cấu hình logger cha `apps` (+ override từng app) là đủ; **không** phải khai báo logger ở mỗi file. Formatter `verbose` in `name.funcName:lineno` → mỗi dòng log truy được về đúng **function**.
+- **Mức log qua env:** `LOG_LEVEL` (mặc định `INFO`), override theo app `LOG_LEVEL_<APP>` (vd `LOG_LEVEL_CATALOG=DEBUG`). File/xoay vòng: `LOG_FILE_NAME`, `LOG_FILE_MAX_BYTES`, `LOG_FILE_BACKUP_COUNT`, `LOG_DIR`.
+- **Mỗi process một file:** backend + 2 celery worker + beat cùng bind-mount `./backend`, nên `docker-compose.yml` đặt `LOG_FILE_NAME` khác nhau cho từng service (`web.log`, `celery-interactive.log`, `celery-periodic.log`, `celery-beat.log`) — tránh nhiều tiến trình xoay vòng đè một file.
+- **Phủ 3 tầng, một chỗ cho view & task:**
+  - **View:** `apps/core/middleware.py::RequestLogMiddleware` ghi **1 dòng/request** (`request method= path= status= user= dur_ms=`) qua logger `apps.request` — phủ mọi DRF view/action, không sửa từng view.
+  - **Task:** signal Celery trong `config/celery.py` (`task_prerun/postrun/failure`) log `task start/end/fail` + `elapsed_ms` cho **mọi** task qua logger `apps.task` (đặt `worker_hijack_root_logger=False` để giữ dictConfig). **Không** log args/kwargs của task.
+  - **Service:** các **function biên** (vd `push_products_to_site`, `pull_categories_for_site`, `import_products_from_site`, `poll_site`, `test_connection`, `check_hosting`, `send_digest`, `refresh_domain_info`) log `<func> start` / `<func> ok|done` (+ `elapsed_ms`) / `<func> fail`. Helper chung: `apps/core/logging_utils.py::log_event(logger, level, event, **fields)` → dòng `event k=v k=v` (bỏ field `None`, tự quote khi có dấu cách).
+- **Quy tắc PII (CLAUDE.md #4):** file log nằm trên volume host — **cấm** log tên/sđt/địa chỉ/email khách; chỉ id/số lượng/trạng thái/thời gian. Middleware chỉ log `request.path` (không query string), `user.id` (không username/email); signal task không log payload.
+- **Thêm function mới:** theo mẫu `log_event(logger, logging.INFO, "<func> start", ...)` ở đầu, `"<func> ok"` trước return thành công (kèm `elapsed_ms`), `"<func> fail"` trong `except` (dùng `logger.exception(...)` hoặc `log_event(..., exc_info=True)` nếu cần traceback).
+
 ## 8. Quyết định thiết kế (tóm tắt)
 
 | Quyết định | Lý do |
@@ -268,6 +282,7 @@ Khác biệt nền tảng được hấp thụ bên trong client:
 | Django (vs Spring Boot) | Admin dựng sẵn UI quản trị + Celery/Beat gọn cho job định kỳ. |
 | Hai queue Celery (interactive/periodic) + worker riêng | Sync người dùng bấm không xếp sau job nền; default queue = periodic để task mới không chặn UI. |
 | Sapo qua adapter cùng bề mặt WooClient | Service/task/test không đổi khi thêm nền tảng; đặc thù Sapo (không batch, variant-centric, collections phẳng) cô lập trong `sapo.py`. |
+| Logging: view = middleware, task = Celery signal, service = `log_event` thủ công | Phủ view/task ở **một chỗ** (không sửa từng view/task), service log ở function biên để đọc được ý nghĩa; format `event k=v` đồng nhất, không PII (xem §7b). |
 
 ## 8b. Trạng thái hiện thực (Phase 1 — Site registry)
 

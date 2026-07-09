@@ -5,6 +5,7 @@ __pycache__/
 *.sqlite3
 backend/staticfiles/
 backend/media/
+backend/logs/
 .pytest_cache/
 .ruff_cache/
 

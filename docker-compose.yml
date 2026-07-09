@@ -18,6 +18,10 @@ services:
   backend:
     build: ./backend
     env_file: ./backend/.env
+    # Per-process log file so RotatingFileHandler doesn't rotate a file another
+    # process is writing (all services bind-mount ./backend → share ./backend/logs).
+    environment:
+      - LOG_FILE_NAME=web.log
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./backend:/app
@@ -34,6 +38,8 @@ services:
   celery_worker_interactive:
     build: ./backend
     env_file: ./backend/.env
+    environment:
+      - LOG_FILE_NAME=celery-interactive.log
     command: celery -A config worker -l info -Q interactive --concurrency=2
     volumes:
       - ./backend:/app
@@ -46,6 +52,8 @@ services:
   celery_worker_periodic:
     build: ./backend
     env_file: ./backend/.env
+    environment:
+      - LOG_FILE_NAME=celery-periodic.log
     command: celery -A config worker -l info -Q periodic --concurrency=2
     volumes:
       - ./backend:/app
@@ -58,6 +66,8 @@ services:
   celery_beat:
     build: ./backend
     env_file: ./backend/.env
+    environment:
+      - LOG_FILE_NAME=celery-beat.log
     command: celery -A config beat -l info
     volumes:
       - ./backend:/app

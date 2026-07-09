@@ -19,6 +19,7 @@ from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.core.logging_utils import log_event
 from apps.sync.models import SyncLog
 
 from .models import (
@@ -1051,6 +1052,11 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
     else:
         masters = list(masters)
 
+    log_event(
+        logger, logging.INFO, "push_products start",
+        site_id=site.id, masters=len(masters), run_id=run_id,
+    )
+
     client = client_for_site(site)
     category_id_by_name = _category_id_map(site)
     # Hub images already sideloaded to this site: build_product_payload rewrites
@@ -1319,7 +1325,11 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             site, client, plan_masters, image_ids_by_woo_id, media_map
         )
     except httpx.HTTPError as exc:
-        logger.error("push_products failed site_id=%s: %s", site.id, exc.__class__.__name__)
+        log_event(
+            logger, logging.ERROR, "push_products fail",
+            site_id=site.id, err=exc.__class__.__name__,
+            elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
+        )
         SyncLog.objects.create(
             site=site,
             operation=OPERATION,
@@ -1400,6 +1410,12 @@ def push_products_to_site(site, *, masters=None, run_id=None, triggered_by_id=No
             **_site_snapshot(site),
         },
         **audit,
+    )
+    log_event(
+        logger, logging.INFO, "push_products ok",
+        site_id=site.id, status=status, created=created, updated=updated, deleted=deleted,
+        failures=len(failures) or None,
+        elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
     )
     return {
         "site_id": site.id,
@@ -1846,11 +1862,16 @@ def pull_categories_for_site(site, run_id=None, triggered_by_id=None) -> dict:
     # Stamped onto every SyncLog this call writes (any branch) so the report has
     # the who/duration regardless of outcome.
     audit = {"run_id": run_id, "triggered_by_id": triggered_by_id, "started_at": started}
+    log_event(logger, logging.INFO, "pull_categories start", site_id=site.id, run_id=run_id)
 
     try:
         cats = client_for_site(site).list_categories()
     except httpx.HTTPError as exc:
-        logger.error("pull_categories failed site_id=%s: %s", site.id, exc.__class__.__name__)
+        log_event(
+            logger, logging.ERROR, "pull_categories fail",
+            site_id=site.id, err=exc.__class__.__name__,
+            elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
+        )
         SyncLog.objects.create(
             site=site,
             operation=CATEGORY_OPERATION,
@@ -1968,6 +1989,11 @@ def pull_categories_for_site(site, run_id=None, triggered_by_id=None) -> dict:
             ),
         },
         **audit,
+    )
+    log_event(
+        logger, logging.INFO, "pull_categories ok",
+        site_id=site.id, pulled=pulled,
+        elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
     )
     return {"site_id": site.id, "pulled": pulled, "error": None}
 
@@ -2335,11 +2361,16 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
 
     started = timezone.now()
     audit = {"run_id": run_id, "triggered_by_id": triggered_by_id, "started_at": started}
+    log_event(logger, logging.INFO, "import_products start", site_id=site.id, run_id=run_id)
 
     try:
         products = client_for_site(site).list_products()
     except httpx.HTTPError as exc:
-        logger.error("import_products failed site_id=%s: %s", site.id, exc.__class__.__name__)
+        log_event(
+            logger, logging.ERROR, "import_products fail",
+            site_id=site.id, err=exc.__class__.__name__,
+            elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
+        )
         SyncLog.objects.create(
             site=site,
             operation=IMPORT_OPERATION,
@@ -2464,6 +2495,12 @@ def import_products_from_site(site, *, run_id=None, triggered_by_id=None) -> dic
             **_site_snapshot(site),
         },
         **audit,
+    )
+    log_event(
+        logger, logging.INFO, "import_products ok",
+        site_id=site.id, imported=created + linked, created=created, linked=linked,
+        skipped=skipped, name_ambiguous=name_ambiguous or None,
+        elapsed_ms=int((timezone.now() - started).total_seconds() * 1000),
     )
     return {
         "site_id": site.id,

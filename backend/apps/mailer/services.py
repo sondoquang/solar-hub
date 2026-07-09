@@ -19,6 +19,7 @@ from django.core import mail
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 
+from apps.core.logging_utils import log_event
 from apps.orders.models import GENUINE, Order
 from apps.orders.pdf import build_orders_pdf
 
@@ -324,6 +325,10 @@ def send_digest(*, settings_obj: MailSettings | None = None) -> dict:
 
     s.last_digest_sent_at = now
     s.save(update_fields=["last_digest_sent_at", "updated_at"])
+    log_event(
+        logger, logging.INFO, "send_digest ok",
+        sent=len(orders), recipients=len(recipients),
+    )
     return {"sent": len(orders), "recipients": len(recipients)}
 
 

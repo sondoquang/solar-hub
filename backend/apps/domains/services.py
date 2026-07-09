@@ -6,6 +6,7 @@ The lookups are slow network I/O, so nothing here may be called from the DRF
 request cycle; views only ``mark_pending`` + enqueue.
 """
 
+import logging
 from urllib.parse import urlsplit
 
 import tldextract
@@ -13,8 +14,12 @@ from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
+from apps.core.logging_utils import log_event
+
 from .checks import dns_lookup, dnsbl, google_index, ssl_probe, whois_lookup
 from .models import DomainInfo
+
+logger = logging.getLogger(__name__)
 
 ALL_CHECKS = ("whois", "dns", "ssl", "blacklist", "gindex")
 
@@ -71,10 +76,21 @@ def refresh_domain_info(site, checks=None, *, force=False) -> DomainInfo:
     lock = f"domain-refresh:{site.id}"
     if not cache.add(lock, 1, timeout=120):
         return info  # another worker is already refreshing this site
+    log_event(
+        logger, logging.INFO, "refresh_domain_info start",
+        site_id=site.id, checks=len(requested),
+    )
     try:
-        return _run_checks(info, host, domain, requested, force)
+        info = _run_checks(info, host, domain, requested, force)
     finally:
         cache.delete(lock)
+    # Checks never raise; any failure is captured per-check into last_error.
+    n_errors = len(info.last_error.split("; ")) if info.last_error else 0
+    log_event(
+        logger, logging.WARNING if n_errors else logging.INFO, "refresh_domain_info done",
+        site_id=site.id, errors=n_errors or None,
+    )
+    return info
 
 
 def _run_checks(info, host, domain, requested, force) -> DomainInfo:

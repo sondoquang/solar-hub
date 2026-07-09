@@ -4,6 +4,7 @@ All environment-specific values are read from a `.env` file (django-environ);
 nothing secret is hard-coded. See `.env.example` for the full list.
 """
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -52,6 +53,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last: logs one line per request (method/path/status/user/duration, no PII).
+    "apps.core.middleware.RequestLogMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -331,15 +334,90 @@ CSRF_TRUSTED_ORIGINS = env.list(
 # Read now so a missing/invalid key surfaces at startup, not mid-feature.
 FERNET_KEY = env("FERNET_KEY")
 
-# --- Logging (console only, no PII) -------------------------------------
+# --- Logging (console + rotating file, per-module, no PII) --------------
+# Every module logs via ``logging.getLogger(__name__)`` (= "apps.<app>.<module>"),
+# so configuring the ``apps`` parent + a few per-app overrides gives per-function
+# lines without touching call sites. The ``verbose`` formatter carries the
+# function name and line, so a log line traces back to the exact function.
+#
+# IMPORTANT (no-PII rule, CLAUDE.md #4): file logs live on a host volume — NEVER
+# log customer name/phone/address/email. Only ids, counts, status, durations.
+#
+# Output: console (Docker collects each service's stdout separately) + a rotating
+# file. In Docker every process (web/worker/beat) writes its OWN file via the
+# LOG_FILE_NAME env (docker-compose), because a single RotatingFileHandler shared
+# by multiple processes corrupts on rotation.
+LOG_DIR = env.str("LOG_DIR", default=str(BASE_DIR / "logs"))
+os.makedirs(LOG_DIR, exist_ok=True)  # RotatingFileHandler needs the dir to exist
+LOG_LEVEL = env.str("LOG_LEVEL", default="INFO")
+LOG_FILE_NAME = env.str("LOG_FILE_NAME", default="backend.log")
+LOG_FILE_MAX_BYTES = env.int("LOG_FILE_MAX_BYTES", default=10_000_000)
+LOG_FILE_BACKUP_COUNT = env.int("LOG_FILE_BACKUP_COUNT", default=5)
+
+
+def _app_level(app: str) -> str:
+    """Per-app level override, e.g. LOG_LEVEL_CATALOG=DEBUG (fallback LOG_LEVEL)."""
+    return env.str(f"LOG_LEVEL_{app.upper()}", default=LOG_LEVEL)
+
+
+_LOCAL_APPS = [
+    "accounts", "sites", "catalog", "orders", "sync",
+    "monitoring", "integrations", "mailer", "domains",
+]
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
+        "verbose": {
+            "format": "%(levelname)s %(asctime)s %(name)s.%(funcName)s:%(lineno)d %(message)s",
+        },
         "simple": {"format": "%(levelname)s %(asctime)s %(name)s %(message)s"},
     },
     "handlers": {
-        "console": {"class": "logging.StreamHandler", "formatter": "simple"},
+        "console": {"class": "logging.StreamHandler", "formatter": "verbose"},
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": os.path.join(LOG_DIR, LOG_FILE_NAME),
+            "maxBytes": LOG_FILE_MAX_BYTES,
+            "backupCount": LOG_FILE_BACKUP_COUNT,
+            "encoding": "utf-8",
+            "formatter": "verbose",
+        },
+        "error_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": os.path.join(LOG_DIR, "error.log"),
+            "maxBytes": LOG_FILE_MAX_BYTES,
+            "backupCount": LOG_FILE_BACKUP_COUNT,
+            "encoding": "utf-8",
+            "level": "WARNING",
+            "formatter": "verbose",
+        },
     },
-    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        # Parent of every local app logger + the request middleware logger.
+        "apps": {
+            "handlers": ["console", "file", "error_file"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        # Per-app level overrides (handlers inherited from "apps").
+        **{
+            f"apps.{app}": {"level": _app_level(app), "propagate": True}
+            for app in _LOCAL_APPS
+        },
+        # 4xx/5xx from DRF/Django → error.log for quick triage.
+        "django.request": {
+            "handlers": ["console", "error_file"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "celery": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+    # Third-party libs: warnings+ to console only, keep the file clean.
+    "root": {"handlers": ["console"], "level": "WARNING"},
 }

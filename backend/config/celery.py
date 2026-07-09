@@ -1,13 +1,27 @@
+import logging
 import os
+import time
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import task_postrun
+from celery.signals import task_failure, task_postrun, task_prerun
+
+from apps.core.logging_utils import log_event  # dependency-free (stdlib logging only)
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
+# One place to log EVERY task's start/ok/fail + duration (the "task layer"
+# counterpart of RequestLogMiddleware) — no need to edit each task body. Task
+# args/kwargs are NOT logged (they can carry PII / large payloads); only the
+# task name, id, state and elapsed time.
+task_logger = logging.getLogger("apps.task")
+_task_started: dict[str, float] = {}
+
 app = Celery("solar_hub")
 app.config_from_object("django.conf:settings", namespace="CELERY")
+# Keep Django's LOGGING dictConfig (settings.py) authoritative: without this,
+# Celery reconfigures the root logger and our per-module handlers/format are lost.
+app.conf.worker_hijack_root_logger = False
 app.autodiscover_tasks()  # discovers apps/*/tasks.py
 
 # Health-check beat tick = the FAIL interval (the shortest cadence we need): each
@@ -19,6 +33,36 @@ _ORDER_POLL_INTERVAL = float(os.getenv("ORDER_POLL_INTERVAL_SECONDS", "480"))
 # interval (default 24h): each tick the dispatcher re-selects only STALE sites,
 # so new sites and previously-failed runs self-heal within the hour.
 _DOMAIN_INFO_TICK = float(os.getenv("DOMAIN_INFO_TICK_SECONDS", "3600"))
+
+@task_prerun.connect
+def _log_task_start(task_id=None, task=None, **kwargs):
+    _task_started[task_id] = time.perf_counter()
+    log_event(task_logger, logging.INFO, "task start", name=getattr(task, "name", None), id=task_id)
+
+
+@task_postrun.connect
+def _log_task_end(task_id=None, task=None, state=None, **kwargs):
+    started = _task_started.pop(task_id, None)
+    elapsed_ms = int((time.perf_counter() - started) * 1000) if started is not None else None
+    # SUCCESS at INFO; anything else (e.g. RETRY/REVOKED) at WARNING. FAILURE is
+    # logged with its traceback by _log_task_failure below.
+    level = logging.INFO if state == "SUCCESS" else logging.WARNING
+    log_event(
+        task_logger, level, "task end",
+        name=getattr(task, "name", None), id=task_id, state=state, elapsed_ms=elapsed_ms,
+    )
+
+
+@task_failure.connect
+def _log_task_failure(task_id=None, exception=None, sender=None, **kwargs):
+    _task_started.pop(task_id, None)
+    log_event(
+        task_logger, logging.ERROR, "task fail",
+        name=getattr(sender, "name", None), id=task_id,
+        err=type(exception).__name__ if exception else None,
+        exc_info=True,
+    )
+
 
 @task_postrun.connect
 def close_db_connections(**kwargs):

@@ -20,6 +20,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.core.logging_utils import log_event
 from apps.integrations.sapo import SapoClient
 from apps.integrations.woocommerce import WooClient
 
@@ -153,6 +154,7 @@ def test_connection(site: Site, *, check_type: str = "manual", performed_by=None
     response time). ``check_type``/``performed_by`` flow through to that row so
     the history shows who ran it ("Hệ thống" for the periodic task).
     """
+    log_event(logger, logging.INFO, "test_connection start", site_id=site.id, check_type=check_type)
     ok = False
     detail = ""
     resolved_host = None
@@ -174,17 +176,29 @@ def test_connection(site: Site, *, check_type: str = "manual", performed_by=None
         status = exc.response.status_code
         body = (exc.response.text or "")[:180]
         detail = f"Lỗi HTTP {status}: {body}"
-        logger.error(
-            "test_connection failed site_id=%s status=%s body=%s", site.id, status, body
+        log_event(
+            logger, logging.ERROR, "test_connection fail",
+            site_id=site.id, status=status, body=body,
         )
     except httpx.HTTPError as exc:
         # Connect/timeout errors have no response to read.
         detail = f"Lỗi kết nối: {exc.__class__.__name__}"
-        logger.error("test_connection failed site_id=%s: %s", site.id, exc)
+        log_event(
+            logger, logging.ERROR, "test_connection fail",
+            site_id=site.id, err=exc.__class__.__name__,
+        )
     except Exception as exc:  # noqa: BLE001 — surface as down, but log the cause
         detail = f"Lỗi không xác định: {exc.__class__.__name__}"
-        logger.error("test_connection error site_id=%s: %s", site.id, exc)
+        log_event(
+            logger, logging.ERROR, "test_connection error",
+            site_id=site.id, err=exc.__class__.__name__,
+        )
     response_time_ms = int((time.monotonic() - started) * 1000)
+    if ok:
+        log_event(
+            logger, logging.INFO, "test_connection ok",
+            site_id=site.id, elapsed_ms=response_time_ms,
+        )
 
     site.status = Site.Status.UP if ok else Site.Status.DOWN
     site.last_checked_at = timezone.now()
@@ -310,6 +324,10 @@ def check_hosting(
     if not sites:
         return []
 
+    log_event(
+        logger, logging.INFO, "check_hosting start",
+        hosting_id=hosting_id, check_type=check_type, sites=len(sites),
+    )
     concurrency = DEFAULT_CHECK_CONCURRENCY
     if hosting_id is not None:
         hosting = Hosting.objects.filter(id=hosting_id, is_deleted=False).first()
@@ -320,7 +338,12 @@ def check_hosting(
         _check_site_threadsafe, check_type=check_type, performed_by=performed_by
     )
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        return list(executor.map(worker, sites))
+        results = list(executor.map(worker, sites))
+    log_event(
+        logger, logging.INFO, "check_hosting ok",
+        hosting_id=hosting_id, checked=len(results),
+    )
+    return results
 
 
 def import_sites_from_xlsx(file, hosting=None) -> dict:

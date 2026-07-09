@@ -10,9 +10,12 @@ export default defineConfig({
     port: 5173,
     // Cho phép host ngrok (Vite chặn host lạ mặc định). true = mọi host, đủ cho demo.
     allowedHosts: true,
-    // Proxy /api sang backend trong cùng mạng docker => chỉ cần 1 tunnel ngrok.
+    // Proxy /api + /media sang backend trong cùng mạng docker => chỉ cần 1 tunnel
+    // cho cả app lẫn ảnh. /media do Django phục vụ (staticfiles); Vite không tự có
+    // route này nên nếu thiếu proxy thì request ảnh rơi vào SPA fallback => trả HTML.
     proxy: {
       "/api": { target: "http://backend:8000", changeOrigin: true },
+      "/media": { target: "http://backend:8000", changeOrigin: true },
     },
   },
   test: {
